@@ -1,5 +1,5 @@
 # =============================================
-# Regime-Trader 云服务器定时任务（crontab）
+# trade-it-easy 云服务器定时任务（crontab）
 # =============================================
 # 部署位置：Linux 云服务器（Ubuntu），时区必须为 Asia/Shanghai
 # 校验时区：timedatectl status | grep "Time zone"
@@ -7,11 +7,15 @@
 #             sudo timedatectl set-timezone Asia/Shanghai
 #
 # 前置依赖（一次性）：
-#   cd /srv/regime-trader
-#   python3 -m venv .venv
-#   ./.venv/bin/pip install -r requirements.txt
-#   ./.venv/bin/pip install ./wheels/AmazingData-1.1.9-cp314-none-any.whl ./wheels/tgw-1.0.9.2-py3-none-any.whl
+#   cd /root/trade-it-easy
+#   conda create -n rt python=3.14
+#   /root/miniconda/envs/rt/bin/pip install -r requirements.txt
+#   /root/miniconda/envs/rt/bin/pip install ./wheels/AmazingData-1.1.9-cp314-none-any.whl ./wheels/tgw-1.0.9.2-py3-none-any.whl
 #   配置 .env（拷贝本地 .env，含 MX_APIKEY/TGW_* 等）
+#   解释器写死为 /root/miniconda/envs/rt/bin/python（勿用 ./.venv/bin/python）
+#
+# 行尾必须是 LF：本文件在 Windows 上编辑提交，仓库以 .gitattributes 固定 eol=lf。
+# 若是 CRLF，cron 安装时报 "bad minute"；修复：sed -i 's/\r$//' deploy/crontab.server
 #
 # 使用方法：
 #   crontab deploy/crontab.server     # 安装
@@ -31,13 +35,13 @@
 # =============================================
 
 # ── 质量池执行：每交易日 09:31 开盘（调仓日先卖后买；非调仓日退出队列重试→推送）──
-31 9 * * 1-5 cd /root/regime-trader && flock -n /tmp/quality-pool-exec.lock /root/miniconda/envs/rt/bin/python quality_pool.py execute > /dev/null 2>> logs/cron_error.log
+31 9 * * 1-5 cd /root/trade-it-easy && flock -n /tmp/quality-pool-exec.lock /root/miniconda/envs/rt/bin/python quality_pool.py execute > /dev/null 2>> logs/cron_error.log
 
 # ── ETF 周度观察 + 自动调仓：每周一 14:40（尾盘批次：台账尾盘价成交形态；
-40 14 * * 1 cd /root/regime-trader && flock -n /tmp/etf.lock /root/miniconda/envs/rt/bin/python etf_observe.py > /dev/null 2>> logs/cron_error.log
+40 14 * * 1 cd /root/trade-it-easy && flock -n /tmp/etf.lock /root/miniconda/envs/rt/bin/python etf_observe.py > /dev/null 2>> logs/cron_error.log
 
 # ── 行业动量轮动（卫星仓）：每交易日 14:50 尾盘（截面排名→卖出/买入→推送）──
-50 14 * * 1-5 cd /root/regime-trader && flock -n /tmp/industry_momentum.lock /root/miniconda/envs/rt/bin/python industry_momentum.py > /dev/null 2>> logs/cron_error.log
+50 14 * * 1-5 cd /root/trade-it-easy && flock -n /tmp/industry_momentum.lock /root/miniconda/envs/rt/bin/python industry_momentum.py > /dev/null 2>> logs/cron_error.log
 
 # ── 质量池信号：每交易日 15:10 盘后（调仓日出名单冻结预算；非调仓日空转→推送）──
-10 15 * * 1-5 cd /root/regime-trader && flock -n /tmp/quality-pool-signal.lock /root/miniconda/envs/rt/bin/python quality_pool.py signal > /dev/null 2>> logs/cron_error.log
+10 15 * * 1-5 cd /root/trade-it-easy && flock -n /tmp/quality-pool-signal.lock /root/miniconda/envs/rt/bin/python quality_pool.py signal > /dev/null 2>> logs/cron_error.log

@@ -1,0 +1,20 @@
+# 统一文本文件行尾为 LF。
+# Windows 上 core.autocrlf=true 会让 git archive 导出时把 LF 转成 CRLF，
+# 而 Linux 侧（crontab、shell 脚本等）不识别 \r —— 曾导致 deploy/crontab.server
+# 安装时 cron 报 "bad minute"。这里显式固定，避免依赖本地 git 配置。
+* text=auto eol=lf
+
+# 二进制与数据文件不做行尾转换
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.gif binary
+*.ico binary
+*.pdf binary
+*.pkl binary
+*.zip binary
+*.gz binary
+*.whl binary
+*.pyc binary
+*.so binary
+*.dll binary
