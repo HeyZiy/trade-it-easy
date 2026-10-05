@@ -95,7 +95,7 @@ def _code_to_tgw_format(code: str) -> str:
     code = normalize_stock_code(code)
     if not code.isdigit() or len(code) != 6:
         return None
-    if code.startswith(("6", "51", "52", "56", "58")):
+    if code.startswith(("6", "51", "52", "53", "55", "56", "58")):
         return f"{code}.SH"
     if code.startswith(("0", "3", "15", "16", "18")):
         return f"{code}.SZ"

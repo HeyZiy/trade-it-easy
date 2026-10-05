@@ -46,9 +46,9 @@ logger = logging.getLogger(__name__)
 
 
 # ETF code prefixes by exchange
-# Shanghai: 51xxxx, 52xxxx, 56xxxx, 58xxxx
+# Shanghai: 51xxxx, 52xxxx, 53xxxx(2025新), 55xxxx(科创债ETF,2025新), 56xxxx, 58xxxx
 # Shenzhen: 15xxxx, 16xxxx, 18xxxx
-_ETF_SH_PREFIXES = ('51', '52', '56', '58')
+_ETF_SH_PREFIXES = ('51', '52', '53', '55', '56', '58')
 _ETF_SZ_PREFIXES = ('15', '16', '18')
 
 
