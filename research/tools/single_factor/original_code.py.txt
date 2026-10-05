@@ -1,0 +1,174 @@
+# 导入所需库
+import pandas as pd
+import numpy as np
+import matplotlib.pyplot as plt
+from sklearn.linear_model import LinearRegression
+from sklearn.preprocessing import StandardScaler
+import warnings
+warnings.filterwarnings("ignore")
+
+# ====================== 1. 基础参数设置 ======================
+start_date = "2018-01-01"
+end_date = "2023-12-31"
+benchmark = "000300.XSHG"
+stock_pool = "000300.XSHG"
+factor_name = "Alpha001"
+n_groups = 5
+freq = "monthly"
+
+# ====================== 2. 辅助函数定义 ======================
+def get_stock_pool(date):
+    """获取沪深300成分股，剔除ST、停牌、次新股"""
+    stocks = get_index_stocks(stock_pool, date)
+    # 剔除ST股
+    st_stocks = get_extras("is_st", stocks, start_date=date, end_date=date, df=True).iloc[0]
+    stocks = [stock for stock in stocks if not st_stocks[stock]]
+    # 剔除停牌股
+    suspend_stocks = get_extras("suspended", stocks, start_date=date, end_date=date, df=True).iloc[0]
+    stocks = [stock for stock in stocks if not suspend_stocks[stock]]
+    # 剔除上市不足6个月的股票
+    list_dates = get_extras("list_date", stocks, start_date=date, end_date=date, df=True).iloc[0]
+    six_month_ago = pd.to_datetime(date) - pd.DateOffset(months=6)
+    stocks = [stock for stock in stocks if pd.to_datetime(list_dates[stock]) < = six_month_ago]
+    return stocks
+
+def mad_outlier(series):
+    """MAD法去极值"""
+    median = series.median()
+    mad = (series - median).abs().median()
+    upper = median + 3 * 1.4826 * mad
+    lower = median - 3 * 1.4826 * mad
+    return series.clip(lower, upper)
+
+def standardize(series):
+    """Z-score标准化"""
+    return (series - series.mean()) / series.std()
+
+def neutralize(factor_series, stock_list, date):
+    """因子中性化：行业+市值"""
+    # 行业哑变量
+    industry_df = get_extras("sw1", stock_list, start_date=date, end_date=date, df=True).iloc[0]
+    industry_dummies = pd.get_dummies(industry_df, drop_first=True)
+    # 市值标准化
+    market_cap = get_fundamentals(query(valuation.market_cap).filter(valuation.code.in_(stock_list)), date=date)
+    market_cap = market_cap.set_index("code")["market_cap"].reindex(stock_list).fillna(0)
+    scaler = StandardScaler()
+    market_cap_std = scaler.fit_transform(market_cap.values.reshape(-1, 1)).flatten()
+    market_cap_std = pd.Series(market_cap_std, index=market_cap.index)
+    # 回归求残差
+    X = pd.concat([industry_dummies, market_cap_std], axis=1).fillna(0)
+    y = factor_series.reindex(stock_list).fillna(0)
+    lr = LinearRegression()
+    lr.fit(X, y)
+    return y - lr.predict(X)
+
+def get_prev_trade_date(target_date):
+    """获取前一交易日"""
+    target_dt = pd.to_datetime(target_date)
+    trade_days = get_trade_days(start_date="2017-01-01", end_date=target_date)
+    target_idx = np.where(trade_days == target_dt)[0][0]
+    return trade_days[target_idx - 1].strftime("%Y-%m-%d")
+
+def cal_alpha001(stock_list, current_date):
+    """计算Alpha001因子"""
+    prev_date = get_prev_trade_date(current_date)
+    # 获取当日开盘价
+    open_price = get_price(stock_list, start_date=current_date, end_date=current_date, fields=["open"])["open"].iloc[0]
+    # 获取前一日收盘价
+    prev_close = get_price(stock_list, start_date=prev_date, end_date=prev_date, fields=["close"])["close"].iloc[0]
+    # 计算因子
+    alpha001 = (open_price - prev_close) / prev_close
+    alpha001 = alpha001.replace([np.inf, -np.inf], np.nan).dropna()
+    return alpha001
+
+def cal_next_return(stock_list, current_date, next_date):
+    """计算下期收益率"""
+    price_df = get_price(stock_list, start_date=current_date, end_date=next_date, frequency="daily", fields=["close"])["close"]
+    current_close = price_df.iloc[0]
+    next_close = price_df.iloc[-1]
+    return (next_close / current_close - 1).dropna()
+
+def cal_ic(factor_series, return_series):
+    """计算IC值"""
+    merge_df = pd.concat([factor_series, return_series], axis=1, keys=["factor", "return"])
+    merge_df = merge_df.dropna()
+    return merge_df["factor"].rank().corr(merge_df["return"].rank())
+
+# ====================== 3. 主流程 ======================
+# 生成调仓日期
+trade_dates = get_trade_days(start_date, end_date)
+trade_dates_series = pd.Series(pd.to_datetime(trade_dates))
+rebalance_dates = trade_dates_series.groupby(trade_dates_series.dt.to_period('M')).last().dt.to_pydatetime()
+rebalance_dates = [date.strftime("%Y-%m-%d") for date in rebalance_dates][:-1]
+
+# 初始化结果容器
+group_returns = pd.DataFrame(index=rebalance_dates, columns=[f"G{i+1}" for i in range(n_groups)])
+ic_list = []
+
+for i in range(len(rebalance_dates)):
+    current_date = rebalance_dates[i]
+    next_date = rebalance_dates[i+1] if i+1 <  len(rebalance_dates) else trade_dates[-1]
+
+    # 获取股票池
+    stocks = get_stock_pool(current_date)
+    if len(stocks) <  n_groups:
+        continue
+
+    # 计算因子并预处理
+    alpha001 = cal_alpha001(stocks, current_date)
+    alpha001_clean = mad_outlier(alpha001)
+    alpha001_std = standardize(alpha001_clean)
+    alpha001_neu = neutralize(alpha001_std, stocks, current_date)
+
+    # 计算下期收益率
+    return_series = cal_next_return(stocks, current_date, next_date)
+    alpha001_neu = alpha001_neu.reindex(return_series.index).dropna()
+    return_series = return_series.reindex(alpha001_neu.index).dropna()
+
+    # 分组回测
+    alpha_rank = alpha001_neu.rank(pct=True)
+    groups = pd.cut(alpha_rank, bins=n_groups, labels=[f"G{i+1}" for i in range(n_groups)])
+    for group in groups.cat.categories:
+        group_stocks = groups[groups == group].index
+        group_returns.loc[current_date, group] = return_series[group_stocks].mean()
+
+    # 计算IC
+    ic = cal_ic(alpha001_neu, return_series)
+    ic_list.append(ic)
+
+# ====================== 4. 结果输出 ======================
+# 累计收益
+group_cum_return = (1 + group_returns.fillna(0)).cumprod() - 1
+# 基准收益
+bench_price = get_price(benchmark, start_date=start_date, end_date=end_date, frequency="daily", fields=["close"])["close"]
+bench_cum_return = (bench_price / bench_price.iloc[0] - 1).reindex(pd.to_datetime(rebalance_dates), method="ffill")
+# IC/IR
+ic_series = pd.Series(ic_list, index=group_returns.dropna().index)
+ic_mean = ic_series.mean()
+ir = ic_mean / ic_series.std() if ic_series.std() != 0 else 0
+# 单调性
+final_return = group_cum_return.iloc[-1].fillna(0)
+is_monotonic = final_return.is_monotonic_increasing
+
+# 打印结果
+print("="*60)
+print(f"{factor_name}因子测试结果（沪深300 2018-2023）")
+print("="*60)
+print(f"月度IC均值：{ic_mean:.4f}")
+print(f"信息比率IR：{ir:.4f}")
+print(f"分组单调性：{'通过' if is_monotonic else '未通过'}")
+print("="*60)
+print("分组最终累计收益：")
+print(final_return.round(4))
+
+# 绘制累计收益曲线
+plt.figure(figsize=(12, 6))
+for col in group_cum_return.columns:
+    plt.plot(pd.to_datetime(group_cum_return.index), group_cum_return[col], label=col)
+plt.plot(pd.to_datetime(bench_cum_return.index), bench_cum_return, label="沪深300", linestyle="--", color="black")
+plt.title(f"{factor_name}因子分组累计收益", fontsize=14)
+plt.xlabel("日期")
+plt.ylabel("累计收益")
+plt.legend()
+plt.grid(True, alpha=0.3)
+plt.show()
