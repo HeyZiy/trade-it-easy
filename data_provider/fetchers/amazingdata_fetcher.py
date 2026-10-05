@@ -31,7 +31,7 @@ import pandas as pd
 
 from data_provider.fetchers.base import BaseFetcher
 from data_provider.types import KIND_STOCK_DAILY, DataFetchError, STANDARD_COLUMNS
-from data_provider.codes import normalize_stock_code
+from data_provider.codes import market_suffix, normalize_stock_code
 
 logger = logging.getLogger(__name__)
 
@@ -89,17 +89,19 @@ def _code_to_tgw_format(code: str) -> str:
     """
     将标准 6 位代码转换为 tgw 格式（600519 -> 600519.SH）。
 
+    市场归属唯一权威在 codes.market_suffix；TGW 能力声明只含沪深股票与 ETF，
+    北交所/B 股/码族外返回 None 由调用方 failover（不猜市场、不扩能力）。
+
     Returns:
         tgw 格式代码；不支持的代码返回 None
     """
     code = normalize_stock_code(code)
     if not code.isdigit() or len(code) != 6:
         return None
-    if code.startswith(("6", "51", "52", "53", "55", "56", "58")):
-        return f"{code}.SH"
-    if code.startswith(("0", "3", "15", "16", "18")):
-        return f"{code}.SZ"
-    return None  # 北交所等其他市场暂不支持
+    suffix = market_suffix(code)
+    if suffix not in ("SH", "SZ"):
+        return None
+    return f"{code}.{suffix}"
 
 
 # 项目根目录：本文件位于 <repo>/data_provider/fetchers/ 下，故 parents[2] 是仓库根

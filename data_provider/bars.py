@@ -30,7 +30,7 @@ from typing import Optional
 
 import pandas as pd
 
-from .codes import _split_prefix, is_etf_code
+from .codes import _split_prefix, is_etf_code, market_suffix
 
 logger = logging.getLogger(__name__)
 
@@ -39,9 +39,14 @@ STD_COLS = ["date", "open", "high", "low", "close", "volume"]
 
 
 def _etf_sym(code: str) -> str:
-    """ETF 代码 → 新浪带市场前缀符号。显式前缀优先；裸码按码族推断（5/6/9→sh，其余→sz）。"""
+    """ETF 代码 → 新浪带市场前缀符号。显式前缀优先；裸码按 codes.market_suffix 判市场（码族外抛错）。"""
     num, pref = _split_prefix(code)
-    return (pref or ("sh" if num[0] in "569" else "sz")) + num
+    if pref:
+        return pref + num
+    suffix = market_suffix(num)
+    if suffix is None:
+        raise ValueError(f"无法确定 ETF {code} 的市场归属（码族外）")
+    return suffix.lower() + num
 
 
 def _norm_etf(df: pd.DataFrame) -> pd.DataFrame:

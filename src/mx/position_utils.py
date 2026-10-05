@@ -6,24 +6,14 @@
 
 持仓事实来源已迁至名义成交台账（src/trade_ledger，derive 供料同形 dict，
 entry_map 由流水推导）；本模块保留与来源无关的持仓 dict 公共口径：
-代码前缀判定、有效持仓过滤、盈亏百分比兜底。
+有效持仓过滤、盈亏百分比兜底。代码前缀判定已上收 data_provider/codes.py
+（码族→市场归属唯一权威），此处仅为存活的内部调用方转发。
 """
 
 from typing import List
 
-# A 股股票代码前缀白名单（基金/ETF/债券等非股票前缀不含在内，无重叠）
-_A_STOCK_PREFIXES = (
-    "600", "601", "603", "605", "688", "689",  # 沪主板 + 科创板
-    "000", "001", "002", "003",                # 深主板
-    "300", "301",                              # 创业板
-    "43", "83", "87", "88", "920",             # 北交所/新三板
-)
-
-
-def is_a_stock_code(code: str) -> bool:
-    """判断 6 位代码是否为 A 股股票（按前缀白名单，排除 ETF/基金/债券）。"""
-    c = str(code or "").strip().split(".")[0]
-    return len(c) == 6 and c.startswith(_A_STOCK_PREFIXES)
+# is_a_stock_code 本体已上收 codes.py；本模块随死代码清除一并退场。
+from data_provider.codes import is_a_stock_code
 
 
 def filter_held_positions(positions: List[dict], min_count: int = 0) -> List[dict]:

@@ -36,20 +36,13 @@ from data_provider.types import (
     KIND_STOCK_DAILY,
     DataFetchError, RateLimitError, STANDARD_COLUMNS, UnifiedRealtimeQuote,
 )
-from data_provider.codes import is_bse_code, is_st_stock, is_kc_cy_stock, normalize_stock_code, is_etf_code
+from data_provider.codes import is_bse_code, is_st_stock, is_kc_cy_stock, market_suffix, normalize_stock_code, is_etf_code
 from data_provider.codes import is_us_stock_code
 from src.config import get_config
 import os
 from zoneinfo import ZoneInfo
 
 logger = logging.getLogger(__name__)
-
-
-# ETF code prefixes by exchange
-# Shanghai: 51xxxx, 52xxxx, 53xxxx(2025新), 55xxxx(科创债ETF,2025新), 56xxxx, 58xxxx
-# Shenzhen: 15xxxx, 16xxxx, 18xxxx
-_ETF_SH_PREFIXES = ('51', '52', '53', '55', '56', '58')
-_ETF_SZ_PREFIXES = ('15', '16', '18')
 
 
 class TushareFetcher(BaseFetcher):
@@ -249,6 +242,7 @@ class TushareFetcher(BaseFetcher):
         - 沪市 ETF：510050.SH, 563230.SH
         - 深市 ETF：159919.SZ
         - 北交所：920748.BJ
+        - 码族外（可转债 11x 等）：DataFetchError，由管理器 failover
 
         Args:
             stock_code: 原始代码，如 '600519', '000001', '563230'
@@ -270,24 +264,12 @@ class TushareFetcher(BaseFetcher):
         if is_us_stock_code(code):
             raise DataFetchError(f"TushareFetcher 不支持 {code}，请使用其他数据源")
 
-        # ETF: 根据前缀判断交易所
-        if code.startswith(_ETF_SH_PREFIXES) and len(code) == 6:
-            return f"{code}.SH"
-        if code.startswith(_ETF_SZ_PREFIXES) and len(code) == 6:
-            return f"{code}.SZ"
-
-        # 北交所 (BJ): 8xxxxx, 4xxxxx, 920xxx
-        if is_bse_code(code):
-            return f"{code}.BJ"
-
-        # 普通 A 股
-        if code.startswith(('600', '601', '603', '688')):
-            return f"{code}.SH"
-        elif code.startswith(('000', '001', '002', '003', '300')):
-            return f"{code}.SZ"
-        else:
-            logger.warning(f"无法确定股票 {code} 的市场，默认使用深市")
-            return f"{code}.SZ"
+        # 市场归属唯一权威：codes.market_suffix。码族外显式拒绝、交给 failover——
+        # 不再「默认深市」（53/55 新沪 ETF 码族曾被静默错查成 .SZ，见 5dafb0a）。
+        suffix = market_suffix(code)
+        if suffix is None:
+            raise DataFetchError(f"TushareFetcher 无法确定 {code} 的市场归属，请使用其他数据源")
+        return f"{code}.{suffix}"
     
     @retry(
         stop=stop_after_attempt(3),

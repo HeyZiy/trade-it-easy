@@ -6,10 +6,11 @@
 
 纯函数，不碰网络。集中存放项目所有代码判定规则：
 - normalize_stock_code / canonical_stock_code：代码归一化
+- market_suffix：码族→市场归属的全仓唯一权威（码族外 None，fail-closed）
+- is_a_stock_code：A 股股票判定（本体迁自 src/mx/position_utils.py）
 - classify_market：市场归类（只剩 cn——美股/港股不在支持范围）
 - is_bse_code / is_st_stock / is_kc_cy_stock / is_etf_code：市场/类型判定
 - is_us_stock_code：字母 ticker 守卫谓词（拒收用）
-- ETF_PREFIXES：ETF 码族常量
 - _split_prefix：sh/sz/bj 前缀拆分
 
 个股日线多源与实时报价见 manager.py / realtime.py；ETF/指数日线见 bars.py。
@@ -53,7 +54,62 @@ def normalize_stock_code(stock_code: str) -> str:
     return code
 
 
-ETF_PREFIXES = ("51", "52", "53", "55", "56", "58", "15", "16", "18")
+# === 码族→市场归属表（全仓唯一权威） ===
+# 新增码族只改这里，并同步 tests/test_data_codes.py 的钉死矩阵。
+# 行序即判定顺序：三位族须排在可能同前缀的两位族之前。
+_STOCK_SH_FAMILIES = ("600", "601", "603", "605", "688", "689")
+_STOCK_SZ_FAMILIES = ("000", "001", "002", "003", "300", "301")
+_STOCK_BJ_FAMILIES = ("43", "83", "87", "88", "920")
+_ETF_SH_FAMILIES = ("51", "52", "53", "55", "56", "58")   # 53/55 为 2025 年新上交所码族
+_ETF_SZ_FAMILIES = ("15", "16", "18")
+_B_SHARE_SH_FAMILIES = ("900",)
+_B_SHARE_SZ_FAMILIES = ("200",)
+
+_MARKET_FAMILY_ROWS = (
+    (_STOCK_SH_FAMILIES, "SH"),
+    (_STOCK_SZ_FAMILIES, "SZ"),
+    (_STOCK_BJ_FAMILIES, "BJ"),
+    (_ETF_SH_FAMILIES, "SH"),
+    (_ETF_SZ_FAMILIES, "SZ"),
+    (_B_SHARE_SH_FAMILIES, "SH"),
+    (_B_SHARE_SZ_FAMILIES, "SZ"),
+)
+
+_ETF_PREFIXES = _ETF_SH_FAMILIES + _ETF_SZ_FAMILIES
+_A_STOCK_FAMILIES = _STOCK_SH_FAMILIES + _STOCK_SZ_FAMILIES + _STOCK_BJ_FAMILIES
+
+
+def market_suffix(code: str) -> Optional[str]:
+    """6 位代码 → 交易所后缀 'SH'/'SZ'/'BJ'；码族外返回 None。
+
+    码族→市场归属的全仓唯一权威：消费方一律调本函数，不得私建前缀表。
+    判不出市场 = 调用方显式拒绝、交给数据源 failover；禁止默认成某一市场
+    （53/55 新沪 ETF 码族曾被「默认深市」静默错查成 .SZ，见 5dafb0a）。
+    接受 '600519' / '600519.SH' / 'sh600519' 等形态；其余先过 normalize_stock_code。
+    """
+    raw = (code or "").strip()
+    if "." in raw:
+        raw = raw.rsplit(".", 1)[0]
+    num, pref = _split_prefix(raw)
+    if pref:
+        return pref.upper()
+    if len(num) == 6 and num.isdigit():
+        for families, market in _MARKET_FAMILY_ROWS:
+            if num.startswith(families):
+                return market
+    return None
+
+
+def is_a_stock_code(code: str) -> bool:
+    """判断 6 位代码是否为 A 股股票（沪深主板/科创/创业 + 北交所；不含 ETF/基金/债券/B 股）。
+
+    本体自 src/mx/position_utils.py 迁入——原第 4 张私有前缀表随码族单点化收编。
+    """
+    raw = (code or "").strip()
+    if "." in raw:
+        raw = raw.rsplit(".", 1)[0]
+    num, _ = _split_prefix(raw)
+    return len(num) == 6 and num.isdigit() and num.startswith(_A_STOCK_FAMILIES)
 
 
 
@@ -132,7 +188,7 @@ def is_etf_code(code: str) -> bool:
     53xxxx（上证系列 ETF）、55xxxx（科创债 ETF）是上交所 2025 年启用的新码族。
     """
     num, _ = _split_prefix(code)
-    return num[:2] in ETF_PREFIXES
+    return num[:2] in _ETF_PREFIXES
 
 
 def is_us_stock_code(code: str) -> bool:

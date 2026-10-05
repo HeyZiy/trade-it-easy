@@ -18,7 +18,7 @@ import logging
 from datetime import date, timedelta
 from typing import Dict, Iterable, Optional
 
-from src.mx.position_utils import is_a_stock_code
+from data_provider.codes import is_a_stock_code
 
 from .ledger import (DEFAULT_LEDGER_PATH, LedgerSnapshot, derive,
                      load_trades)

@@ -41,7 +41,7 @@ from tenacity import (
 
 from data_provider._crosscut import Throttle, TtlSnapshotCache
 
-from data_provider.codes import is_bse_code, is_etf_code, is_us_stock_code
+from data_provider.codes import is_etf_code, is_us_stock_code, market_suffix
 from data_provider.fetchers.base import BaseFetcher
 from data_provider.stats import calc_market_stats
 from data_provider.types import (
@@ -81,14 +81,16 @@ _etf_realtime_cache = TtlSnapshotCache(ttl=1200, label="ETF实时行情(东财)"
 
 
 def _to_sina_tx_symbol(stock_code: str) -> str:
-    """Convert 6-digit A-share code to sh/sz/bj prefixed symbol for Sina/Tencent APIs."""
+    """Convert 6-digit A-share code to sh/sz/bj prefixed symbol for Sina/Tencent APIs.
+
+    市场归属唯一权威 codes.market_suffix；码族外抛 ValueError（fail-closed），
+    该腿按失败记录，交给内层 东财→新浪→腾讯 failover。
+    """
     base = (stock_code.strip().split(".")[0] if "." in stock_code else stock_code).strip()
-    if is_bse_code(base):
-        return f"bj{base}"
-    # Shanghai: 60xxxx, 5xxxx (ETF), 90xxxx (B-shares)
-    if base.startswith(("6", "5", "90")):
-        return f"sh{base}"
-    return f"sz{base}"
+    suffix = market_suffix(base)
+    if suffix is None:
+        raise ValueError(f"无法确定 {base} 的市场归属（码族外），拒绝构造新浪/腾讯符号")
+    return suffix.lower() + base
 
 
 def _classify_realtime_http_error(exc: Exception) -> Tuple[str, str]:

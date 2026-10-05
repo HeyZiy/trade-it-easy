@@ -41,7 +41,8 @@ from data_provider.fetchers.base import BaseFetcher
 from .manager import DataFetcherManager, get_fetcher
 from .codes import (
     normalize_stock_code, canonical_stock_code, is_etf_code,
-    is_bse_code, is_st_stock, is_kc_cy_stock, ETF_PREFIXES,
+    is_bse_code, is_st_stock, is_kc_cy_stock,
+    market_suffix, is_a_stock_code,
 )
 from .types import (
     STANDARD_COLUMNS, UnifiedRealtimeQuote,
@@ -78,7 +79,8 @@ __all__ = [
     'is_bse_code',
     'is_st_stock',
     'is_kc_cy_stock',
-    'ETF_PREFIXES',
+    'market_suffix',
+    'is_a_stock_code',
     'STANDARD_COLUMNS',
     'UnifiedRealtimeQuote',
     'DataFetchError',
