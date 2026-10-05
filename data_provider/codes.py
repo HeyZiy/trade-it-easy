@@ -53,7 +53,7 @@ def normalize_stock_code(stock_code: str) -> str:
     return code
 
 
-ETF_PREFIXES = ("51", "52", "56", "58", "15", "16", "18")
+ETF_PREFIXES = ("51", "52", "53", "55", "56", "58", "15", "16", "18")
 
 
 
@@ -127,7 +127,10 @@ def _split_prefix(code: str) -> Tuple[str, Optional[str]]:
 
 
 def is_etf_code(code: str) -> bool:
-    """按码族判定是否为 ETF（51/52/56/58/15/16/18，码族→市场无歧义）。"""
+    """按码族判定是否为 ETF（51/52/53/55/56/58/15/16/18，码族→市场无歧义）。
+
+    53xxxx（上证系列 ETF）、55xxxx（科创债 ETF）是上交所 2025 年启用的新码族。
+    """
     num, _ = _split_prefix(code)
     return num[:2] in ETF_PREFIXES
 
