@@ -16,14 +16,51 @@
 import logging
 import random
 import time
-from typing import Optional
+from typing import Optional, Tuple
 
 import pandas as pd
+import requests
 
 logger = logging.getLogger(__name__)
 
 # 错误计数自动重置窗口（秒）：超过该时长无新错误则清零
 _ERROR_RESET_WINDOW = 60.0
+
+
+def classify_http_error(exc: Exception) -> Tuple[str, str]:
+    """HTTP 拉取异常 → 稳定类别（供日志与熔断消息）。
+
+    类别：remote_disconnect / timeout / rate_limit_or_anti_bot /
+    request_error / unknown_request_error。akshare 与 efinance 的
+    两份同名分类器合一于此（关键词取并集）。
+    """
+    detail = str(exc).strip() or type(exc).__name__
+    lowered = detail.lower()
+
+    remote_disconnect = (
+        "remotedisconnected",
+        "remote end closed connection without response",
+        "connection aborted",
+        "connection broken",
+        "protocolerror",
+        "chunkedencodingerror",
+    )
+    timeouts = ("timeout", "timed out", "readtimeout", "connecttimeout")
+    rate_limit = (
+        "banned", "blocked", "频率", "rate limit", "too many requests",
+        "429", "限制", "forbidden", "403",
+    )
+
+    if any(k in lowered for k in remote_disconnect):
+        return "remote_disconnect", detail
+    if isinstance(exc, (TimeoutError, requests.exceptions.Timeout)) or any(
+            k in lowered for k in timeouts):
+        return "timeout", detail
+    if any(k in lowered for k in rate_limit):
+        return "rate_limit_or_anti_bot", detail
+    if isinstance(exc, requests.exceptions.RequestException):
+        return "request_error", detail
+    return "unknown_request_error", detail
 
 
 class Throttle:

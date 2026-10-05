@@ -39,10 +39,11 @@ from tenacity import (
     before_sleep_log,
 )
 
-from data_provider._crosscut import Throttle, TtlSnapshotCache
+from data_provider._crosscut import Throttle, TtlSnapshotCache, classify_http_error
 
 from data_provider.codes import is_etf_code, is_us_stock_code, market_suffix
 from data_provider.fetchers.base import BaseFetcher
+from data_provider.fetchers._snapshot_quote import snapshot_realtime_quote
 from data_provider.stats import calc_market_stats
 from data_provider.types import (
     KIND_FUND_FLOW, KIND_SECTOR_QUOTE, KIND_STOCK_DAILY,
@@ -93,52 +94,6 @@ def _to_sina_tx_symbol(stock_code: str) -> str:
     return suffix.lower() + base
 
 
-def _classify_realtime_http_error(exc: Exception) -> Tuple[str, str]:
-    """
-    Classify Sina/Tencent realtime quote failures into stable categories.
-    """
-    detail = str(exc).strip() or type(exc).__name__
-    lowered = detail.lower()
-
-    remote_disconnect_keywords = (
-        "remotedisconnected",
-        "remote end closed connection without response",
-        "connection aborted",
-        "connection broken",
-        "protocolerror",
-        "chunkedencodingerror",
-    )
-    timeout_keywords = (
-        "timeout",
-        "timed out",
-        "readtimeout",
-        "connecttimeout",
-    )
-    rate_limit_keywords = (
-        "banned",
-        "blocked",
-        "频率",
-        "rate limit",
-        "too many requests",
-        "429",
-        "限制",
-        "forbidden",
-        "403",
-    )
-
-    if any(keyword in lowered for keyword in remote_disconnect_keywords):
-        return "remote_disconnect", detail
-    if isinstance(exc, (TimeoutError, requests.exceptions.Timeout)) or any(
-        keyword in lowered for keyword in timeout_keywords
-    ):
-        return "timeout", detail
-    if any(keyword in lowered for keyword in rate_limit_keywords):
-        return "rate_limit_or_anti_bot", detail
-    if isinstance(exc, requests.exceptions.RequestException):
-        return "request_error", detail
-    return "unknown_request_error", detail
-
-
 def _build_realtime_failure_message(
     source_name: str,
     endpoint: str,
@@ -154,6 +109,64 @@ def _build_realtime_failure_message(
         f"symbol={symbol}, category={category}, error_type={error_type}, "
         f"elapsed={elapsed:.2f}s, detail={detail}"
     )
+
+
+def _build_em_stock_quote(row: pd.Series, stock_code: str) -> UnifiedRealtimeQuote:
+    """东财 A 股快照一行 → 统一报价（列映射是该端点的本地数据）。"""
+    quote = UnifiedRealtimeQuote(
+        code=stock_code,
+        name=str(row.get('名称', '')),
+        source="akshare_em",
+        price=safe_float(row.get('最新价')),
+        change_pct=safe_float(row.get('涨跌幅')),
+        change_amount=safe_float(row.get('涨跌额')),
+        volume=safe_int(row.get('成交量')),
+        amount=safe_float(row.get('成交额')),
+        volume_ratio=safe_float(row.get('量比')),
+        turnover_rate=safe_float(row.get('换手率')),
+        amplitude=safe_float(row.get('振幅')),
+        open_price=safe_float(row.get('今开')),
+        high=safe_float(row.get('最高')),
+        low=safe_float(row.get('最低')),
+        pe_ratio=safe_float(row.get('市盈率-动态')),
+        pb_ratio=safe_float(row.get('市净率')),
+        total_mv=safe_float(row.get('总市值')),
+        circ_mv=safe_float(row.get('流通市值')),
+        change_60d=safe_float(row.get('60日涨跌幅')),
+        high_52w=safe_float(row.get('52周最高')),
+        low_52w=safe_float(row.get('52周最低')),
+    )
+    logger.info(f"[实时行情-东财] {stock_code} {quote.name}: 价格={quote.price}, "
+                f"涨跌={quote.change_pct}%, 量比={quote.volume_ratio}, "
+                f"换手率={quote.turnover_rate}%")
+    return quote
+
+
+def _build_em_etf_quote(row: pd.Series, stock_code: str) -> UnifiedRealtimeQuote:
+    """东财 ETF 快照一行 → 统一报价（列名与股票快照不同：开盘价/最高价/最低价）。"""
+    quote = UnifiedRealtimeQuote(
+        code=stock_code,
+        name=str(row.get('名称', '')),
+        source="akshare_em",
+        price=safe_float(row.get('最新价')),
+        change_pct=safe_float(row.get('涨跌幅')),
+        change_amount=safe_float(row.get('涨跌额')),
+        volume=safe_int(row.get('成交量')),
+        amount=safe_float(row.get('成交额')),
+        volume_ratio=safe_float(row.get('量比')),
+        turnover_rate=safe_float(row.get('换手率')),
+        amplitude=safe_float(row.get('振幅')),
+        open_price=safe_float(row.get('开盘价')),
+        high=safe_float(row.get('最高价')),
+        low=safe_float(row.get('最低价')),
+        total_mv=safe_float(row.get('总市值')),
+        circ_mv=safe_float(row.get('流通市值')),
+        high_52w=safe_float(row.get('52周最高')),
+        low_52w=safe_float(row.get('52周最低')),
+    )
+    logger.info(f"[实时行情-东财ETF] {stock_code} {quote.name}: 价格={quote.price}, "
+                f"涨跌={quote.change_pct}%, 换手率={quote.turnover_rate}%")
+    return quote
 
 
 class AkshareFetcher(BaseFetcher):
@@ -502,121 +515,47 @@ class AkshareFetcher(BaseFetcher):
         """
         circuit_breaker = get_realtime_circuit_breaker()
 
-        # 根据代码类型选择不同的获取方法
+        # 按代码类型与 source 参数路由：ETF 与股票同构（sina/tencent 直连腿
+        # 对基金代码同样返回行情，见 Q3 诚实化修正——原来 ETF 无视 source 恒走东财）
         if is_us_stock_code(stock_code):
             # 字母 ticker：美股不在支持范围，直接拒收
             logger.debug(f"[API跳过] {stock_code} 是字母 ticker，Akshare 不支持（美股不在支持范围）")
             return None
-        elif is_etf_code(stock_code):
-            source_key = "akshare_etf"
-            if not circuit_breaker.is_available(source_key):
-                logger.warning(f"[熔断] 数据源 {source_key} 处于熔断状态，跳过")
-                return None
-            return self._get_etf_realtime_quote(stock_code)
+        if source == "sina":
+            source_key = "akshare_sina"
+        elif source == "tencent":
+            source_key = "akshare_tencent"
         else:
-            source_key = f"akshare_{source}"
-            if not circuit_breaker.is_available(source_key):
-                logger.warning(f"[熔断] 数据源 {source_key} 处于熔断状态，跳过")
-                return None
-            # 普通 A 股：根据 source 选择数据源
-            if source == "sina":
-                return self._get_stock_realtime_quote_sina(stock_code)
-            elif source == "tencent":
-                return self._get_stock_realtime_quote_tencent(stock_code)
-            else:
-                return self._get_stock_realtime_quote_em(stock_code)
+            source_key = "akshare_etf" if is_etf_code(stock_code) else "akshare_em"
+        if not circuit_breaker.is_available(source_key):
+            logger.warning(f"[熔断] 数据源 {source_key} 处于熔断状态，跳过")
+            return None
+        if source == "sina":
+            return self._get_stock_realtime_quote_sina(stock_code)
+        if source == "tencent":
+            return self._get_stock_realtime_quote_tencent(stock_code)
+        if is_etf_code(stock_code):
+            return self._get_etf_realtime_quote(stock_code)
+        return self._get_stock_realtime_quote_em(stock_code)
     
     def _get_stock_realtime_quote_em(self, stock_code: str) -> Optional[UnifiedRealtimeQuote]:
         """
         获取普通 A 股实时行情数据（东方财富数据源）
-        
+
         数据来源：ak.stock_zh_a_spot_em()
         优点：数据最全，含量比、换手率、市盈率、市净率、总市值、流通市值等
         缺点：全量拉取，数据量大，容易超时/限流
+
+        装配（缓存/节流重试/熔断/哨兵/行定位）在 _snapshot_quote 单点；
+        本方法只提供端点数据：抓取函数 + 列映射。
         """
         import akshare as ak
-        circuit_breaker = get_realtime_circuit_breaker()
-        source_key = "akshare_em"
-        
-        try:
-            # 检查快照缓存
-            current_time = time.time()
-            df = _realtime_cache.get(current_time)
-            if df is None:
-                # 触发全量刷新
-                logger.info(f"[缓存未命中] 触发全量刷新 A股实时行情(东财)")
-                last_error: Optional[Exception] = None
-                for attempt in range(1, 3):
-                    try:
-                        self._throttle.wait()
-
-                        logger.info(f"[API调用] ak.stock_zh_a_spot_em() 获取A股实时行情... (attempt {attempt}/2)")
-                        import time as _time
-                        api_start = _time.time()
-
-                        df = ak.stock_zh_a_spot_em()
-
-                        api_elapsed = _time.time() - api_start
-                        logger.info(f"[API返回] ak.stock_zh_a_spot_em 成功: 返回 {len(df)} 只股票, 耗时 {api_elapsed:.2f}s")
-                        circuit_breaker.record_success(source_key)
-                        break
-                    except Exception as e:
-                        last_error = e
-                        logger.warning(f"[API错误] ak.stock_zh_a_spot_em 获取失败 (attempt {attempt}/2): {e}")
-                        time.sleep(min(2 ** attempt, 5))
-
-                # 更新缓存：成功缓存数据；失败也缓存空数据，避免同一轮任务对同一接口反复请求
-                if df is None:
-                    logger.error(f"[API错误] ak.stock_zh_a_spot_em 最终失败: {last_error}")
-                    circuit_breaker.record_failure(source_key, str(last_error))
-                    df = pd.DataFrame()
-                _realtime_cache.store(df, current_time)
-
-            if df is None or df.empty:
-                logger.warning(f"[实时行情] A股实时行情数据为空，跳过 {stock_code}")
-                return None
-            
-            # 查找指定股票
-            row = df[df['代码'] == stock_code]
-            if row.empty:
-                logger.warning(f"[API返回] 未找到股票 {stock_code} 的实时行情")
-                return None
-            
-            row = row.iloc[0]
-            
-            # 使用 types.py 中的统一转换函数
-            quote = UnifiedRealtimeQuote(
-                code=stock_code,
-                name=str(row.get('名称', '')),
-                source="akshare_em",
-                price=safe_float(row.get('最新价')),
-                change_pct=safe_float(row.get('涨跌幅')),
-                change_amount=safe_float(row.get('涨跌额')),
-                volume=safe_int(row.get('成交量')),
-                amount=safe_float(row.get('成交额')),
-                volume_ratio=safe_float(row.get('量比')),
-                turnover_rate=safe_float(row.get('换手率')),
-                amplitude=safe_float(row.get('振幅')),
-                open_price=safe_float(row.get('今开')),
-                high=safe_float(row.get('最高')),
-                low=safe_float(row.get('最低')),
-                pe_ratio=safe_float(row.get('市盈率-动态')),
-                pb_ratio=safe_float(row.get('市净率')),
-                total_mv=safe_float(row.get('总市值')),
-                circ_mv=safe_float(row.get('流通市值')),
-                change_60d=safe_float(row.get('60日涨跌幅')),
-                high_52w=safe_float(row.get('52周最高')),
-                low_52w=safe_float(row.get('52周最低')),
-            )
-            
-            logger.info(f"[实时行情-东财] {stock_code} {quote.name}: 价格={quote.price}, 涨跌={quote.change_pct}%, "
-                       f"量比={quote.volume_ratio}, 换手率={quote.turnover_rate}%")
-            return quote
-            
-        except Exception as e:
-            logger.error(f"[API错误] 获取 {stock_code} 实时行情(东财)失败: {e}")
-            circuit_breaker.record_failure(source_key, str(e))
-            return None
+        return snapshot_realtime_quote(
+            stock_code, source_key="akshare_em", source_label="东财(A股快照)",
+            cache=_realtime_cache, throttle=self._throttle,
+            fetch=ak.stock_zh_a_spot_em,
+            row_builder=_build_em_stock_quote,
+            code_columns="代码")
     
     def _get_stock_realtime_quote_sina(self, stock_code: str) -> Optional[UnifiedRealtimeQuote]:
         """
@@ -754,7 +693,7 @@ class AkshareFetcher(BaseFetcher):
             
         except Exception as e:
             api_elapsed = time.time() - api_start
-            category, detail = _classify_realtime_http_error(e)
+            category, detail = classify_http_error(e)
             failure_message = _build_realtime_failure_message(
                 source_name="新浪",
                 endpoint=SINA_REALTIME_ENDPOINT,
@@ -905,7 +844,7 @@ class AkshareFetcher(BaseFetcher):
             
         except Exception as e:
             api_elapsed = time.time() - api_start
-            category, detail = _classify_realtime_http_error(e)
+            category, detail = classify_http_error(e)
             failure_message = _build_realtime_failure_message(
                 source_name="腾讯",
                 endpoint=TENCENT_REALTIME_ENDPOINT,
@@ -922,95 +861,19 @@ class AkshareFetcher(BaseFetcher):
     
     def _get_etf_realtime_quote(self, stock_code: str) -> Optional[UnifiedRealtimeQuote]:
         """
-        获取 ETF 基金实时行情数据
-        
-        数据来源：ak.fund_etf_spot_em()
-        包含：最新价、涨跌幅、成交量、成交额、换手率等
-        
-        Args:
-            stock_code: ETF 代码
-            
-        Returns:
-            UnifiedRealtimeQuote 对象，获取失败返回 None
+        获取 ETF 基金实时行情数据（东方财富全量快照 ak.fund_etf_spot_em）
+
+        包含：最新价、涨跌幅、成交量、成交额、换手率等。
+        装配在 _snapshot_quote 单点；ETF 列名与股票快照不同（开盘价/最高价/最低价），
+        由 _build_em_etf_quote 承接。
         """
         import akshare as ak
-        circuit_breaker = get_realtime_circuit_breaker()
-        source_key = "akshare_etf"
-        
-        try:
-            # 检查快照缓存
-            current_time = time.time()
-            df = _etf_realtime_cache.get(current_time)
-            if df is None:
-                last_error: Optional[Exception] = None
-                for attempt in range(1, 3):
-                    try:
-                        self._throttle.wait()
-
-                        logger.info(f"[API调用] ak.fund_etf_spot_em() 获取ETF实时行情... (attempt {attempt}/2)")
-                        import time as _time
-                        api_start = _time.time()
-
-                        df = ak.fund_etf_spot_em()
-
-                        api_elapsed = _time.time() - api_start
-                        logger.info(f"[API返回] ak.fund_etf_spot_em 成功: 返回 {len(df)} 只ETF, 耗时 {api_elapsed:.2f}s")
-                        circuit_breaker.record_success(source_key)
-                        break
-                    except Exception as e:
-                        last_error = e
-                        logger.warning(f"[API错误] ak.fund_etf_spot_em 获取失败 (attempt {attempt}/2): {e}")
-                        time.sleep(min(2 ** attempt, 5))
-
-                if df is None:
-                    logger.error(f"[API错误] ak.fund_etf_spot_em 最终失败: {last_error}")
-                    circuit_breaker.record_failure(source_key, str(last_error))
-                    df = pd.DataFrame()
-                _etf_realtime_cache.store(df, current_time)
-
-            if df is None or df.empty:
-                logger.warning(f"[实时行情] ETF实时行情数据为空，跳过 {stock_code}")
-                return None
-            
-            # 查找指定 ETF
-            row = df[df['代码'] == stock_code]
-            if row.empty:
-                logger.warning(f"[API返回] 未找到 ETF {stock_code} 的实时行情")
-                return None
-            
-            row = row.iloc[0]
-            
-            # 使用 types.py 中的统一转换函数
-            # ETF 行情数据构建
-            quote = UnifiedRealtimeQuote(
-                code=stock_code,
-                name=str(row.get('名称', '')),
-                source="akshare_em",
-                price=safe_float(row.get('最新价')),
-                change_pct=safe_float(row.get('涨跌幅')),
-                change_amount=safe_float(row.get('涨跌额')),
-                volume=safe_int(row.get('成交量')),
-                amount=safe_float(row.get('成交额')),
-                volume_ratio=safe_float(row.get('量比')),
-                turnover_rate=safe_float(row.get('换手率')),
-                amplitude=safe_float(row.get('振幅')),
-                open_price=safe_float(row.get('开盘价')),
-                high=safe_float(row.get('最高价')),
-                low=safe_float(row.get('最低价')),
-                total_mv=safe_float(row.get('总市值')),
-                circ_mv=safe_float(row.get('流通市值')),
-                high_52w=safe_float(row.get('52周最高')),
-                low_52w=safe_float(row.get('52周最低')),
-            )
-            
-            logger.info(f"[ETF实时行情] {stock_code} {quote.name}: 价格={quote.price}, 涨跌={quote.change_pct}%, "
-                       f"换手率={quote.turnover_rate}%")
-            return quote
-            
-        except Exception as e:
-            logger.error(f"[API错误] 获取 ETF {stock_code} 实时行情失败: {e}")
-            circuit_breaker.record_failure(source_key, str(e))
-            return None
+        return snapshot_realtime_quote(
+            stock_code, source_key="akshare_etf", source_label="东财(ETF快照)",
+            cache=_etf_realtime_cache, throttle=self._throttle,
+            fetch=ak.fund_etf_spot_em,
+            row_builder=_build_em_etf_quote,
+            code_columns="代码")
     
     def get_market_stats(self) -> Optional[Dict[str, Any]]:
         """

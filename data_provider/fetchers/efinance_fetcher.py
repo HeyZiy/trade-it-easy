@@ -37,7 +37,7 @@ from tenacity import (
     before_sleep_log,
 )
 
-from data_provider._crosscut import Throttle, TtlSnapshotCache
+from data_provider._crosscut import Throttle, TtlSnapshotCache, classify_http_error
 
 # Timeout (seconds) for efinance library calls that go through eastmoney APIs
 # with no built-in timeout.  Prevents indefinite hangs when hosts are unreachable.
@@ -99,6 +99,7 @@ def _get_session() -> requests.Session:
 
 
 from data_provider.fetchers.base import BaseFetcher
+from data_provider.fetchers._snapshot_quote import snapshot_realtime_quote
 from data_provider.stats import calc_market_stats
 from data_provider.types import (
     KIND_BELONG_BOARD, KIND_SECTOR_QUOTE, KIND_STOCK_DAILY,
@@ -163,6 +164,90 @@ _realtime_cache = TtlSnapshotCache(ttl=600, label="实时行情(efinance)")
 _etf_realtime_cache = TtlSnapshotCache(ttl=600, label="ETF实时行情(efinance)")
 
 
+# 列名映射：efinance 可能返回中英两种列名（中英别名并列）
+_EFINANCE_COLS = {
+    '股票名称': 'name', 'name': 'name',
+    '最新价': 'price', 'price': 'price',
+    '涨跌幅': 'change_pct', 'change_pct': 'change_pct',
+    '涨跌额': 'change_amount', 'change_amount': 'change_amount',
+    '成交量': 'volume', 'volume': 'volume',
+    '成交额': 'amount', 'amount': 'amount',
+    '换手率': 'turnover_rate', 'turnover_rate': 'turnover_rate',
+    '振幅': 'amplitude', 'amplitude': 'amplitude',
+    '最高': 'high', 'high': 'high',
+    '最低': 'low', 'low': 'low',
+    '开盘': 'open_price', 'open': 'open_price',
+    '量比': 'volume_ratio', 'volume_ratio': 'volume_ratio',
+    '市盈率': 'pe_ratio', 'pe_ratio': 'pe_ratio',
+    '总市值': 'total_mv', 'total_mv': 'total_mv',
+    '流通市值': 'circ_mv', 'circ_mv': 'circ_mv',
+}
+
+# ETF 快照列较少：无量比/估值
+_EFINANCE_ETF_COLS = {
+    '股票名称': 'name', 'name': 'name',
+    '最新价': 'price', 'price': 'price',
+    '涨跌幅': 'change_pct', 'change_pct': 'change_pct',
+    '涨跌额': 'change_amount', 'change_amount': 'change_amount',
+    '成交量': 'volume', 'volume': 'volume',
+    '成交额': 'amount', 'amount': 'amount',
+    '换手率': 'turnover_rate', 'turnover_rate': 'turnover_rate',
+    '振幅': 'amplitude', 'amplitude': 'amplitude',
+    '最高': 'high', 'high': 'high',
+    '最低': 'low', 'low': 'low',
+    '开盘': 'open_price', 'open': 'open_price',
+}
+
+
+def _build_efinance_quote(row: pd.Series, stock_code: str) -> UnifiedRealtimeQuote:
+    """efinance A 股快照一行 → 统一报价（列映射为该端点本地数据）。"""
+    quote = UnifiedRealtimeQuote(
+        code=stock_code,
+        name=str(row.get(_EFINANCE_COLS['股票名称'], '')),
+        source="efinance",
+        price=safe_float(row.get(_EFINANCE_COLS['最新价'])),
+        change_pct=safe_float(row.get(_EFINANCE_COLS['涨跌幅'])),
+        change_amount=safe_float(row.get(_EFINANCE_COLS['涨跌额'])),
+        volume=safe_int(row.get(_EFINANCE_COLS['成交量'])),
+        amount=safe_float(row.get(_EFINANCE_COLS['成交额'])),
+        turnover_rate=safe_float(row.get(_EFINANCE_COLS['换手率'])),
+        amplitude=safe_float(row.get(_EFINANCE_COLS['振幅'])),
+        high=safe_float(row.get(_EFINANCE_COLS['最高'])),
+        low=safe_float(row.get(_EFINANCE_COLS['最低'])),
+        open_price=safe_float(row.get(_EFINANCE_COLS['开盘'])),
+        volume_ratio=safe_float(row.get(_EFINANCE_COLS['量比'])),
+        pe_ratio=safe_float(row.get(_EFINANCE_COLS['市盈率'])),
+        total_mv=safe_float(row.get(_EFINANCE_COLS['总市值'])),
+        circ_mv=safe_float(row.get(_EFINANCE_COLS['流通市值'])),
+    )
+    logger.info(f"[实时行情-efinance] {stock_code} {quote.name}: 价格={quote.price}, "
+                f"涨跌={quote.change_pct}%, 量比={quote.volume_ratio}, "
+                f"换手率={quote.turnover_rate}%")
+    return quote
+
+
+def _build_efinance_etf_quote(row: pd.Series, stock_code: str) -> UnifiedRealtimeQuote:
+    """efinance ETF 快照一行 → 统一报价（列名同股票但缺量比/估值列）。"""
+    quote = UnifiedRealtimeQuote(
+        code=stock_code,
+        name=str(row.get(_EFINANCE_ETF_COLS['股票名称'], '')),
+        source="efinance",
+        price=safe_float(row.get(_EFINANCE_ETF_COLS['最新价'])),
+        change_pct=safe_float(row.get(_EFINANCE_ETF_COLS['涨跌幅'])),
+        change_amount=safe_float(row.get(_EFINANCE_ETF_COLS['涨跌额'])),
+        volume=safe_int(row.get(_EFINANCE_ETF_COLS['成交量'])),
+        amount=safe_float(row.get(_EFINANCE_ETF_COLS['成交额'])),
+        turnover_rate=safe_float(row.get(_EFINANCE_ETF_COLS['换手率'])),
+        amplitude=safe_float(row.get(_EFINANCE_ETF_COLS['振幅'])),
+        high=safe_float(row.get(_EFINANCE_ETF_COLS['最高'])),
+        low=safe_float(row.get(_EFINANCE_ETF_COLS['最低'])),
+        open_price=safe_float(row.get(_EFINANCE_ETF_COLS['开盘'])),
+    )
+    logger.info(f"[ETF实时行情-efinance] {stock_code} {quote.name}: "
+                f"价格={quote.price}, 涨跌={quote.change_pct}%, 换手率={quote.turnover_rate}%")
+    return quote
+
+
 def _ef_call_with_timeout(func, *args, timeout=None, **kwargs):
     """Run an efinance library call in a thread with a timeout.
 
@@ -184,51 +269,6 @@ def _ef_call_with_timeout(func, *args, timeout=None, **kwargs):
     finally:
         # wait=False: calling thread returns immediately; worker cleans up later
         executor.shutdown(wait=False)
-
-
-def _classify_eastmoney_error(exc: Exception) -> Tuple[str, str]:
-    """
-    Classify Eastmoney request failures into stable log categories.
-    """
-    message = str(exc).strip()
-    lowered = message.lower()
-
-    remote_disconnect_keywords = (
-        'remotedisconnected',
-        'remote end closed connection without response',
-        'connection aborted',
-        'connection broken',
-        'protocolerror',
-    )
-    timeout_keywords = (
-        'timeout',
-        'timed out',
-        'readtimeout',
-        'connecttimeout',
-    )
-    rate_limit_keywords = (
-        'banned',
-        'blocked',
-        '频率',
-        'rate limit',
-        'too many requests',
-        '429',
-        '限制',
-        'forbidden',
-        '403',
-    )
-
-    if any(keyword in lowered for keyword in remote_disconnect_keywords):
-        return "remote_disconnect", message
-    if isinstance(exc, (TimeoutError, requests.exceptions.Timeout)) or any(
-        keyword in lowered for keyword in timeout_keywords
-    ):
-        return "timeout", message
-    if any(keyword in lowered for keyword in rate_limit_keywords):
-        return "rate_limit_or_anti_bot", message
-    if isinstance(exc, requests.exceptions.RequestException):
-        return "request_error", message
-    return "unknown_request_error", message
 
 
 class EfinanceFetcher(BaseFetcher):
@@ -283,7 +323,7 @@ class EfinanceFetcher(BaseFetcher):
         elapsed: float,
         is_etf: bool = False,
     ) -> Tuple[str, str]:
-        category, detail = _classify_eastmoney_error(exc)
+        category, detail = classify_http_error(exc)
         instrument_type = "ETF" if is_etf else "stock"
         message = (
             "Eastmoney 历史K线接口失败: "
@@ -570,184 +610,27 @@ class EfinanceFetcher(BaseFetcher):
             return self._get_etf_realtime_quote(stock_code)
 
         import efinance as ef
-        circuit_breaker = get_realtime_circuit_breaker()
-        source_key = "efinance"
-        
-        # 检查熔断器状态
-        if not circuit_breaker.is_available(source_key):
-            logger.warning(f"[熔断] 数据源 {source_key} 处于熔断状态，跳过")
-            return None
-        
-        try:
-            # 检查快照缓存
-            current_time = time.time()
-            df = _realtime_cache.get(current_time)
-            if df is None:
-                # 触发全量刷新
-                logger.info(f"[缓存未命中] 触发全量刷新 实时行情(efinance)")
-                self._throttle.wait()
-                
-                logger.info(f"[API调用] ef.stock.get_realtime_quotes() 获取实时行情...")
-                import time as _time
-                api_start = _time.time()
-                
-                # efinance 的实时行情 API (with timeout to avoid indefinite hangs)
-                df = _ef_call_with_timeout(ef.stock.get_realtime_quotes)
-                
-                api_elapsed = _time.time() - api_start
-                logger.info(f"[API返回] ef.stock.get_realtime_quotes 成功: 返回 {len(df)} 只股票, 耗时 {api_elapsed:.2f}s")
-                circuit_breaker.record_success(source_key)
-                
-                # 更新缓存
-                _realtime_cache.store(df, current_time)
-            
-            # 查找指定股票
-            # efinance 返回的列名可能是 '股票代码' 或 'code'
-            code_col = '股票代码' if '股票代码' in df.columns else 'code'
-            row = df[df[code_col] == stock_code]
-            if row.empty:
-                logger.warning(f"[API返回] 未找到股票 {stock_code} 的实时行情")
-                return None
-            
-            row = row.iloc[0]
-
-            # 列名映射：中文列名 → 标准列名（efinance 可能返回中英两种）
-            _col = {
-                '股票名称': 'name', 'name': 'name',
-                '最新价': 'price', 'price': 'price',
-                '涨跌幅': 'pct_chg', 'pct_chg': 'pct_chg',
-                '涨跌额': 'change', 'change': 'change',
-                '成交量': 'volume', 'volume': 'volume',
-                '成交额': 'amount', 'amount': 'amount',
-                '换手率': 'turnover_rate', 'turnover_rate': 'turnover_rate',
-                '振幅': 'amplitude', 'amplitude': 'amplitude',
-                '最高': 'high', 'high': 'high',
-                '最低': 'low', 'low': 'low',
-                '开盘': 'open', 'open': 'open',
-                '量比': 'volume_ratio', 'volume_ratio': 'volume_ratio',
-                '市盈率': 'pe_ratio', 'pe_ratio': 'pe_ratio',
-                '总市值': 'total_mv', 'total_mv': 'total_mv',
-                '流通市值': 'circ_mv', 'circ_mv': 'circ_mv',
-            }
-            quote = UnifiedRealtimeQuote(
-                code=stock_code,
-                name=str(row.get(_col.get('股票名称', 'name'), '')),
-                source="efinance",
-                price=safe_float(row.get(_col.get('最新价', 'price'))),
-                change_pct=safe_float(row.get(_col.get('涨跌幅', 'pct_chg'))),
-                change_amount=safe_float(row.get(_col.get('涨跌额', 'change'))),
-                volume=safe_int(row.get(_col.get('成交量', 'volume'))),
-                amount=safe_float(row.get(_col.get('成交额', 'amount'))),
-                turnover_rate=safe_float(row.get(_col.get('换手率', 'turnover_rate'))),
-                amplitude=safe_float(row.get(_col.get('振幅', 'amplitude'))),
-                high=safe_float(row.get(_col.get('最高', 'high'))),
-                low=safe_float(row.get(_col.get('最低', 'low'))),
-                open_price=safe_float(row.get(_col.get('开盘', 'open'))),
-                volume_ratio=safe_float(row.get(_col.get('量比', 'volume_ratio'))),
-                pe_ratio=safe_float(row.get(_col.get('市盈率', 'pe_ratio'))),
-                total_mv=safe_float(row.get(_col.get('总市值', 'total_mv'))),
-                circ_mv=safe_float(row.get(_col.get('流通市值', 'circ_mv'))),
-            )
-            
-            logger.info(f"[实时行情-efinance] {stock_code} {quote.name}: 价格={quote.price}, 涨跌={quote.change_pct}%, "
-                       f"量比={quote.volume_ratio}, 换手率={quote.turnover_rate}%")
-            return quote
-            
-        except FuturesTimeoutError:
-            logger.warning(f"[超时] ef.stock.get_realtime_quotes() 超过 {_EF_CALL_TIMEOUT}s，跳过 {stock_code}")
-            circuit_breaker.record_failure(source_key, "timeout")
-            return None
-        except Exception as e:
-            logger.error(f"[API错误] 获取 {stock_code} 实时行情(efinance)失败: {e}")
-            circuit_breaker.record_failure(source_key, str(e))
-            return None
+        # 装配（缓存/节流重试/熔断/哨兵/行定位）在 _snapshot_quote 单点；
+        # 本方法只提供端点数据：抓取函数 + 列映射。
+        return snapshot_realtime_quote(
+            stock_code, source_key="efinance", source_label="efinance(A股快照)",
+            cache=_realtime_cache, throttle=self._throttle,
+            fetch=lambda: _ef_call_with_timeout(ef.stock.get_realtime_quotes),
+            row_builder=_build_efinance_quote,
+            code_columns=("股票代码", "code"))
 
     def _get_etf_realtime_quote(self, stock_code: str) -> Optional[UnifiedRealtimeQuote]:
-        """
-        获取 ETF 实时行情
+        """ETF 实时行情：efinance 默认实时接口仅返回股票，需显式 ['ETF']。
 
-        efinance 默认实时接口仅返回股票数据，ETF 需要显式传入 ['ETF']。
+        装配在 _snapshot_quote 单点；行定位补零 6 位（ETF 表 code 列为 6 位字符串）。
         """
         import efinance as ef
-        circuit_breaker = get_realtime_circuit_breaker()
-        source_key = "efinance_etf"
-
-        if not circuit_breaker.is_available(source_key):
-            logger.warning(f"[熔断] 数据源 {source_key} 处于熔断状态，跳过")
-            return None
-
-        try:
-            current_time = time.time()
-            df = _etf_realtime_cache.get(current_time)
-            if df is None:
-                self._throttle.wait()
-
-                logger.info("[API调用] ef.stock.get_realtime_quotes(['ETF']) 获取ETF实时行情...")
-                import time as _time
-                api_start = _time.time()
-                df = _ef_call_with_timeout(ef.stock.get_realtime_quotes, ['ETF'])
-                api_elapsed = _time.time() - api_start
-
-                if df is not None and not df.empty:
-                    logger.info(f"[API返回] ETF 实时行情成功: {len(df)} 条, 耗时 {api_elapsed:.2f}s")
-                    circuit_breaker.record_success(source_key)
-                else:
-                    logger.warning(f"[API返回] ETF 实时行情为空, 耗时 {api_elapsed:.2f}s")
-                    df = pd.DataFrame()
-
-                _etf_realtime_cache.store(df, current_time)
-
-            if df is None or df.empty:
-                logger.warning(f"[实时行情] ETF实时行情数据为空(efinance)，跳过 {stock_code}")
-                return None
-
-            code_col = '股票代码' if '股票代码' in df.columns else 'code'
-            code_series = df[code_col].astype(str).str.zfill(6)
-            target_code = str(stock_code).strip().zfill(6)
-            row = df[code_series == target_code]
-            if row.empty:
-                logger.warning(f"[API返回] 未找到 ETF {stock_code} 的实时行情(efinance)")
-                return None
-
-            row = row.iloc[0]
-            _col = {
-                '股票名称': 'name', 'name': 'name',
-                '最新价': 'price', 'price': 'price',
-                '涨跌幅': 'pct_chg', 'pct_chg': 'pct_chg',
-                '涨跌额': 'change', 'change': 'change',
-                '成交量': 'volume', 'volume': 'volume',
-                '成交额': 'amount', 'amount': 'amount',
-                '换手率': 'turnover_rate', 'turnover_rate': 'turnover_rate',
-                '振幅': 'amplitude', 'amplitude': 'amplitude',
-                '最高': 'high', 'high': 'high',
-                '最低': 'low', 'low': 'low',
-                '开盘': 'open', 'open': 'open',
-            }
-            quote = UnifiedRealtimeQuote(
-                code=target_code,
-                name=str(row.get(_col.get('股票名称', 'name'), '')),
-                source="efinance",
-                price=safe_float(row.get(_col.get('最新价', 'price'))),
-                change_pct=safe_float(row.get(_col.get('涨跌幅', 'pct_chg'))),
-                change_amount=safe_float(row.get(_col.get('涨跌额', 'change'))),
-                volume=safe_int(row.get(_col.get('成交量', 'volume'))),
-                amount=safe_float(row.get(_col.get('成交额', 'amount'))),
-                turnover_rate=safe_float(row.get(_col.get('换手率', 'turnover_rate'))),
-                amplitude=safe_float(row.get(_col.get('振幅', 'amplitude'))),
-                high=safe_float(row.get(_col.get('最高', 'high'))),
-                low=safe_float(row.get(_col.get('最低', 'low'))),
-                open_price=safe_float(row.get(_col.get('开盘', 'open'))),
-            )
-
-            logger.info(
-                f"[ETF实时行情-efinance] {target_code} {quote.name}: "
-                f"价格={quote.price}, 涨跌={quote.change_pct}%, 换手率={quote.turnover_rate}%"
-            )
-            return quote
-        except Exception as e:
-            logger.error(f"[API错误] 获取 ETF {stock_code} 实时行情(efinance)失败: {e}")
-            circuit_breaker.record_failure(source_key, str(e))
-            return None
+        return snapshot_realtime_quote(
+            stock_code, source_key="efinance_etf", source_label="efinance(ETF快照)",
+            cache=_etf_realtime_cache, throttle=self._throttle,
+            fetch=lambda: _ef_call_with_timeout(ef.stock.get_realtime_quotes, ['ETF']),
+            row_builder=_build_efinance_etf_quote,
+            code_columns="股票代码", code_zfill=6)
 
     def get_market_stats(self) -> Optional[Dict[str, Any]]:
         """
