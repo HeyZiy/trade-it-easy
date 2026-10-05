@@ -5,7 +5,7 @@
 ===================================
 
 规格唯一来源：strategy/roe_quality_pool.md。持仓与资金事实来源是独立名义
-台账（src/quality_pool/config.py POOL_LEDGER_PATH），影子成交、无真实下单。
+台账（src/quality_pool/config.py POOL_LEDGER_PATH），模拟记账、无真实下单。
 
 两个子命令（deploy/crontab.server 各一条 cron）：
 
@@ -14,7 +14,8 @@
   冻结待执行计划；非调仓日或数据异常（整轮暂停）只推进日程。
 - execute（每交易日 09:31 开盘）：
   有待执行计划则整轮先卖后买（预算 = 总权益/20 冻结），否则只重试退出
-  队列；全部按 09:31 实时价影子记账，渲染报告 → 落盘 + 推送。
+  队列；全部按 09:31 实时价模拟记账（ST/停牌/涨跌停以执行时点状态表
+  为准），渲染报告 → 落盘 + 推送。真实账户由人工另行执行，不回流本系统。
 
 约定：
 - 信号时钟沿用 ROE 研究：T 收盘涨跌不参与本轮，质量/估值/波动/强弱截至
@@ -36,15 +37,13 @@ from src.trading_calendar import (is_trading_day, latest_trading_day_on_or_befor
 
 setup_env()
 
-from src.quality_pool import execution, feeds, screener  # noqa: E402
+from src.quality_pool import assembly, execution, feeds, screener  # noqa: E402
 from src.quality_pool.config import (  # noqa: E402
     ACCOUNT, EXIT_OUT_OF_POOL, EXIT_RANK_BELOW_BUFFER, POOL_LEDGER_PATH,
     REPORT_PREFIX, ROTATE_EVERY, SCORE_CLOSES, STATE_PATH, TOP_N,
 )
 from src.quality_pool import state as pool_state  # noqa: E402
 from src.task_io import notify, save_report       # noqa: E402
-from src.trade_ledger import execute_batch  # noqa: E402  (BatchResult 供报告行)
-from src.trade_ledger.batch import BatchOrder  # noqa: E402
 from src.trade_ledger.ledger import derive, load_trades  # noqa: E402
 
 logger = logging.getLogger(__name__)
@@ -69,50 +68,6 @@ def _next_rebalance_day(day: date) -> date:
     if len(upcoming) < ROTATE_EVERY:
         raise RuntimeError("交易日历不足以推算下一调仓日")
     return upcoming[ROTATE_EVERY - 1]
-
-
-def _snapshot(exec_date: str, selected: List[str]) -> execution.ExecSnapshot:
-    """09:31 执行时点快照：台账派生 + 实时价 + 当日状态/涨跌停。"""
-    import datetime as dt
-    trades = load_trades(POOL_LEDGER_PATH)
-    codes_held = list({t.code for t in trades})
-    prices, names = feeds.fetch_realtime_quotes(sorted(set(codes_held) | set(selected)))
-    snap0 = derive(trades, as_of=exec_date, prices=prices)
-    counts = {p["code"]: int(p["count"]) for p in snap0.positions}
-    avail = {p["code"]: int(p["avail_count"]) for p in snap0.positions}
-    equity = snap0.cash + sum(counts.get(c, 0) * prices.get(c, 0.0)
-                              for c in counts)
-    prev_day = _prev_trading_day(dt.date.fromisoformat(exec_date))
-    prev_close = feeds.raw_closes_at(sorted(set(counts) | set(selected)),
-                                     prev_day.isoformat())
-    limits = feeds.day_limits(sorted(set(counts) | set(selected)),
-                              exec_date, prev_close)
-    status = feeds.fetch_status(sorted(set(counts) | set(selected)), exec_date)
-    suspended = {c: bool(status.at[c, "is_suspended"])
-                 for c in status.index if c in set(counts) | set(selected)}
-    st = {c: (str(names.get(c, "")).upper().find("ST") >= 0)
-          for c in set(counts) | set(selected)}
-    return execution.ExecSnapshot(
-        trade_date=exec_date, counts=counts, avail=avail, cash=snap0.cash,
-        equity=equity, prices=prices, names=names, suspended=suspended,
-        st=st, limits=limits)
-
-
-def _record(plan: execution.ExecPlan, exec_date: str) -> List[str]:
-    """成台影子记账：批次语义（收敛/安全校验/先卖后买/逐单隔离）在 execute_batch。"""
-    if not plan.trades:
-        return []
-    snap = derive(load_trades(POOL_LEDGER_PATH), as_of=exec_date)
-    held = {p["code"]: int(p["count"]) for p in snap.positions}
-    orders = [BatchOrder(code=t.code, name=t.name, side=t.side, qty=t.qty,
-                         price=t.price, reason=t.reason)
-              for t in plan.trades]
-    res = execute_batch(orders, account=ACCOUNT, held_counts=held,
-                        cash=snap.cash, trade_date=exec_date,
-                        path=POOL_LEDGER_PATH)
-    if res.abort:
-        return [f"❌ 批次安全校验未过，整批零记账：{res.abort}"]
-    return [oc.outcome_line for oc in res.outcomes]
 
 
 # ── signal ──
@@ -210,7 +165,7 @@ def run_execute(today: date, dry_run: bool = False) -> str:
                            plan.get("signal_day"), prev)
             plan = None
 
-    snapshot = _snapshot(today_str, list((plan or {}).get("selected", [])))
+    snapshot = assembly.build_snapshot(today_str, list((plan or {}).get("selected", [])))
     if plan is not None:
         per = snapshot.equity / TOP_N
         exec_plan = execution.plan_round(plan["selected"], plan["exit_reasons"],
@@ -229,7 +184,8 @@ def run_execute(today: date, dry_run: bool = False) -> str:
             lines.append(f"- （dry-run）{t.side.upper()} {t.name}({t.code}) "
                          f"{t.qty}股 @ {t.price}（{t.reason}）")
     else:
-        lines += _record(exec_plan, today_str) or ["- 无成台交易"]
+        lines += (assembly.record_trades(exec_plan, today_str)
+                  or ["- 无成台交易"])
     for b in exec_plan.blocked:
         lines.append(f"- ⛔ {b.action.upper()} {b.code} 受阻（{b.reason}）：{b.blocked_by}")
 

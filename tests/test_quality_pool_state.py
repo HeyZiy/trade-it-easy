@@ -7,6 +7,7 @@ import pandas as pd
 import pytest
 
 import quality_pool as qp
+import src.quality_pool.config as pool_config
 from src.quality_pool import state as pool_state
 from src.quality_pool.execution import ExecSnapshot
 
@@ -18,6 +19,8 @@ def env(tmp_path, monkeypatch):
     ledger_path = tmp_path / "pool_ledger.jsonl"
     monkeypatch.setattr(qp, "STATE_PATH", str(state_path))
     monkeypatch.setattr(qp, "POOL_LEDGER_PATH", str(ledger_path))
+    # assembly 经 config 运行时读台账路径，此处单点替换
+    monkeypatch.setattr(pool_config, "POOL_LEDGER_PATH", str(ledger_path))
     monkeypatch.setattr(qp, "save_report", lambda report, prefix: str(tmp_path / "r.md"))
     monkeypatch.setattr(qp, "notify", lambda report: True)
 
@@ -61,13 +64,25 @@ def _patch_signal_data(monkeypatch, universe={"600001", "600002"},
     monkeypatch.setattr(feeds, "fetch_unlock_codes", lambda codes, d: set())
 
 
-def _snapshot_fixture(held: dict, cash: float, prices: dict, selected=()):
-    return ExecSnapshot(
-        trade_date="2026-10-02", counts=dict(held),
-        avail={c: n for c, n in held.items()}, cash=cash,
-        equity=cash + sum(held[c] * prices.get(c, 0.0) for c in held),
-        prices=dict(prices), names={c: f"股{c}" for c in list(held) + list(selected)},
-        suspended={}, st={}, limits={})
+def _patch_execute_data(monkeypatch, prices, names=None,
+                        suspended=(), st=()):
+    """execute 侧 feeds 假数据：真实 assembly.build_snapshot 被测，不在 qp 上打洞。"""
+    import src.quality_pool.feeds as feeds
+    codes = sorted(prices)
+    names = names or {c: f"股{c}" for c in codes}
+    status = pd.DataFrame(
+        {"is_st": [c in st for c in codes],
+         "is_suspended": [c in suspended for c in codes],
+         "high_limit": [prices.get(c, 10.0) * 1.1 for c in codes],
+         "low_limit": [prices.get(c, 10.0) * 0.9 for c in codes]},
+        index=pd.Index(codes, name="code"))
+    monkeypatch.setattr(feeds, "fetch_realtime_quotes",
+                        lambda cs: ({c: prices[c] for c in cs if c in prices},
+                                    {c: names.get(c, f"股{c}") for c in cs}))
+    monkeypatch.setattr(feeds, "raw_closes_at",
+                        lambda cs, asof: {c: prices.get(c, 10.0) for c in cs})
+    monkeypatch.setattr(feeds, "fetch_status",
+                        lambda cs, d: status.loc[[c for c in cs if c in status.index]])
 
 
 # ── state ──
@@ -124,9 +139,7 @@ def test_execute_round_buys_and_records(env):
     _patch_signal_data(env)
     qp.run_signal(dt.date(2026, 10, 1))
 
-    held, prices = {}, {"600001": 10.0, "600002": 20.0}
-    env.setattr(qp, "_snapshot", lambda d, selected: _snapshot_fixture(
-        held, 1_000_000.0, prices, selected))
+    _patch_execute_data(env, {"600001": 10.0, "600002": 20.0})
     qp.run_execute(dt.date(2026, 10, 2))
 
     from src.trade_ledger import load_trades
@@ -143,25 +156,20 @@ def test_execute_retry_exit_queue_daily(env):
     # 先建仓（台账落账）→ 落退出队列：停牌日受阻 → 复牌日卖出完成
     _patch_signal_data(env)
     qp.run_signal(dt.date(2026, 10, 1))
-    env.setattr(qp, "_snapshot", lambda d, selected: _snapshot_fixture(
-        {}, 1_000_000.0, {"600001": 10.0, "600002": 20.0}))
+    _patch_execute_data(env, {"600001": 10.0, "600002": 20.0})
     qp.run_execute(dt.date(2026, 10, 2))
 
     st = pool_state.load_state(qp.STATE_PATH)
     st["exit_queue"] = {"600001": "out_of_pool"}
     pool_state.save_state(st, qp.STATE_PATH)
 
-    held = {"600001": 5000}
-    snap1 = _snapshot_fixture(held, 950_000.0, {"600001": 10.0})
-    snap1.suspended["600001"] = True
-    env.setattr(qp, "_snapshot", lambda d, selected: snap1)
+    # 停牌日：受阻 → 队列留存；复牌日：卖出完成 → 队列清空
+    _patch_execute_data(env, {"600001": 10.0}, suspended={"600001"})
     qp.run_execute(dt.date(2026, 10, 5))
     assert pool_state.load_state(qp.STATE_PATH)["exit_queue"] == \
         {"600001": "out_of_pool"}
 
-    # 复牌日卖出完成 → 队列清空
-    snap2 = _snapshot_fixture(held, 950_000.0, {"600001": 10.0})
-    env.setattr(qp, "_snapshot", lambda d, selected: snap2)
+    _patch_execute_data(env, {"600001": 10.0})
     qp.run_execute(dt.date(2026, 10, 6))
     assert pool_state.load_state(qp.STATE_PATH)["exit_queue"] == {}
 
@@ -175,8 +183,7 @@ def test_execute_stale_plan_discarded(env):
     _patch_signal_data(env)
     qp.run_signal(dt.date(2026, 10, 1))
     # 跳过 10-02，直接 10-05 执行：计划已陈旧应丢弃、零记账
-    env.setattr(qp, "_snapshot", lambda d, selected: _snapshot_fixture(
-        {}, 1_000_000.0, {}))
+    _patch_execute_data(env, {})
     report = qp.run_execute(dt.date(2026, 10, 5))
     st = pool_state.load_state(qp.STATE_PATH)
     assert st["pending_plan"] is None

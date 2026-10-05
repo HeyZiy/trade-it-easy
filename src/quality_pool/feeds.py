@@ -350,10 +350,15 @@ def raw_closes_at(codes: List[str], asof: str) -> Dict[str, float]:
 
 
 def day_limits(codes: List[str], exec_date: str,
-               prev_close: Dict[str, float]) -> Dict[str, Tuple[float, float]]:
-    """执行日涨跌停价：状态表有值用官方值，缺失回退 前收×(1±10%)（主板）。"""
+               prev_close: Dict[str, float],
+               status: Optional[pd.DataFrame] = None) -> Dict[str, Tuple[float, float]]:
+    """执行日涨跌停价：状态表有值用官方值，缺失回退 前收×(1±10%)（主板）。
+
+    status 可传已拉取的状态表（装配层与停牌/ST 共享单次调用）；缺省时自行拉取。
+    """
     limits: Dict[str, Tuple[float, float]] = {}
-    status = fetch_status(codes, exec_date)
+    if status is None:
+        status = fetch_status(codes, exec_date)
     for code in codes:
         if code in status.index:
             high = status.at[code, "high_limit"]
