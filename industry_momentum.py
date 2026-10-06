@@ -139,8 +139,8 @@ def run(dry_run: bool = False) -> str:
             lines.append(f"- [DRY] {o.action.upper()} {o.name}({o.code})"
                          f" {o.shares}股 ≈ {o.amount:,.0f}元（{o.reason}）")
     else:
-        held_counts = {p.get("code", ""): int(p.get("count", 0) or 0)
-                       for p in positions}
+        from src.trade_ledger import held_counts_of
+        held_counts = held_counts_of(positions)
         abort, exec_lines = _execute(orders, trade_date,
                                      held_counts=held_counts,
                                      cash=avail_balance)

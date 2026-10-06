@@ -44,7 +44,7 @@ def build_snapshot(exec_date: str, selected: List[str]) -> execution.ExecSnapsho
     prices, names = feeds.fetch_realtime_quotes(codes)
 
     snap0 = derive(trades, as_of=exec_date, prices=prices)
-    counts = {p["code"]: int(p["count"]) for p in snap0.positions}
+    counts = snap0.held_counts()
     avail = {p["code"]: int(p["avail_count"]) for p in snap0.positions}
 
     prev_day = trading_calendar.latest_trading_day_on_or_before(
@@ -81,7 +81,7 @@ def record_trades(plan: execution.ExecPlan, exec_date: str) -> List[str]:
     if not plan.trades:
         return []
     snap = derive(load_trades(config.POOL_LEDGER_PATH), as_of=exec_date)
-    held = {p["code"]: int(p["count"]) for p in snap.positions}
+    held = snap.held_counts()
     orders = [BatchOrder(code=t.code, name=t.name, side=t.side, qty=t.qty,
                          price=t.price, reason=t.reason)
               for t in plan.trades]

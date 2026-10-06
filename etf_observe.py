@@ -373,7 +373,8 @@ def _execute_batch(alloc: dict, ledger_path=None) -> str:
         lines.append("无调仓指令，本次不执行。")
         return "\n".join(lines)
 
-    held = {p.get("code", ""): int(p.get("count", 0) or 0) for p in alloc["positions"]}
+    from src.trade_ledger import held_counts_of
+    held = held_counts_of(alloc["positions"])
     price_map = {p.get("code", ""): float(p.get("current_price", 0) or 0)
                  for p in alloc["positions"]}
     batch_orders = [BatchOrder(

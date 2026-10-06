@@ -123,9 +123,20 @@ def load_trades(path: Path | str = DEFAULT_LEDGER_PATH) -> List[TradeRecord]:
 
 # ── 读侧推导 ──
 
+def held_counts_of(positions: list) -> dict:
+    """妙想同形持仓 dict 列表 → {code: 持仓股数}（读侧解析单点，勿在入口重写）。"""
+    return {p["code"]: int(p["count"]) for p in positions}
+
+
 @dataclass
 class LedgerSnapshot:
     """一次推导的完整视图：持仓供料 + 入场日 + 资金敞口。"""
+    def held_counts(self) -> dict:
+        """{code: 持仓股数}——妙想同形持仓 dict 的读侧标准解析单点。
+
+        入口脚本原各自写一遍字典推导（妙想-dict 形状漏出接口的代价），
+        收编此处后形状知识不再过 seam。"""
+        return held_counts_of(self.positions)
     positions: List[dict]
     entry_map: Dict[str, str]
     cash: float

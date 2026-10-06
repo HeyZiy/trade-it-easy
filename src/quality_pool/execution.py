@@ -5,6 +5,10 @@
 受阻事件；记账交给 trade_ledger.execute_batch（通用批次安全校验单点）。
 本模块零 I/O：真实下单不存在，成交价 = 09:31 实时价（按判定价模拟记账）。
 
+资金口径两层关系（勿混）：affordable_shares 是计划侧费用感知预检
+（佣金+滑点，从严），execute_batch 安全校验 2 是记账侧费用盲检
+（买入 ≤ 现金+卖出回款）——计划量必然通过记账校验，严口径在前。
+
 执行序（规格三节，须保留）：先待退出仓 → 减超额留存仓 → 按目标名单顺序
 补不足（旧仓排新仓前）。现金受限时该顺序影响实际组合。
 """
@@ -14,6 +18,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Dict, List, Optional, Tuple
 
+from src.mx.executor import floor_lot  # 整手收敛单点（勿在他处重写）
 from src.quality_pool.config import (
     LIMIT_PAD, MIN_COMMISSION, FEE_COMMISSION, SLIPPAGE_SPREAD, TOP_N,
 )
@@ -69,10 +74,6 @@ def affordable_shares(cash: float, price: float) -> int:
     return min(by_rate, by_minimum)
 
 
-def _lot_floor(qty: float) -> int:
-    return int(qty // 100) * 100
-
-
 def _sell_block(code: str, snap: ExecSnapshot) -> Optional[str]:
     if snap.suspended.get(code, False):
         return "paused"
@@ -98,7 +99,7 @@ def _buy_block(code: str, snap: ExecSnapshot) -> Optional[str]:
 
 
 def _sellable_qty(code: str, snap: ExecSnapshot) -> int:
-    return _lot_floor(min(snap.counts.get(code, 0), snap.avail.get(code, 0)))
+    return floor_lot(min(snap.counts.get(code, 0), snap.avail.get(code, 0)))
 
 
 def plan_exit_retry(exit_queue: Dict[str, str], snap: ExecSnapshot) -> ExecPlan:
@@ -173,14 +174,14 @@ def plan_round(selected: List[str], exit_reasons: Dict[str, str],
         px = snap.prices.get(code)
         if px is None:
             continue
-        reduction = _lot_floor(current - per_budget / px)
+        reduction = floor_lot(current - per_budget / px)
         if reduction <= 0:
             continue
         blocked = _sell_block(code, snap)
         if blocked is not None:
             result.blocked.append(BlockedEvent(code, "sell", "equal_weight", blocked))
             continue
-        qty = _lot_floor(min(reduction, snap.avail.get(code, 0)))
+        qty = floor_lot(min(reduction, snap.avail.get(code, 0)))
         if qty <= 0:
             result.blocked.append(BlockedEvent(code, "sell", "equal_weight", "no_closeable"))
             continue
@@ -200,14 +201,14 @@ def plan_round(selected: List[str], exit_reasons: Dict[str, str],
         if blocked is not None:
             result.blocked.append(BlockedEvent(code, "buy", "equal_weight", blocked))
             continue
-        desired = _lot_floor(per_budget / px)
+        desired = floor_lot(per_budget / px)
         delta = desired - current
         if delta < 100:
             continue
         if current == 0 and code not in reserved and len(reserved) >= TOP_N:
             result.blocked.append(BlockedEvent(code, "buy", "equal_weight", "slot"))
             continue
-        qty = _lot_floor(min(delta, affordable_shares(cash, px)))
+        qty = floor_lot(min(delta, affordable_shares(cash, px)))
         if qty < 100:
             result.blocked.append(BlockedEvent(code, "buy", "equal_weight", "cash/lot"))
             continue

@@ -24,7 +24,6 @@ SCORE_SKIP_RECENT = 20   # 跳过最近 20 个交易日：R = P(T−21)/P(T−12
 
 # ── 三、买卖与预算 ──
 BUDGET_DIVISOR = TOP_N               # 单只目标市值 = 策略账户总权益 / 20
-LOT_SIZE = 100
 FEE_COMMISSION = 0.00025             # 比例佣金（资金检查用；台账本身不记费用）
 MIN_COMMISSION = 5.0                 # 最低佣金（资金检查用）
 SLIPPAGE_SPREAD = 0.002              # 价差参数，买/卖各一半（资金检查用）

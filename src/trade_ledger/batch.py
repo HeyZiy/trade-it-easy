@@ -113,7 +113,8 @@ def execute_batch(orders: List[BatchOrder], *, account: str,
             return BatchResult(
                 abort=f"{o.name}({o.code}) 卖出 {q} 股 > 持仓 {held} 股")
 
-    # 安全校验 2：买入总额不得超过台账现金 + 卖出回款
+    # 安全校验 2：买入总额不得超过台账现金 + 卖出回款（费用盲检；
+    # 计划侧 affordable_shares 已按费用从严预检，严口径在前，见 quality_pool/execution）
     sell_amount = sum(q * o.price for o, q in sells)
     buy_amount = sum(q * o.price for o, q in buys)
     if buy_amount > cash + sell_amount:
