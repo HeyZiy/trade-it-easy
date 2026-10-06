@@ -38,7 +38,7 @@ from data_provider.types import (
 )
 from data_provider.codes import is_bse_code, is_st_stock, is_kc_cy_stock, market_suffix, normalize_stock_code, is_etf_code
 from data_provider.codes import is_us_stock_code
-from src.config import get_config
+# token 由组装点（manager）供料：本模块零 src 依赖（import 本包不再拉 app config）
 import os
 from zoneinfo import ZoneInfo
 
@@ -73,12 +73,15 @@ class TushareFetcher(BaseFetcher):
     # 实时端点自声明（源名唯一权威，merge_realtime_quotes 按此建索引）
     REALTIME_VARIANTS = {"tushare": {}}
 
-    def __init__(self, rate_limit_per_minute: int = 80):
+    def __init__(self, rate_limit_per_minute: int = 80,
+                 token: Optional[str] = None):
         """
         初始化 TushareFetcher
 
         Args:
             rate_limit_per_minute: 每分钟最大请求数（默认80，Tushare免费配额）
+            token: Tushare API token。由组装点供料（manager 读 config 传入）；
+                   None = 未配置，此源降级为默认优先级且不可用
         """
         self.rate_limit_per_minute = rate_limit_per_minute
         self._call_count = 0  # 当前分钟内的调用次数
@@ -87,39 +90,37 @@ class TushareFetcher(BaseFetcher):
         self.date_list = None # 交易日列表缓存
 
         # 尝试初始化 API
-        self._init_api()
+        self._init_api(token)
 
         # 根据 API 初始化结果动态调整优先级
-        self.priority = self._determine_priority()
-    
-    def _init_api(self) -> None:
+        self.priority = self._determine_priority(token)
+
+    def _init_api(self, token: Optional[str]) -> None:
         """
         初始化 Tushare API
-        
-        如果 Token 未配置，此数据源将不可用
+
+        如果 Token 未提供，此数据源将不可用
         """
-        config = get_config()
-        
-        if not config.tushare_token:
-            logger.warning("Tushare Token 未配置，此数据源不可用")
+        if not token:
+            logger.warning("Tushare Token 未提供（组装点未供料），此数据源不可用")
             return
-        
+
         try:
             import tushare as ts
-            
+
             # Set Token
-            ts.set_token(config.tushare_token)
-            
+            ts.set_token(token)
+
             # Get API instance
             self._api = ts.pro_api()
-            
+
             # Fix: tushare SDK 1.4.x hardcodes api.waditu.com/dataapi which may
             # be unavailable (503). Monkey-patch the query method to use the
             # official api.tushare.pro endpoint which posts to root URL.
-            self._patch_api_endpoint(config.tushare_token)
+            self._patch_api_endpoint(token)
 
             logger.info("Tushare API 初始化成功")
-            
+
         except Exception as e:
             logger.error(f"Tushare API 初始化失败: {e}")
             self._api = None
@@ -160,25 +161,22 @@ class TushareFetcher(BaseFetcher):
         self._api.query = types.MethodType(patched_query, self._api)
         logger.debug(f"Tushare API endpoint patched to {TUSHARE_API_URL}")
 
-    def _determine_priority(self) -> int:
+    def _determine_priority(self, token: Optional[str]) -> int:
         """
-        根据 Token 配置和 API 初始化状态确定优先级
+        根据 token 与 API 初始化状态确定优先级
 
         策略：
-        - Token 配置且 API 初始化成功：优先级 -1（仅次于 AmazingData 的 -2）
+        - token 已供料且 API 初始化成功：优先级 -1（仅次于 AmazingData 的 -2）
         - 其他情况：优先级 2（默认）
 
         Returns:
             优先级数字（-2=最高，数字越大优先级越低）
         """
-        config = get_config()
-
-        if config.tushare_token and self._api is not None:
-            # Token 配置且 API 初始化成功，提升为次高优先级（仅次于 AmazingData）
-            logger.info("✅ 检测到 TUSHARE_TOKEN 且 API 初始化成功，Tushare 数据源优先级提升 (Priority -1，仅次于 AmazingData)")
+        if token and self._api is not None:
+            logger.info("✅ Tushare token 已供料且 API 初始化成功，优先级提升 (Priority -1，仅次于 AmazingData)")
             return -1
 
-        # Token 未配置或 API 初始化失败，保持默认优先级
+        # Token 未供料或 API 初始化失败，保持默认优先级
         return 2
 
     def is_available(self) -> bool:

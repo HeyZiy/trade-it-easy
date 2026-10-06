@@ -9,14 +9,21 @@
 3. 校验数据新鲜度：最新 bar 必须覆盖到最近交易日
 4. A 股主源缺换手率时，从其余 A 股源回补该列
 
-边界：不含单源知识、不持有实例 —— fetcher 集合由调用方（manager / 研究脚本）传入。
+边界：不含单源知识、不持有实例 —— fetcher 集合由调用方（manager / 研究脚本）传入；
+交易日历以 `latest_trading_day` 谓词注入（组装点 manager 供料），本模块零 src 依赖。
 
 ETF/指数日线不走这里（见 bars.py）。
+
+新鲜度契约（显式，勿静默）：
+- end_date 给值 → 最新 bar 必须覆盖到收敛交易日（注入谓词把周末/节假日收敛到
+  最近交易日，避免把整条源链误判过期）；日历调用异常 → warning 后放行；
+- end_date=None → 「要尽可能新」的宽松口径，显式跳过检查（warning 一次）。
+  盘前/盘中以昨收为最新 bar 的调用依赖此口径；要严格校验请显式传 end_date。
 """
 import logging
 import time
 from datetime import date, timedelta
-from typing import Any, List, Optional
+from typing import Any, Callable, List, Optional
 
 import pandas as pd
 
@@ -30,19 +37,6 @@ logger = logging.getLogger(__name__)
 # 不覆盖主源已有有效数据；补齐后仍整列缺失则告警，交由下游降级/跳过处理。
 # 回退前先按各源的 SUPPORTS_COLUMNS 能力声明过滤，跳过日线接口确定没有该列的源。
 BACKFILL_COLUMNS = ['turnover_rate']
-
-
-def _clamp_to_last_trading_day(d: date) -> date:
-    """把日期收敛到 ≤ d 的最近交易日。
-
-    新鲜度检查的目标日期不能直接用调用方传入的 end_date（常为 date.today()）：
-    周末/节假日不是交易日，行情永远不会有当天的 K 线，直接比对会把整条数据源链
-    误判为"数据过期"（例如周末运行的全池任务）。
-    谓词单点在 trading_calendar.latest_trading_day_on_or_before（fallback="weekday"
-    口径：日历拉取失败退化为周一~周五，节假日情形宁可放行也不误杀）。
-    """
-    from src.trading_calendar import latest_trading_day_on_or_before
-    return latest_trading_day_on_or_before(d, fallback="weekday")
 
 
 def _backfill_missing_columns(
@@ -106,6 +100,8 @@ def fetch_stock_daily(
     start_date: Optional[str] = None,
     end_date: Optional[str] = None,
     days: int = 30,
+    *,
+    latest_trading_day: Optional[Callable[[date], date]] = None,
 ) -> pd.DataFrame:
     """按需求取个股日线（多源 failover）。
 
@@ -113,6 +109,8 @@ def fetch_stock_daily(
         need: kind=stock_daily 的需求（market 由 codes.classify_market 判定）
         fetchers: 已实例化的数据源列表（按优先级）
         start_date / end_date / days: 取数窗口
+        latest_trading_day: 交易日历谓词（date → ≤date 的最近交易日），组装点注入；
+            None = 无日历可用，新鲜度检查整体跳过（warning 一次）
 
     Returns:
         标准化日线 DataFrame（命中哪个数据源见日志）
@@ -127,6 +125,16 @@ def fetch_stock_daily(
     total_fetchers = len(candidates)
     request_start = time.time()
 
+    # 新鲜度口径一次性声明（勿在逐源循环里静默降级）：
+    # - end_date 未指定 → 宽松口径（见模块 docstring），warning 一次；
+    # - 无日历 → 检查不可用，warning 一次（组装点应注入，见 manager）。
+    check_freshness = latest_trading_day is not None and end_date is not None
+    if end_date is None:
+        logger.warning("[新鲜度] end_date 未指定：宽松口径，跳过新鲜度检查"
+                       "（要严格校验请显式传 end_date）")
+    elif latest_trading_day is None:
+        logger.warning("[新鲜度] 未注入交易日历：新鲜度检查不可用")
+
     for attempt, fetcher in enumerate(candidates, start=1):
         try:
             logger.info(f"[数据源尝试 {attempt}/{total_fetchers}] [{fetcher.name}] 获取 {stock_code}...")
@@ -138,22 +146,22 @@ def fetch_stock_daily(
             )
 
             if df is not None and not df.empty:
-                # 检查数据新鲜度：最新日期必须 >= 请求截止日对应的最近交易日
-                # （end_date 本身可能是周末/节假日，须先收敛，见 _clamp_to_last_trading_day）
-                try:
-                    df_latest = pd.to_datetime(df['date'].max()).date()
-                    target_date = pd.to_datetime(end_date).date() if isinstance(end_date, str) else end_date
-                    target_date = _clamp_to_last_trading_day(target_date)
-                    # 简单判断：如果数据最新日期 < 目标日期，视为过期
-                    if df_latest < target_date:
-                        raise DataFetchError(
-                            f"数据过期(最新:{df_latest}, 需要:{target_date})"
-                        )
-                except DataFetchError:
-                    raise
-                except Exception as e:
-                    # 新鲜度检查出错，记录但继续使用数据
-                    logger.debug(f"[{fetcher.name}] 数据新鲜度检查失败: {e}")
+                # 新鲜度检查：最新 bar 日期 ≥ end_date 收敛到的最近交易日。
+                # 收敛由注入谓词完成（end_date 常为周末/节假日，直接比对会误判整条链过期）。
+                if check_freshness:
+                    try:
+                        df_latest = pd.to_datetime(df['date'].max()).date()
+                        target_date = pd.to_datetime(end_date).date() if isinstance(end_date, str) else end_date
+                        target_date = latest_trading_day(target_date)
+                        if df_latest < target_date:
+                            raise DataFetchError(
+                                f"数据过期(最新:{df_latest}, 需要:{target_date})"
+                            )
+                    except DataFetchError:
+                        raise
+                    except Exception as e:
+                        # 日历异常：可见但不阻断（放行本源数据，与宽松口径一致）
+                        logger.warning(f"[{fetcher.name}] 数据新鲜度检查异常，放行: {e}")
 
                 elapsed = time.time() - request_start
                 logger.info(

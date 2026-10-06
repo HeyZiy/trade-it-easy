@@ -9,11 +9,15 @@
 - get_realtime_quote：实时报价 → A 股委托 realtime.merge_realtime_quotes 跨源合并
 - get_market_stats / get_main_fund_flow：路由.routing.query_first（多源取首个非空）
 
-分层：codes/classify_market（市场归类）→ routing（筛源 + failover）→ daily/realtime（策略）
+分层：codes/classify_market（市场归属）→ routing（筛源 + failover）→ daily/realtime（策略）
 → 本类（构造与持有 fetcher 集合）。ETF/指数日线见 bars.py。
+
+组装点（composition root）：data_provider 对 src 的根依赖只允许在本模块出现——
+realtime 开关/优先级在构造时读一次 src.config；交易日历谓词延迟自
+src.trading_calendar 供料给 daily 管道。其余模块（daily/bars/各 fetcher）零 src 依赖。
 """
 import logging
-from typing import Optional, List, Dict, Any
+from typing import Any, Callable, Dict, List, Optional
 
 import pandas as pd
 
@@ -28,6 +32,9 @@ from .types import (
 from .realtime import merge_realtime_quotes
 
 logger = logging.getLogger(__name__)
+
+# src.config 不可用时的 realtime 兜底口径（与 config 默认一致；正常路径不走）
+_FALLBACK_REALTIME_PRIORITY = "tencent,akshare_sina,efinance,akshare_em"
 
 
 def get_fetcher():
@@ -57,18 +64,31 @@ class DataFetcherManager:
     def __init__(self, fetchers: Optional[List[BaseFetcher]] = None):
         """
         初始化管理器
-        
+
         Args:
             fetchers: 数据源列表（可选，默认按优先级自动创建）
         """
         self._fetchers: List[BaseFetcher] = []
-        
+
         if fetchers:
             # 按优先级排序
             self._fetchers = sorted(fetchers, key=lambda f: f.priority)
         else:
             # 默认数据源将在首次使用时延迟加载
             self._init_default_fetchers()
+
+        # 组装点收敛：realtime 口径构造时读一次（get_fetcher 每次新构造，
+        # 与原先调用时读取等价）；日历谓词延迟加载，供 daily 管道。
+        self._latest_trading_day: Optional[Callable[[Any], Any]] = None
+        try:
+            from src.config import get_config
+            _config = get_config()
+            self._realtime_enabled = bool(_config.enable_realtime_quote)
+            self._realtime_source_priority = _config.realtime_source_priority
+        except Exception as e:
+            logger.warning(f"[组装] src.config 不可用，realtime 按全开+兜底优先级: {e}")
+            self._realtime_enabled = True
+            self._realtime_source_priority = _FALLBACK_REALTIME_PRIORITY
 
 
     def _init_default_fetchers(self) -> None:
@@ -120,6 +140,19 @@ class DataFetcherManager:
         logger.info(f"已初始化 {len(self._fetchers)} 个数据源（按优先级）: {priority_info}")
 
     
+    def _latest_trading_day_fn(self) -> Optional[Callable[[Any], Any]]:
+        """交易日历谓词（date → ≤date 的最近交易日），延迟供料给 daily 新鲜度检查。
+
+        只在首次调用时 import src.trading_calendar；失败返回 None（daily 侧显式告警）。
+        """
+        if self._latest_trading_day is None:
+            try:
+                from src.trading_calendar import latest_trading_day_on_or_before
+                self._latest_trading_day = latest_trading_day_on_or_before
+            except Exception as e:
+                logger.warning(f"[组装] 交易日历不可用，日线新鲜度检查将跳过: {e}")
+        return self._latest_trading_day
+
     def get_daily_data(
         self,
         stock_code: str,
@@ -153,8 +186,8 @@ class DataFetcherManager:
         code = normalize_stock_code(stock_code)
         need = Need(KIND_STOCK_DAILY, code, classify_market(code))
         return fetch_stock_daily(
-            need, self._fetchers, start_date=start_date, end_date=end_date, days=days
-        )
+            need, self._fetchers, start_date=start_date, end_date=end_date,
+            days=days, latest_trading_day=self._latest_trading_day_fn())
     
 
 
@@ -176,18 +209,14 @@ class DataFetcherManager:
         # Normalize code (strip SH/SZ prefix etc.)
         stock_code = normalize_stock_code(stock_code)
 
-        from src.config import get_config
-
-        config = get_config()
-
-        # 如果实时行情功能被禁用，直接返回 None
-        if not config.enable_realtime_quote:
+        # 如果实时行情功能被禁用，直接返回 None（口径在组装点读定，见 __init__）
+        if not self._realtime_enabled:
             logger.debug(f"[实时行情] 功能已禁用，跳过 {stock_code}")
             return None
 
         # 跨源合并（A 股按 source_priority）抽离为与 manager 解耦的纯函数。
         # 未来剪除日线杂活后，调用方只需持有 fetcher 集合即可直接调用，不再依赖本类。
-        source_priority = config.realtime_source_priority.split(',')
+        source_priority = self._realtime_source_priority.split(',')
         return merge_realtime_quotes(stock_code, self._fetchers, source_priority)
 
     def get_market_stats(self) -> Dict[str, Any]:
