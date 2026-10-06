@@ -24,7 +24,6 @@ import os
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor, TimeoutError as FuturesTimeoutError
-from dataclasses import dataclass
 from typing import Optional, Dict, Any, Tuple
 
 import pandas as pd
@@ -108,49 +107,6 @@ from data_provider.types import (
     get_realtime_circuit_breaker, safe_float, safe_int,
 )
 from data_provider.codes import is_bse_code, is_st_stock, is_kc_cy_stock, normalize_stock_code, is_etf_code, is_us_stock_code
-
-
-# EfinanceRealtimeQuote 别名（外部统一引用 UnifiedRealtimeQuote）
-@dataclass
-class EfinanceRealtimeQuote:
-    """
-    实时行情数据（来自 efinance）别名
-
-    新代码建议使用 UnifiedRealtimeQuote
-    """
-    code: str
-    name: str = ""
-    price: float = 0.0           # 最新价
-    change_pct: float = 0.0      # 涨跌幅(%)
-    change_amount: float = 0.0   # 涨跌额
-    
-    # 量价指标
-    volume: int = 0              # 成交量
-    amount: float = 0.0          # 成交额
-    turnover_rate: float = 0.0   # 换手率(%)
-    amplitude: float = 0.0       # 振幅(%)
-    
-    # 价格区间
-    high: float = 0.0            # 最高价
-    low: float = 0.0             # 最低价
-    open_price: float = 0.0      # 开盘价
-    
-    def to_dict(self) -> Dict[str, Any]:
-        """转换为字典"""
-        return {
-            'code': self.code,
-            'name': self.name,
-            'price': self.price,
-            'change_pct': self.change_pct,
-            'change_amount': self.change_amount,
-            'volume': self.volume,
-            'amount': self.amount,
-            'turnover_rate': self.turnover_rate,
-            'amplitude': self.amplitude,
-            'high': self.high,
-            'low': self.low,
-            'open': self.open_price,
-        }
 
 
 logger = logging.getLogger(__name__)

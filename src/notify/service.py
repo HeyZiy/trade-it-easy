@@ -233,35 +233,3 @@ class NotificationService(EmailSender):
             logger.error(f"飞书推送异常: {e}")
             return False
 
-    def save_report_to_file(
-        self, 
-        content: str, 
-        filename: Optional[str] = None
-    ) -> str:
-        """
-        保存日报到本地文件
-        
-        Args:
-            content: 日报内容
-            filename: 文件名（可选，默认按日期生成）
-            
-        Returns:
-            保存的文件路径
-        """
-        from pathlib import Path
-        
-        if filename is None:
-            date_str = datetime.now().strftime('%Y%m%d')
-            filename = f"report_{date_str}.md"
-        
-        # 确保 reports 目录存在（使用项目根目录下的 reports）
-        reports_dir = Path(__file__).parent.parent.parent / 'reports'
-        reports_dir.mkdir(parents=True, exist_ok=True)
-        
-        filepath = reports_dir / filename
-        
-        with open(filepath, 'w', encoding='utf-8') as f:
-            f.write(content)
-        
-        logger.info(f"日报已保存到: {filepath}")
-        return str(filepath)

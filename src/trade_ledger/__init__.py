@@ -1,15 +1,14 @@
 # -*- coding: utf-8 -*-
-"""名义影子成交台账（跨策略共享，有交易语义）。
+"""名义成交台账（跨策略共享，有交易语义）。
 
 持仓/资金唯一事实来源：append-only JSONL 流水 + 纯函数推导视图。
 接口面三个动词——
 
-- append_trade：写侧单笔（cron 影子成交确认 / book.py 手动建仓）；
+- append_trade：写侧单笔（cron 模拟记账确认 / book.py 手动建仓）；
 - execute_batch：写侧批次（batch.py）——整手收敛、两项通用安全校验
   （卖量≤持仓、买额≤现金+卖出回款）、先卖后买、逐单隔离，返回结构化
   BatchResult 供入口纯渲染；策略自有约束（卫星预算等）留在消费方不进本接口；
 - derive：读侧（持仓 dict 同形妙想 get_positions + entry_map + 组合敞口），
-  判定核（sell_rules / rebalancer / industry_momentum / ExitLedger）零签名改动；
 - snapshot_with_prices：读侧 + 现价装配（prices.py），供敞口/再平衡/轮动入口，
   derive 本体保持零 I/O。
 

@@ -53,9 +53,6 @@ from data_provider.types import (
     get_realtime_circuit_breaker, safe_float, safe_int,
 )
 
-# RealtimeQuote 别名，统一实时报价类型引用
-RealtimeQuote = UnifiedRealtimeQuote
-
 
 logger = logging.getLogger(__name__)
 

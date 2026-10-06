@@ -9,7 +9,6 @@
    当日 bar + 数据日期断言），与个股主源同源；无 akshare 回退
 2. diagnose_gate(): 根据均线结构判断市场状态（5 级）+ 可解释诊断
 3. gate_state_series(): 逐日五态回放（research 证据共用同一判定函数）
-4. 判定文案（gate_log_line / gate_verdict_summary）——接受消费方算好的 can_open，只做渲染
 
 环境层定位：本模块只产**标签与判定事实**，不持有策略 policy——
 哪些状态允许开仓（CAN_OPEN_STATES）归各策略消费方自判。
@@ -27,7 +26,6 @@ import numpy as np
 import pandas as pd
 
 from data_provider.types import DataFetchError
-from src.market_state.environment import GateVerdictView
 
 logger = logging.getLogger(__name__)
 
@@ -302,35 +300,3 @@ def _build_index_df(fetcher) -> Optional[pd.DataFrame]:
     return df
 
 
-def gate_log_line(can_open: bool, gate_state: str) -> str:
-    """一行门控结论（消费方日志用；✅ info / ⛔ warning 的取舍在调用方）。
-
-    can_open 是消费方以策略层 policy（buy_pipeline.CAN_OPEN_STATES）对快照标签
-    算出的结论，本函数只做 ✅/⛔ 渲染。
-    """
-    return (f"✅ 市场状态 {gate_state}，允许开仓" if can_open
-            else f"⛔ 市场状态 {gate_state}，不开新仓")
-
-
-def gate_verdict_summary(view: "GateVerdictView", can_open: bool) -> str:
-    """快照 verdict 的人类可读判定摘要（消费方日志/报告用）。
-
-    5 态人话词汇归本模块（与状态定义同侧）；can_open 由消费方策略层 policy 算出，
-    本函数只负责把「标签 + 结论 + 诊断明细」渲染成文案。
-    """
-    if view.state == "trending_down":
-        # 均线空头时禁止开仓：空头结构下"高成交+高情绪"是下跌中继/放量出货的典型
-        # 特征，不是反转信号。趋势策略坚持"底部偏右进场"，等收盘重回 MA20 再参与。
-        action = "📉 均线空头排列，禁止开仓（等收盘重回MA20）"
-    elif not can_open:
-        # sideways（横盘）/ chaos（收盘<MA20 乱序）/ weak_up（非标准多头）：
-        # 禁止开新仓；持仓卖出照常按正常版输出。
-        action = f"🌪️ 状态{view.state}：不开新仓（等方向明确）"
-    else:
-        action = "✅ 结构确认，允许开仓"
-
-    data_date = f"｜数据日期 {view.data_date}" if view.data_date else ""
-    return (
-        f"市场状态判定：{view.state} → {'✅ 允许开仓' if can_open else '❌ 禁止开仓'}{data_date}\n"
-        f"{action}\n{view.describe()}"
-    )
