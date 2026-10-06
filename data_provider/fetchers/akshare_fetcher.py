@@ -368,6 +368,247 @@ class AkshareFetcher(BaseFetcher):
                 raise RateLimitError(f"Akshare(EM) 可能被限流: {e}") from e
             raise e
 
+    def _fetch_stock_data_sina(self, stock_code: str, start_date: str, end_date: str) -> pd.DataFrame:
+        """
+        获取普通 A 股历史数据 (新浪财经)
+        数据来源：ak.stock_zh_a_daily()
+        """
+        import akshare as ak
+
+        # 转换代码格式：sh600000, sz000001, bj920748
+        symbol = _to_sina_tx_symbol(stock_code)
+
+        self._throttle.wait()
+
+        df = ak.stock_zh_a_daily(
+                symbol=symbol,
+                start_date=start_date.replace('-', ''),
+                end_date=end_date.replace('-', ''),
+                adjust="qfq"
+            )
+
+        # 标准化新浪数据列名
+        # 新浪返回：date, open, high, low, close, volume, amount, outstanding_share, turnover
+        if df is not None and not df.empty:
+            # 确保日期列存在
+            if 'date' in df.columns:
+                df = df.rename(columns={'date': '日期'})
+
+            # 映射其他列以匹配 _normalize_data 的期望
+            # _normalize_data 期望：日期, 开盘, 收盘, 最高, 最低, 成交量, 成交额, 换手率
+            rename_map = {
+                'open': '开盘', 'high': '最高', 'low': '最低',
+                'close': '收盘', 'volume': '成交量', 'amount': '成交额',
+                'turnover': '换手率',
+            }
+            df = df.rename(columns=rename_map)
+
+            # 新浪 turnover 列是小数比率（0.104325 = 10.43%），转为百分数
+            if '换手率' in df.columns:
+                df['换手率'] = df['换手率'] * 100
+
+            # 计算涨跌幅（新浪接口可能不返回）
+            if '收盘' in df.columns:
+                df['涨跌幅'] = df['收盘'].pct_change() * 100
+                df['涨跌幅'] = df['涨跌幅'].fillna(0)
+
+            return df
+        return pd.DataFrame()
+
+    def _fetch_stock_data_tx(self, stock_code: str, start_date: str, end_date: str) -> pd.DataFrame:
+        """
+        获取普通 A 股历史数据 (腾讯财经)
+        数据来源：ak.stock_zh_a_hist_tx()
+        """
+        import akshare as ak
+
+        # 转换代码格式：sh600000, sz000001, bj920748
+        symbol = _to_sina_tx_symbol(stock_code)
+
+        self._throttle.wait()
+
+        df = ak.stock_zh_a_hist_tx(
+                symbol=symbol,
+                start_date=start_date.replace('-', ''),
+                end_date=end_date.replace('-', ''),
+                adjust="qfq"
+            )
+
+        # 标准化腾讯数据列名
+        # 腾讯返回：date, open, close, high, low, volume, amount
+        if df is not None and not df.empty:
+            rename_map = {
+                'date': '日期', 'open': '开盘', 'high': '最高',
+                'low': '最低', 'close': '收盘', 'volume': '成交量',
+                'amount': '成交额'
+            }
+            df = df.rename(columns=rename_map)
+
+            # 腾讯数据通常包含 '涨跌幅'，如果没有则计算
+            if 'pct_chg' in df.columns:
+                df = df.rename(columns={'pct_chg': '涨跌幅'})
+            elif '收盘' in df.columns:
+                df['涨跌幅'] = df['收盘'].pct_change() * 100
+                df['涨跌幅'] = df['涨跌幅'].fillna(0)
+
+            return df
+        return pd.DataFrame()
+
+    def _fetch_etf_data(self, stock_code: str, start_date: str, end_date: str) -> pd.DataFrame:
+        """
+        获取 ETF 基金历史数据
+        
+        数据来源：ak.fund_etf_hist_em()
+        
+        Args:
+            stock_code: ETF 代码，如 '512400', '159883'
+            start_date: 开始日期，格式 'YYYY-MM-DD'
+            end_date: 结束日期，格式 'YYYY-MM-DD'
+            
+        Returns:
+            ETF 历史数据 DataFrame
+        """
+        import akshare as ak
+        
+        self._throttle.wait()
+        
+        logger.info(f"[API调用] ak.fund_etf_hist_em(symbol={stock_code}, period=daily, "
+                   f"start_date={start_date.replace('-', '')}, end_date={end_date.replace('-', '')}, adjust=qfq)")
+        
+        try:
+            import time as _time
+            api_start = _time.time()
+            
+            # 调用 akshare 获取 ETF 日线数据
+            df = ak.fund_etf_hist_em(
+                symbol=stock_code,
+                period="daily",
+                start_date=start_date.replace('-', ''),
+                end_date=end_date.replace('-', ''),
+                adjust="qfq"  # 前复权
+            )
+            
+            api_elapsed = _time.time() - api_start
+            
+            # 记录返回数据摘要
+            if df is not None and not df.empty:
+                logger.info(f"[API返回] ak.fund_etf_hist_em 成功: 返回 {len(df)} 行数据, 耗时 {api_elapsed:.2f}s")
+                logger.info(f"[API返回] 列名: {list(df.columns)}")
+                logger.info(f"[API返回] 日期范围: {df['日期'].iloc[0]} ~ {df['日期'].iloc[-1]}")
+                logger.debug(f"[API返回] 最新3条数据:\n{df.tail(3).to_string()}")
+            else:
+                logger.warning(f"[API返回] ak.fund_etf_hist_em 返回空数据, 耗时 {api_elapsed:.2f}s")
+            
+            return df
+            
+        except Exception as e:
+            error_msg = str(e).lower()
+            
+            # 检测反爬封禁
+            if any(keyword in error_msg for keyword in ['banned', 'blocked', '频率', 'rate', '限制']):
+                logger.warning(f"检测到可能被封禁: {e}")
+                raise RateLimitError(f"Akshare 可能被限流: {e}") from e
+            
+            raise DataFetchError(f"Akshare 获取 ETF 数据失败: {e}") from e
+
+    def _normalize_data(self, df: pd.DataFrame, stock_code: str) -> pd.DataFrame:
+        """
+        标准化 Akshare 数据
+        
+        Akshare 返回的列名（中文）：
+        日期, 开盘, 收盘, 最高, 最低, 成交量, 成交额, 振幅, 涨跌幅, 涨跌额, 换手率
+        
+        需要映射到标准列名：
+        date, open, high, low, close, volume, amount, pct_chg
+        """
+        df = df.copy()
+        
+        # 列名映射（Akshare 中文列名 -> 标准英文列名）
+        column_mapping = {
+            '日期': 'date',
+            '开盘': 'open',
+            '收盘': 'close',
+            '最高': 'high',
+            '最低': 'low',
+            '成交量': 'volume',
+            '成交额': 'amount',
+            '涨跌幅': 'pct_chg',
+            '换手率': 'turnover_rate',
+        }
+        
+        # 重命名列
+        df = df.rename(columns=column_mapping)
+        
+        # 添加股票代码列
+        df['code'] = stock_code
+        
+        # 只保留需要的列
+        keep_cols = ['code'] + STANDARD_COLUMNS
+        existing_cols = [col for col in keep_cols if col in df.columns]
+        df = df[existing_cols]
+        
+        return df
+    
+    def get_realtime_quote(self, stock_code: str, source: str = "em") -> Optional[UnifiedRealtimeQuote]:
+        """
+        获取实时行情数据（支持多数据源）
+
+        数据源优先级（可配置）：
+        1. em: 东方财富（akshare ak.stock_zh_a_spot_em）- 数据最全，含量比/PE/PB/市值等
+        2. sina: 新浪财经（akshare ak.stock_zh_a_spot）- 轻量级，基本行情
+        3. tencent: 腾讯直连接口 - 单股票查询，负载小
+
+        Args:
+            stock_code: 股票/ETF代码
+            source: 数据源类型，可选 "em", "sina", "tencent"
+
+        Returns:
+            UnifiedRealtimeQuote 对象，获取失败返回 None
+        """
+        circuit_breaker = get_realtime_circuit_breaker()
+
+        # 按代码类型与 source 参数路由：ETF 与股票同构（sina/tencent 直连腿
+        # 对基金代码同样返回行情，见 Q3 诚实化修正——原来 ETF 无视 source 恒走东财）
+        if is_us_stock_code(stock_code):
+            # 字母 ticker：美股不在支持范围，直接拒收
+            logger.debug(f"[API跳过] {stock_code} 是字母 ticker，Akshare 不支持（美股不在支持范围）")
+            return None
+        if source == "sina":
+            source_key = "akshare_sina"
+        elif source == "tencent":
+            source_key = "akshare_tencent"
+        else:
+            source_key = "akshare_etf" if is_etf_code(stock_code) else "akshare_em"
+        if not circuit_breaker.is_available(source_key):
+            logger.warning(f"[熔断] 数据源 {source_key} 处于熔断状态，跳过")
+            return None
+        if source == "sina":
+            return self._get_stock_realtime_quote_sina(stock_code)
+        if source == "tencent":
+            return self._get_stock_realtime_quote_tencent(stock_code)
+        if is_etf_code(stock_code):
+            return self._get_etf_realtime_quote(stock_code)
+        return self._get_stock_realtime_quote_em(stock_code)
+    
+    def _get_stock_realtime_quote_em(self, stock_code: str) -> Optional[UnifiedRealtimeQuote]:
+        """
+        获取普通 A 股实时行情数据（东方财富数据源）
+
+        数据来源：ak.stock_zh_a_spot_em()
+        优点：数据最全，含量比、换手率、市盈率、市净率、总市值、流通市值等
+        缺点：全量拉取，数据量大，容易超时/限流
+
+        装配（缓存/节流重试/熔断/哨兵/行定位）在 _snapshot_quote 单点；
+        本方法只提供端点数据：抓取函数 + 列映射。
+        """
+        import akshare as ak
+        return snapshot_realtime_quote(
+            stock_code, source_key="akshare_em", source_label="东财(A股快照)",
+            cache=_realtime_cache, throttle=self._throttle,
+            fetch=ak.stock_zh_a_spot_em,
+            row_builder=_build_em_stock_quote,
+            code_columns="代码")
+    
     def _get_stock_realtime_quote_sina(self, stock_code: str) -> Optional[UnifiedRealtimeQuote]:
         """实时行情：新浪直连（单票请求，快而字段少）。
 
