@@ -100,3 +100,8 @@ holding_periods，文件名前缀 `pool_rotation_v3a_`，通过 `write_file` 写
 退出原因标记分两类：`out_of_pool`（出池，附依次筛选的首个未通过环节，如
 roe_low、profit_growth_low、pe_high、pb_high、vol_high、st、paused、unlock_90d）
 与 `rank_below_buffer`（跌出30名）。诊断口径与全部实验记录见研究目录README。
+
+本地模拟执行以已记入模拟账户的成交为事实：先记账卖出，再按实际现金与持仓名额
+缩减或跳过原买单，预算和目标名单不重算。退出记账失败的实际剩余持仓保留在退出
+队列；买入或等权调整失败仍等下一调仓轮。开始记账前消费当轮名单并保留完整退出
+意图，执行后核对剩余持仓；中途终止后只恢复退出重试，不重放旧名单的买入或等权调整。

@@ -47,7 +47,7 @@ logger = logging.getLogger(__name__)
 
 
 def _execute(orders: List[RotationOrder], trade_date: str, *,
-             held_counts: dict, cash: float, ledger_path=None):
+             ledger_path=None):
     """执行一批轮动指令：批次语义（收敛/安全校验/先卖后买/逐单记账）
     委托 trade_ledger.execute_batch，本函数只映射指令与渲染结果行。
 
@@ -58,7 +58,6 @@ def _execute(orders: List[RotationOrder], trade_date: str, *,
                                qty=o.shares, price=o.price, reason=o.reason)
                     for o in orders]
     res = execute_batch(batch_orders, account="satellite",
-                        held_counts=held_counts, cash=cash,
                         trade_date=trade_date, path=ledger_path)
     lines = [oc.outcome_line for oc in res.outcomes]
     return res.abort, lines
@@ -139,11 +138,7 @@ def run(dry_run: bool = False) -> str:
             lines.append(f"- [DRY] {o.action.upper()} {o.name}({o.code})"
                          f" {o.shares}股 ≈ {o.amount:,.0f}元（{o.reason}）")
     else:
-        from src.trade_ledger import held_counts_of
-        held_counts = held_counts_of(positions)
-        abort, exec_lines = _execute(orders, trade_date,
-                                     held_counts=held_counts,
-                                     cash=avail_balance)
+        abort, exec_lines = _execute(orders, trade_date)
         if abort:
             lines += [f"⛔ 安全校验未通过，本次不执行：{abort}", ""]
             return "\n".join(lines)

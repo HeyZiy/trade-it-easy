@@ -38,9 +38,9 @@ class AssetAllocation:
 # ── 中性基准配置 ──
 # 核心仓位：长期持有，来源=有知有行基准（适配规则见 strategy/etf_allocation.md 第二节），
 # 半年人工对齐一次。权重为总资产占比；"现金"桶吸收卫星仓与其他账户的资金。
-# 卫星仓（行业动量轮动，标的集见 get_rotation_universe_codes：动态规则池快照
-# data/industry_momentum_pool.json ∪ 旧名单兼容存量持仓）独立于核心基准，
-# 其持仓被"现金（以及其他账户）"桶吸收，不产生核心偏离。
+# 卫星仓（行业动量轮动，标的集=data/industry_momentum_pool.json 动态规则池快照，
+# 每 20 交易日重建）独立于核心基准，持仓归属由台账 account 标签判定，
+# 其市值被"现金（以及其他账户）"桶吸收，不产生核心偏离。
 
 CORE_BASELINE: List[AssetAllocation] = [
     # ── A股宽基 ──
@@ -68,6 +68,8 @@ NEUTRAL_BASELINE = CORE_BASELINE
 # 口径 = 中证指数官网估值（PE/股息率，见 amazing_factors.get_csindex_valuation），
 # 指数代码已逐只经官网实测核对（2026-09）。海外 ETF（513100/513500/513380）无 csindex
 # 数据；黄金为无现金流资产，不适用估值锚。红利类估值以股息率为主锚（股息是现金流本体）。
+# 这是标的级估值的唯一口径：不做兜底——未配锚或官网未取到时报告显示"无估值锚"，
+# 不用不可比的市场/行业分位冒充标的自身估值（历史兜底链会产出假优先级与假警示，已删）。
 TRACKED_INDEX: Dict[str, str] = {
     "563360": "000510",  # A500ETF → 中证A500指数
     "159680": "000852",  # 中证1000增强ETF → 中证1000指数
@@ -102,36 +104,8 @@ def get_neutral_baseline() -> List[AssetAllocation]:
     return NEUTRAL_BASELINE
 
 
-def get_rotation_universe_codes() -> set:
-    """卫星仓（非核心）标的代码集（剔除核心基准代码，避免与核心仓资金口径重叠）。
-
-    = 日频轮动池快照（data/industry_momentum_pool.json，动态规则池每 20 交易日
-      重建）∪ 旧固定 34 池（data/l2_etf_map.json，选池已废弃、仅存量持仓归属）
-      ∪ 旧行业清单（ETF_INDUSTRY_MAP，兼容历史持仓的归属判定）
-      − 核心基准代码。
-    核心仓再平衡以"核心资金 = 总资产 − 卫星持仓市值"为口径，
-    卫星标的独立预算、独立进出，不参与核心偏离计算。
-    """
-    try:
-        from src.etf.industry_momentum import load_l2_map, load_pool_state
-
-        l2_codes = {str(m["etf_code"]).zfill(6) for m in load_l2_map()}
-        pool_codes = {str(m.get("code", "")).zfill(6)
-                      for m in load_pool_state().get("members", [])}
-    except Exception:
-        l2_codes, pool_codes = set(), set()
-    try:
-        from src.etf.amazing_factors import ETF_INDUSTRY_MAP
-    except Exception:
-        ETF_INDUSTRY_MAP = {}
-    baseline_codes = {a.code for a in CORE_BASELINE}
-    return (set(ETF_INDUSTRY_MAP) | l2_codes | pool_codes) - baseline_codes
-
-
-
-
 # ── 全市场 PE 分位 → 估值档位（唯一 producer：etf_observe 市场概览/持仓速览两处展示共用）。
-#    amazing_factors.rank_buy_priorities 的 ⭐ 文案是买入侧研究展示口径，非本分档的副本，不并入。
+#    只吃市场级分位（amazing_factors.get_market_pe）；标的级估值无分位口径，见 TRACKED_INDEX 注。
 def pe_level(pe_pct: float) -> str:
     """全市场 PE 近 5 年分位(%) → 五档估值水平标签。"""
     if pe_pct < 20:

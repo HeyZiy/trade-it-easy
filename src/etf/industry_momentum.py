@@ -141,16 +141,6 @@ class RotationRow:
         return math.ceil(EXIT_RANK_PCT * self.n)
 
 
-def load_l2_map() -> List[dict]:
-    """旧固定 34 池名单（data/l2_etf_map.json）——选池已废弃，仅存量持仓归属用。
-
-    动态规则池上线前的历史持仓可能来自此名单，核心仓资金口径的卫星标的
-    判定（src/etf/config.py）仍需它做兼容；新持仓一律来自动态池快照。
-    """
-    path = Path(__file__).parent.parent.parent / "data" / "l2_etf_map.json"
-    return json.loads(path.read_text(encoding="utf-8"))
-
-
 # ── 判定核（零 I/O）──
 
 def momentum_score(close_tail: Sequence[float], last_price: float) -> float:

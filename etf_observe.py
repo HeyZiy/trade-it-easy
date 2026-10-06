@@ -19,7 +19,9 @@ derive 供料与妙想持仓 dict 同形，rebalancer 决策核零改动。
 卫星仓 — 行业动量轮动是独立日频任务 industry_momentum.py（尾盘执行，
 见 strategy/industry_momentum.md），本脚本只负责核心再平衡。
 
-卖出警示（极端条件触发：全市场 PE>90% + 行业 PE>95% + 拥挤）。
+估值口径分两层，不互相兜底：市场级 = 全市场 PE/ERP 分位（第一、三节）；
+标的级 = 跟踪指数自身 PE/股息率（第二节，无锚或取数失败即显示"无估值锚"）。
+任何估值都不进自动决策——核心仓目标恒等于中性基准。
 """
 
 import argparse
@@ -39,7 +41,7 @@ setup_env()
 from src.etf.config import CORE_BASELINE, AssetType, pe_level
 from src.etf.amazing_factors import (
     get_market_pe, get_treasury_yield_y10, get_erp_percentile,
-    rank_buy_priorities, check_sell_warnings,
+    etf_valuation_rows,
 )
 from src.task_io import notify, save_report
 
@@ -111,8 +113,8 @@ def _market_overview(ctx: WeekContext) -> str:
 
 # ── 买入优先级 ──
 
-def _buy_priority() -> str:
-    """各标的估值参考（锚对准跟踪指数；PE 跨标的不可比，仅看各自锚的水平）"""
+def _valuation_reference() -> str:
+    """各标的估值参考（锚=跟踪指数自身 PE/股息率；跨标的不可比，仅展示）"""
     lines = ["## 二、各标的估值参考（锚对准跟踪指数，PE 跨标的不可比）", ""]
 
     # 收集所有核心仓权益 ETF（去重）
@@ -121,40 +123,18 @@ def _buy_priority() -> str:
         if a.asset_type == AssetType.EQUITY and a.code not in equity_etfs:
             equity_etfs[a.code] = a
 
-    ranked = rank_buy_priorities(list(equity_etfs.values()))
+    rows = etf_valuation_rows(list(equity_etfs.values()))
 
     lines.append("| ETF | 估值锚 | PE | 股息率 | 备注 |")
     lines.append("|-----|--------|-----|--------|------|")
 
-    for r in ranked:
+    for r in rows:
         source = r.get("source_name", "") or "—"
         pe = f"{r['pe']:.1f}" if r.get("pe") is not None else "—"
         dy = f"{r['div_yield']:.1f}%" if r.get("div_yield") is not None else "—"
         note = r.get("level_text", "") or "—"
         lines.append(f"| {r['name']}（{r['code']}） | {source} | {pe} | {dy} | {note} |")
 
-    lines.append("")
-    return "\n".join(lines)
-
-
-# ── 卖出警示 ──
-
-def _sell_warning() -> str:
-    """卖出警示（极端条件才触发）"""
-    equity_etfs = {}
-    for a in CORE_BASELINE:
-        if a.asset_type == AssetType.EQUITY and a.code not in equity_etfs:
-            equity_etfs[a.code] = a
-
-    warnings = check_sell_warnings(list(equity_etfs.values()))
-    if not warnings:
-        return ""
-
-    lines = ["## ⚠️ 卖出警示", ""]
-    lines.append("> 以下 ETF 触发长期配置回避条件：")
-    lines.append("")
-    for w in warnings:
-        lines.append(f"- **{w['name']}**（{w['code']}）：{w['reason']}")
     lines.append("")
     return "\n".join(lines)
 
@@ -373,8 +353,6 @@ def _execute_batch(alloc: dict, ledger_path=None) -> str:
         lines.append("无调仓指令，本次不执行。")
         return "\n".join(lines)
 
-    from src.trade_ledger import held_counts_of
-    held = held_counts_of(alloc["positions"])
     price_map = {p.get("code", ""): float(p.get("current_price", 0) or 0)
                  for p in alloc["positions"]}
     batch_orders = [BatchOrder(
@@ -385,7 +363,6 @@ def _execute_batch(alloc: dict, ledger_path=None) -> str:
 
     n_sell = sum(1 for o in orders if o.action == "sell")
     res = execute_batch(batch_orders, account="core",
-                        held_counts=held, cash=avail_balance,
                         path=ledger_path)
     if res.abort:
         lines.append(f"❌ 中止执行：{res.abort}")
@@ -423,7 +400,7 @@ def _generate_report() -> str:
         f"**生成时间**: {now}",
         "",
         _market_overview(ctx),
-        _buy_priority(),
+        _valuation_reference(),
         _deploy_cash_section(ctx),
         _holding_overview(ctx),
     ]
@@ -431,10 +408,6 @@ def _generate_report() -> str:
     # 执行门保持现状："orders 非空即执行"；plan.should 为触发层结论，当前仅进报告。
     if alloc and alloc["plan"].orders:
         sections.append(_execute_batch(alloc))
-
-    warn = _sell_warning()
-    if warn:
-        sections.append(warn)
 
     sections.extend([
         "---",

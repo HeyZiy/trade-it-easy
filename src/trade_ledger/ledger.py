@@ -8,14 +8,15 @@
 视图全部从流水推导，不存可变状态表。写侧两个生产者（cron 影子成交确认、
 book.py 手动建仓），读侧一个动词 derive()——产出与妙想 get_positions() **同形**
 的持仓 dict（code/name/count/avail_count/cost_price/current_price/market_value/
-profit/profit_pct/pos_pct）+ entry_map + 组合敞口，判定核零改动消费。
+profit/profit_pct/pos_pct，另附归因用的 account）+ entry_map + 组合敞口，
+判定核零改动消费。
 
 口径（docs/trade_ledger.md 决策，改动须同步该文档）：
 - 单池名义期初 NOMINAL_EQUITY，真实资金数字在系统内不存在；呈现全百分比；
 - T+1：date < as_of 的买入才计 avail_count；
 - 整手：qty 必为 100 整数倍，append 处校验收敛（判定口径单点仍在 mx/executor）;
 - 现金 = 名义期初 − Σ买 + Σ卖，无手续费、无调入调出条目；
-- account 标签（core/satellite/quality_pool）仅服务复盘归因，不分账。
+- account 标签（core/satellite/quality_pool）仅服务复盘归因与持仓归属拆分，不分账。
 """
 
 from __future__ import annotations
@@ -146,7 +147,7 @@ class LedgerSnapshot:
 
 def _empty(code: str, name: str) -> dict:
     return {"code": code, "name": name, "count": 0, "avail": 0,
-            "cost": 0.0, "buy_total": 0, "last_buy": None}
+            "cost": 0.0, "buy_total": 0, "last_buy": None, "account": "core"}
 
 
 def derive(trades: List[TradeRecord], as_of: str,
@@ -175,6 +176,8 @@ def derive(trades: List[TradeRecord], as_of: str,
             if t.date < as_of:
                 s["avail"] += t.qty
             s["buy_total"] += t.qty
+            # 归属取末次买入标签（卫星标的由池选定，与核心基准代码不相交，不存在混买）
+            s["account"] = t.account
             s["last_buy"] = t.date if (s["last_buy"] is None
                                        or t.date >= s["last_buy"]) else s["last_buy"]
             cash -= t.price * t.qty
@@ -208,6 +211,7 @@ def derive(trades: List[TradeRecord], as_of: str,
             "cost_price": round(cost, 4), "current_price": cur,
             "market_value": mv, "profit": mv - cost * s["count"],
             "profit_pct": profit_pct, "pos_pct": 0.0,  # 下方统一回填
+            "account": s["account"],
         })
         if s["last_buy"]:
             entry_map[code] = s["last_buy"]

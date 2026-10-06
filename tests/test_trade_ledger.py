@@ -104,6 +104,19 @@ def test_derive_moving_average_cost_and_sell():
     assert snap.entry_map["600519"] == "2026-09-23"
 
 
+def test_derive_carries_account_attribution():
+    """持仓带出末次买入的 account 标签，供核心/卫星归属拆分（不再用代码名单反推）。"""
+    trades = [
+        _trade("2026-09-22", qty=100),                     # 未打标 → core
+        _trade("2026-09-23", code="159611", name="电力ETF",
+               qty=200, account="satellite"),
+    ]
+    snap = derive(trades, as_of="2026-09-24")
+    by_code = {p["code"]: p for p in snap.positions}
+    assert by_code["600519"]["account"] == "core"
+    assert by_code["159611"]["account"] == "satellite"
+
+
 def test_derive_oversell_breaks_consistency():
     trades = [_trade("2026-09-22", qty=100),
               _trade("2026-09-24", side="sell", qty=200)]

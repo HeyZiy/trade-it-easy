@@ -37,10 +37,10 @@ from src.trading_calendar import (is_trading_day, latest_trading_day_on_or_befor
 
 setup_env()
 
-from src.quality_pool import assembly, execution, feeds, screener  # noqa: E402
+from src.quality_pool import assembly, feeds, screener  # noqa: E402
 from src.quality_pool.config import (  # noqa: E402
-    ACCOUNT, EXIT_OUT_OF_POOL, EXIT_RANK_BELOW_BUFFER, POOL_LEDGER_PATH,
-    REPORT_PREFIX, ROTATE_EVERY, SCORE_CLOSES, STATE_PATH, TOP_N,
+    EXIT_OUT_OF_POOL, EXIT_RANK_BELOW_BUFFER, POOL_LEDGER_PATH,
+    REPORT_PREFIX, ROTATE_EVERY, SCORE_CLOSES, STATE_PATH,
 )
 from src.quality_pool import state as pool_state  # noqa: E402
 from src.task_io import notify, save_report       # noqa: E402
@@ -153,46 +153,8 @@ def run_signal(today: date, dry_run: bool = False) -> str:
 # ── execute ──
 
 def run_execute(today: date, dry_run: bool = False) -> str:
-    """09:31：有待执行计划整轮先卖后买；否则只重试退出队列。"""
-    today_str = today.isoformat()
-    st = pool_state.load_state(STATE_PATH)
-    plan = pool_state.pop_plan(st)
-
-    if plan is not None:
-        prev = _prev_trading_day(today).isoformat()
-        if plan.get("signal_day") != prev:
-            logger.warning("STALE_SIGNAL：计划信号日 %s 非昨日 %s，丢弃",
-                           plan.get("signal_day"), prev)
-            plan = None
-
-    snapshot = assembly.build_snapshot(today_str, list((plan or {}).get("selected", [])))
-    if plan is not None:
-        per = snapshot.equity / TOP_N
-        exec_plan = execution.plan_round(plan["selected"], plan["exit_reasons"],
-                                         per, snapshot)
-    else:
-        per = None
-        exec_plan = execution.plan_exit_retry(st.get("exit_queue", {}), snapshot)
-
-    lines = [f"# 质量池执行（{today_str}）"]
-    if per is not None:
-        lines.append(f"- 调仓轮：总权益 {snapshot.equity:,.0f}，单只预算 {per:,.0f}")
-    else:
-        lines.append("- 非调仓轮：仅退出队列重试")
-    if dry_run:
-        for t in exec_plan.trades:
-            lines.append(f"- （dry-run）{t.side.upper()} {t.name}({t.code}) "
-                         f"{t.qty}股 @ {t.price}（{t.reason}）")
-    else:
-        lines += (assembly.record_trades(exec_plan, today_str)
-                  or ["- 无成台交易"])
-    for b in exec_plan.blocked:
-        lines.append(f"- ⛔ {b.action.upper()} {b.code} 受阻（{b.reason}）：{b.blocked_by}")
-
-    st["exit_queue"] = exec_plan.exit_queue
-    if not dry_run:
-        pool_state.save_state(st, STATE_PATH)
-    return _finish_report("\n".join(lines))
+    """09:31 执行闭环由质量池 module 负责，入口只保存和推送报告。"""
+    return _finish_report(assembly.run_execution(today.isoformat(), dry_run=dry_run))
 
 
 def _finish_report(report: str) -> str:

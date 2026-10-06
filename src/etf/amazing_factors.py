@@ -16,10 +16,8 @@ AmazingData 因子封装层（ETF 周度观察专用）
 - 未配置 TGW 凭证时自动失效（返回 None）
 """
 
-import json
 import logging
-import os
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, List, Optional
 
 import pandas as pd
 
@@ -117,14 +115,6 @@ def get_level1_industries() -> List[dict]:
         return []
 
 
-def get_industry_code_by_name(name: str) -> Optional[str]:
-    """按行业名（一级行业）查找行业指数代码。"""
-    for item in get_level1_industries():
-        if item["name"] == name:
-            return item["code"]
-    return None
-
-
 # ── 行业日线（含 PE/PB/市值） ──
 
 _industry_daily_cache: Dict[str, pd.DataFrame] = {}
@@ -157,81 +147,6 @@ def get_industry_daily(code: str) -> Optional[pd.DataFrame]:
 
 
 # ── 因子计算 ──
-
-def _series_percentile(series: pd.Series, lookback: int) -> Optional[Tuple[float, float]]:
-    """序列近 lookback 期的当前值与历史分位。数据不足或当前值 <= 0 时返回 None。"""
-    recent = pd.to_numeric(series, errors="coerce").dropna().tail(lookback)
-    if len(recent) < 250:
-        return None
-    current = float(recent.iloc[-1])
-    if current <= 0:
-        return None
-    pct = float((recent <= current).mean() * 100)
-    return current, pct
-
-
-def get_industry_pe_percentile(code: str, lookback: int = PERCENTILE_LOOKBACK) -> Optional[dict]:
-    """
-    行业 PE 历史分位（默认近 5 年）。
-
-    Returns:
-        {'pe': 当前PE, 'pe_pct': 分位(0-100)} 或 None
-    """
-    df = get_industry_daily(code)
-    if df is None or "PE" not in df.columns:
-        return None
-    try:
-        result = _series_percentile(df["PE"], lookback)
-        if result is None:
-            return None
-        current, pct = result
-        return {"pe": round(current, 2), "pe_pct": round(pct, 1)}
-    except Exception as e:
-        logger.warning(f"计算行业 {code} PE 分位失败: {e}")
-        return None
-
-
-def get_industry_pb_percentile(code: str, lookback: int = PERCENTILE_LOOKBACK) -> Optional[dict]:
-    """行业 PB 历史分位（默认近 5 年）。"""
-    df = get_industry_daily(code)
-    if df is None or "PB" not in df.columns:
-        return None
-    try:
-        result = _series_percentile(df["PB"], lookback)
-        if result is None:
-            return None
-        current, pct = result
-        return {"pb": round(current, 2), "pb_pct": round(pct, 1)}
-    except Exception as e:
-        logger.warning(f"计算行业 {code} PB 分位失败: {e}")
-        return None
-
-
-def get_industry_mcap_share(code: str, lookback: int = PERCENTILE_LOOKBACK) -> Optional[dict]:
-    """
-    行业市值占比及历史分位（拥挤度因子）。
-
-    市值占比 = 行业总市值 / 全部一级行业总市值之和。
-    占比处于历史高位 → 资金拥挤，风险上升。
-
-    Returns:
-        {'share': 当前占比(0-1), 'share_pct': 占比历史分位(0-100)} 或 None
-    """
-    df = get_industry_daily(code)
-    if df is None or "TOTAL_CAP" not in df.columns:
-        return None
-    try:
-        # 全行业市值需要总盘子，用行业指数当日市值比价口径：
-        # 若拿不到全行业汇总，退化为该行业自身市值序列的分位（趋势拥挤度）
-        result = _series_percentile(df["TOTAL_CAP"], lookback)
-        if result is None:
-            return None
-        current, pct = result
-        return {"share": round(current, 2), "share_pct": round(pct, 1)}
-    except Exception as e:
-        logger.warning(f"计算行业 {code} 市值占比失败: {e}")
-        return None
-
 
 def get_etf_share_flow(codes: List[str], lookback_days: int = 20) -> Dict[str, dict]:
     """
@@ -300,94 +215,7 @@ def get_treasury_yield_y10() -> Optional[float]:
         return None
 
 
-def get_all_industry_factors(industry_names: List[str]) -> dict:
-    """
-    批量获取多个行业的因子（PE/PB 分位 + 市值分位）。
-
-    Args:
-        industry_names: 一级行业中文名列表，如 ['电子', '医药生物']
-
-    Returns:
-        {
-            '电子': {'pe': ..., 'pe_pct': ..., 'pb': ..., 'pb_pct': ..., 'share_pct': ...},
-            ...
-        }（失败的行业不在结果中）
-    """
-    result = {}
-    for name in industry_names:
-        code = get_industry_code_by_name(name)
-        if code is None:
-            logger.warning(f"未找到行业 [{name}] 的指数代码，跳过")
-            continue
-        factors = {}
-        pe_info = get_industry_pe_percentile(code)
-        if pe_info:
-            factors.update(pe_info)
-        pb_info = get_industry_pb_percentile(code)
-        if pb_info:
-            factors.update(pb_info)
-        mcap_info = get_industry_mcap_share(code)
-        if mcap_info:
-            factors.update(mcap_info)
-        if factors:
-            result[name] = factors
-    return result
-
-
-# ── 行业 ETF 清单（data/etf_industry_map.json，便于人工维护） ──
-# 清单依据人工调研（规模 + 当日成交额筛选，首选/备选）；无对应行业 ETF 的行业不强求。
-
-_ETF_INDUSTRY_FILE = os.path.join(
-    os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))),
-    "data", "etf_industry_map.json",
-)
-
-
-def _load_industry_entries() -> List[dict]:
-    """加载行业 ETF 清单（[{code, name, industry, note}, ...]），文件缺失/损坏时返回空表。"""
-    try:
-        with open(_ETF_INDUSTRY_FILE, encoding="utf-8") as f:
-            entries = json.load(f)
-        return [e for e in entries if e.get("code") and e.get("industry")]
-    except Exception as e:
-        logger.warning(f"行业 ETF 清单加载失败（{_ETF_INDUSTRY_FILE}）: {e}")
-        return []
-
-
-_ETF_INDUSTRY_ENTRIES = _load_industry_entries()
-
-# 兼容映射：ETF 代码 → 申万一级行业名
-ETF_INDUSTRY_MAP: Dict[str, str] = {
-    e["code"]: e["industry"] for e in _ETF_INDUSTRY_ENTRIES
-}
-
-# ── 叙事组 ──
-# 同组 ETF 视为同一叙事槽位：买入去重时组内只保留动量分最高一只（防同叙事双重下注）。
-# 组名可为非申万行业（如 "AI算力"、"风格:小市值"）。无 group 字段的标的按行业去重。
-ETF_GROUP_MAP: Dict[str, str] = {
-    e["code"]: e["group"] for e in _ETF_INDUSTRY_ENTRIES if e.get("group")
-}
-
-
-def get_etf_group(etf_code: str) -> Optional[str]:
-    """查询 ETF 的叙事组名（无组返回 None，去重回退按行业）。"""
-    return ETF_GROUP_MAP.get(etf_code)
-
-
-def get_etf_industry(etf_code: str) -> Optional[str]:
-    """查询 ETF 对应的一级行业名。"""
-    return ETF_INDUSTRY_MAP.get(str(etf_code).zfill(6))
-
-
-def get_industry_etf_universe() -> List[dict]:
-    """卫星仓引擎的动态标的清单：[{'code', 'name', 'industry'}, ...]"""
-    return [
-        {"code": e["code"], "name": e["name"], "industry": e["industry"]}
-        for e in _ETF_INDUSTRY_ENTRIES
-    ]
-
-
-# ── 全市场聚合 PE（兜底用） ──
+# ── 全市场聚合 PE（市场级口径：报告第一节概览 + 第三节新钱参考） ──
 
 def _market_pe_series() -> Optional[pd.Series]:
     """全市场聚合 PE 日度序列（31 个申万一级行业 E/P 加权），供分位与 ERP 共用。
@@ -562,75 +390,60 @@ def get_csindex_valuation(index_code: str) -> Optional[dict]:
             "pe": round(float(latest["pe"]), 2),
             "dy": round(float(latest["dy"]), 2) if pd.notna(latest["dy"]) else None,
         }
-    _csindex_cache[index_code] = result
+    if result is not None:
+        _csindex_cache[index_code] = result   # 失败不缓存：一次抖动不该锁死整轮取数
     return result
 
 
-# ── ETF 买入优先级 & 卖出警示 ──
+# ── ETF 估值参考 ──
 
-# 海外 ETF（暂无 PE 数据，标"数据缺失"）
+# 海外 ETF（无 csindex 数据，标"海外"）
 _OVERSEAS_CODES = frozenset({"513100", "513500", "513380"})
 
 
 def _etf_pe_info(etf_code: str) -> Optional[dict]:
-    """获取单只 ETF 的估值信息，锚对准买入标的本身。
+    """单只 ETF 的估值信息——唯一口径 = 跟踪指数自身估值（TRACKED_INDEX → csindex）。
 
-    口径优先级：跟踪指数自身估值（csindex 当前值，TRACKED_INDEX）→ 申万一级行业
-    PE 分位 → 全市场兜底。csindex 不提供分位（决策记录见 get_csindex_valuation），
-    仅行业/全市场等历史回退口径带 pe_pct。
+    不做兜底：未配跟踪指数锚、或中证官网未取到时返回 None，由消费方显示"无估值锚"。
+    跨口径的行业 PE / 全市场 PE 分位与标的自身不可比，历史上作为兜底会产出假的
+    优先级与警示，已收归市场级口径（get_market_pe，仅报告第一/三节使用）。
+    csindex 不提供分位（决策记录见 get_csindex_valuation），故返回值无 pe_pct。
     """
     code = str(etf_code).zfill(6)
 
     if code in _OVERSEAS_CODES:
-        return {"source_type": "overseas", "pe": None, "pe_pct": None, "source_name": "海外"}
+        return {"source_type": "overseas", "pe": None, "source_name": "海外"}
 
     index_code = TRACKED_INDEX.get(code)
-    if index_code:
-        val = get_csindex_valuation(index_code)
-        if val:
-            info = {
-                "pe": val.get("pe"), "pe_pct": None,
-                "source_type": "csindex",
-                "source_name": val.get("index_name") or index_code,
-            }
-            # 股息率与利差（股息率 − 10Y 国债，跨资产口径，零历史依赖）
-            if val.get("dy") is not None:
-                info["div_yield"] = val["dy"]
-                y10 = get_treasury_yield_y10()
-                if y10:
-                    info["div_yield_spread"] = round(val["dy"] - y10, 2)
-            return info
+    if not index_code:
+        return None
+    val = get_csindex_valuation(index_code)
+    if not val:
+        return None
 
-    industry = get_etf_industry(code)
-    if industry:
-        ind_code = get_industry_code_by_name(industry)
-        if ind_code:
-            pe_info = get_industry_pe_percentile(ind_code)
-            if pe_info:
-                return {**pe_info, "source_type": "industry", "source_name": industry}
-
-    market_pe = get_market_pe()
-    if market_pe:
-        return {**market_pe, "source_type": "market", "source_name": "全市场"}
-
-    return None
+    info = {
+        "pe": val.get("pe"),
+        "source_type": "csindex",
+        "source_name": val.get("index_name") or index_code,
+    }
+    # 股息率与利差（股息率 − 10Y 国债，跨资产口径，零历史依赖）
+    if val.get("dy") is not None:
+        info["div_yield"] = val["dy"]
+        y10 = get_treasury_yield_y10()
+        if y10:
+            info["div_yield_spread"] = round(val["dy"] - y10, 2)
+    return info
 
 
-def rank_buy_priorities(etf_list) -> list:
-    """各核心 ETF 的估值参考（跟踪指数锚当前值；仅申万行业/全市场等历史回退口径带分位）。"""
+def etf_valuation_rows(etf_list) -> list:
+    """各核心 ETF 的估值参考行（锚=跟踪指数当前 PE/股息率；跨标的不可比，仅展示）。"""
     results = []
     for etf in etf_list:
         info = _etf_pe_info(etf.code)
-        pe_pct = info.get("pe_pct") if info else None
-        level, level_text = "", ""
-        if pe_pct is not None:
-            level_text = ("⭐⭐⭐ 极度低估，优先关注" if pe_pct < 20 else
-                          "⭐⭐ 低估，值得关注" if pe_pct < 40 else
-                          "估值合理偏低" if pe_pct < 60 else
-                          "中性偏贵，暂缓" if pe_pct < 80 else
-                          "偏贵，暂缓" if pe_pct < 90 else
-                          "❌ 高估，回避")
-        elif str(etf.code).zfill(6) in DIVIDEND_STYLE_CODES and info:
+        level_text = ""
+        if info is None:
+            level_text = "无估值锚（未配跟踪指数或中证官网未取到）"
+        elif str(etf.code).zfill(6) in DIVIDEND_STYLE_CODES:
             if info.get("div_yield_spread") is not None:
                 level_text = f"利差 {info['div_yield_spread']:+.1f}pt（≥1.5 视同低估）"
             elif info.get("div_yield") is not None:
@@ -638,71 +451,9 @@ def rank_buy_priorities(etf_list) -> list:
         results.append({
             "code": etf.code, "name": etf.name,
             "pe": info.get("pe") if info else None,
-            "pe_pct": pe_pct,
             "div_yield": info.get("div_yield") if info else None,
             "div_yield_spread": info.get("div_yield_spread") if info else None,
             "source_name": info.get("source_name", "") if info else "",
-            "level": level, "level_text": level_text,
+            "level_text": level_text,
         })
-
-    results.sort(key=lambda x: (x["pe_pct"] is None, x["pe_pct"] if x["pe_pct"] is not None else 999))
     return results
-
-
-# 卖出警示市场档阈值（本规则 owner）
-SELL_WARNING_MARKET_PE_PCT = 90  # 全市场 PE 分位
-
-
-def check_sell_warnings(etf_list) -> list:
-    """
-    检查需要卖出警示的 ETF。
-
-    触发条件（三者同时满足才警示）：
-    1. 全市场 PE > 90% 分位（SELL_WARNING_MARKET_PE_PCT）
-    2. 该 ETF 对应行业 PE > 95% 分位
-    3. 行业市值拥挤度 > 98% 分位（或行业 PE > 98% 分位）
-
-    海外 ETF 不检查。
-    """
-    market_pe = get_market_pe()
-    if not market_pe or market_pe["pe_pct"] < SELL_WARNING_MARKET_PE_PCT:
-        return []
-
-    warnings = []
-    for etf in etf_list:
-        code = str(etf.code).zfill(6)
-        if code in _OVERSEAS_CODES:
-            continue
-
-        info = _etf_pe_info(code)
-        if not info or info.get("pe_pct") is None:
-            continue
-        pe_pct = info["pe_pct"]
-        if pe_pct < 95:
-            continue
-
-        industry = get_etf_industry(code)
-        crowding = False
-        if industry:
-            ind_code = get_industry_code_by_name(industry)
-            if ind_code:
-                mcap = get_industry_mcap_share(ind_code)
-                if mcap and mcap.get("share_pct", 0) > 98:
-                    crowding = True
-
-        source = info.get("source_name", "")
-
-        if crowding:
-            warnings.append({
-                "code": code, "name": etf.name,
-                "source_name": source, "pe_pct": pe_pct,
-                "reason": f"{source} PE {pe_pct:.0f}%分位 + 市值极度拥挤 → 长期配置建议回避",
-            })
-        elif pe_pct > 98:
-            warnings.append({
-                "code": code, "name": etf.name,
-                "source_name": source, "pe_pct": pe_pct,
-                "reason": f"{source} PE {pe_pct:.0f}%分位（极度高估）→ 长期配置建议回避",
-            })
-
-    return warnings

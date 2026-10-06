@@ -12,6 +12,8 @@
 from __future__ import annotations
 
 import json
+import os
+import tempfile
 from pathlib import Path
 from typing import Optional, Union
 
@@ -38,10 +40,24 @@ def load_state(path: Union[str, Path] = STATE_PATH) -> dict:
 
 
 def save_state(state: dict, path: Union[str, Path] = STATE_PATH) -> None:
+    """同目录临时文件替换；写入失败时保留上一份完整状态。"""
     p = Path(path)
     p.parent.mkdir(parents=True, exist_ok=True)
     state["version"] = STATE_VERSION
-    p.write_text(json.dumps(state, ensure_ascii=False, indent=2), encoding="utf-8")
+    payload = json.dumps(state, ensure_ascii=False, indent=2)
+    temporary = None
+    try:
+        with tempfile.NamedTemporaryFile(
+                mode="w", encoding="utf-8", dir=p.parent,
+                prefix=p.name + ".", suffix=".tmp", delete=False) as f:
+            temporary = Path(f.name)
+            f.write(payload)
+            f.flush()
+            os.fsync(f.fileno())
+        os.replace(temporary, p)
+    finally:
+        if temporary is not None:
+            temporary.unlink(missing_ok=True)
 
 
 def put_plan(state: dict, plan: Optional[dict]) -> None:

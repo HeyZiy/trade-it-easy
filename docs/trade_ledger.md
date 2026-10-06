@@ -77,14 +77,15 @@ derive(trades, as_of, prices) -> View    # 读侧：持仓 dict 同形供料 + e
 | `side` | `buy` / `sell` |
 | `qty` | **名义股数，必为 100 整数倍**（append 时 floor/round_lot 收敛） |
 | `price` | 名义成交价（影子成交=判定时点现价；手动=用户输入近似） |
-| `account` | `trend` / `core` / `satellite` —— **仅复盘归因标签**，不参与分账（见 4.5 单池口径） |
+| `account` | `core` / `satellite` / `quality_pool` —— **归因标签**，不参与分账（见 4.5 单池口径）；derive 时按末次买入带到持仓上，供核心/卫星归属拆分 |
 | `reasons` | 理由码字符串数组（如 `["pullback_ma10","sector_ok","B1_ext"]`），复盘地基 |
 | `source` | `cron` / `book` |
 | `manual` | bool：实盘底仓补记（入场日语义=该日，不追溯真实买入历史） |
 
 - 现金不落流水：现金 = 名义期初 − Σ买 + Σ卖。**单池口径**：
   现实妙想本来就是一个账户装全部策略，A1 敞口/卫星 10% 预算/核心权重全都按这个
-  混合口径算——台账整本单池推导，保持行为零漂移；`account` 标签只服务复盘归因，
+  混合口径算——台账整本单池推导，保持行为零漂移；`account` 标签服务复盘归因与
+  持仓归属拆分（rebalancer 按标签分核心/卫星，不再用代码名单反推），
   `view` 可按标签过滤展示。
 - 无手续费模型、无调入调出条目（见"范围外"）。字段演进走"加列容忍旧行"。
 
@@ -92,8 +93,10 @@ derive(trades, as_of, prices) -> View    # 读侧：持仓 dict 同形供料 + e
 
 - 持仓 dict 与妙想同形：`count`（Σ买−Σ卖）、`avail_count`（**date < as_of 的净持仓**，
   即 T+1）、`cost_price`（移动加权平均）、`market_value`（count×现价）——
-  `sell_rules.detect_sell_signals` 现读的字段一个不缺。
-- `entry_map`：每只最新 `buy` 流水的 date（喂 `ExitLedger.record_close` 与 16 日到期规则）。
+  `rebalancer.compare`、`execute_batch` 的卖出≤持仓校验、质量池 `assembly` 的
+  持仓计数，现读的字段一个不缺。同形之外只多一个 `account`（末次买入的标签，
+  缺省 `core`），供核心/卫星归属拆分。
+- `entry_map`：每只最新 `buy` 流水的 date（`book.py view` 的入场日列）。
 - 敞口：`invested = Σ market_value`，`equity = 名义期初全账户合计 + 浮盈`——
   `pullback_analysis._fetch_portfolio_exposure` 读此值（A1 档位判定本来就是比率，
   名义口径与真实口径结论一致）。现价取数失败时维持现有 fail-open `(0.0, 0.0)`。
@@ -106,9 +109,20 @@ derive(trades, as_of, prices) -> View    # 读侧：持仓 dict 同形供料 + e
 | `sell_pipeline.execute_sells` | 命中的卖出信号 `append_trade`（价=判定时点现价）；四态结果（已记账/记账失败/不足一手/试运行） |
 | `pullback_analysis.py` | 名单中**通过买侧全部门槛**的票自动 `append_trade(buy)`（`buy_pipeline.record_shadow_buys`）：gate+A1/A2 裁决放行、信号按评分从高到低依次记账（无评分门槛）、名义股数 = 仓位上限 ÷ 信号日收盘（floor_lot 整手，不足一手不记）、同票当日幂等；只出建议的（禁开仓日/--stocks 指定名单调试）不记 |
 | `etf_observe.py::_compute_allocation` | 持仓/余额读 derive（`rebalancer.compare` 签名不动） |
-| `etf_observe.py::_execute_batch` | 调仓批次走 `trade_ledger.execute_batch`（account=core）：整手收敛、全批次安全校验、逐单隔离记账单点在接口，入口只装配指令与渲染 |
+| `etf_observe.py::_execute_batch` | 调仓批次走 `trade_ledger.execute_batch`（account=core）：入口只装配指令与渲染，执行持仓/现金由批次 module 从指定台账读取 |
 | `industry_momentum.py::run/_execute` | 持仓/余额 derive 供料；轮动批次走 `execute_batch`（account=satellite），通用安全校验随批次接口收口；卫星 10% 预算为策略自有 policy，留在入口前置校验 |
 | `src/mx/executor.py` | 纯计算模块：`round_lot`/`floor_lot` 整手唯一口径，判定核继续消费；妙想现役仅剩 `MXService` 选股/资讯服务（`MX_APIKEY` 从 .env 保留） |
+
+批次 interface 为 `execute_batch(orders, account=..., trade_date=..., path=...)`，
+不接收调用方的持仓/现金快照，也不按 account 分账。批次日期不得早于台账最新
+流水日期，避免借用未来持仓或资金；`append_trade` 的手动旧日期补记能力保留。
+
+整手、代码及四位成交价归一后，按代码累计全部卖量，并预检买入总额是否超过
+台账现金与计划卖出回款；任一安全预检失败，返回 abort，整批零追加。通过后先
+卖后买，每笔写入前重新读取实际台账持仓与现金。卖出记账失败不贡献预计回款；
+运行中现金不足的原买单标记 failed，股数不自动缩减，继续检查其余指令。缩量、
+策略持仓名额和费用预检归各策略；通用批次保持持仓总量校验，T+1 可卖量由策略核使用。
+一条指令只产生一条执行结论，报告金额与实际四位记账价一致。
 
 ### 4.5 起点口径
 
@@ -133,11 +147,13 @@ derive(trades, as_of, prices) -> View    # 读侧：持仓 dict 同形供料 + e
 - 好测试=只测外部行为：derive 是纯函数（流水列表 + as_of + prices → 视图），
   不测内部 dict 结构；append 测"写一行再 derive 读回"闭环。
 - 重点用例：T+1 边界（当日买不可卖）、整手收敛（残腿<100）、移动加权成本、
-  分账户隔离（trend 流水不污染 core 敞口）、手动底仓 manual 字段的入场日语义、
+  跨归因标签单池（account 不隔离持仓/现金）、手动底仓 manual 字段的入场日语义、
   空仓日 derive 恒等空列表。
 - 判定核等价性：既有 `test_sell_pipeline.py` 的 plain-dict 假持仓模式原样保留
   （它们本来就不碰 client），新增 fixture 用 `tmp_path` 的 jsonl——与
   `ExitLedger(path=tmp/…)` 先例同款。
+- 批次测试先建立真实流水，再经 execute_batch 验证无新增流水、累计超卖、卖出
+  失败后的实际现金、过期调用方视图、四位价舍入、执行结论数量和执行后 derive 自洽。
 
 ## 六、范围外
 

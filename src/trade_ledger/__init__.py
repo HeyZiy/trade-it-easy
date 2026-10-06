@@ -5,8 +5,8 @@
 接口面三个动词——
 
 - append_trade：写侧单笔（cron 模拟记账确认 / book.py 手动建仓）；
-- execute_batch：写侧批次（batch.py）——整手收敛、两项通用安全校验
-  （卖量≤持仓、买额≤现金+卖出回款）、先卖后买、逐单隔离，返回结构化
+- execute_batch：写侧批次（batch.py）——真实台账派生、整手收敛、累计卖量
+  与批次资金预检、先卖后买、每笔实际现金校验、逐单隔离，返回结构化
   BatchResult 供入口纯渲染；策略自有约束（卫星预算等）留在消费方不进本接口；
 - derive：读侧（持仓 dict 同形妙想 get_positions + entry_map + 组合敞口），
 - snapshot_with_prices：读侧 + 现价装配（prices.py），供敞口/再平衡/轮动入口，

@@ -26,7 +26,6 @@ from typing import Dict, List, Optional, Tuple
 
 from src.etf.config import (
     NEUTRAL_BASELINE,
-    get_rotation_universe_codes,
     MIN_TRADE_DEVIATION, REBALANCE_SINGLE_THRESHOLD,
     REBALANCE_TOTAL_THRESHOLD,
 )
@@ -105,17 +104,18 @@ class ETFRebalancer:
     def split_rotation_positions(self, positions: List[dict]) -> Tuple[List[dict], float, List[dict]]:
         """拆分核心持仓与卫星（非核心）持仓。
 
+        归属看台账自带的 account 标签（写入侧由各策略 execute_batch 打标：
+        core/satellite/quality_pool），不再用代码名单反推——名单会随池轮换失效。
         卫星持仓独立预算，不参与核心仓偏离计算；
         核心资金 = 总资产 − 卫星持仓市值。
 
         Returns:
             (core_positions, rotation_mv, rotation_positions)
         """
-        rotation_codes = get_rotation_universe_codes()
         core_positions, rotation_positions = [], []
         rotation_mv = 0.0
         for p in positions:
-            if p.get("code", "") in rotation_codes:
+            if p.get("account", "core") != "core":
                 rotation_mv += float(p.get("market_value", 0) or 0)
                 rotation_positions.append(p)
             else:

@@ -16,7 +16,7 @@ import pytest
 import src.trading_calendar as tc
 from src.quality_pool import assembly
 from src.quality_pool import config as pool_config
-from src.quality_pool import execution
+from src.quality_pool import state as pool_state
 from src.trade_ledger.batch import BatchOrder, execute_batch
 from src.trade_ledger.ledger import load_trades
 
@@ -26,6 +26,7 @@ def env(tmp_path, monkeypatch):
     """隔离台账文件 + 固定日历（2026-09 起连续工作日）+ 单次状态表计数器。"""
     monkeypatch.setattr(pool_config, "POOL_LEDGER_PATH",
                         str(tmp_path / "pool_ledger.jsonl"))
+    monkeypatch.setattr(pool_config, "STATE_PATH", str(tmp_path / "state.json"))
     cal = [dt.date(2026, 9, 1) + dt.timedelta(days=i) for i in range(150)]
     cal = [d for d in cal if d.weekday() < 5]
     monkeypatch.setattr(tc, "latest_trading_day_on_or_before",
@@ -55,8 +56,7 @@ def env(tmp_path, monkeypatch):
 def _seed_holding(trade_date="2026-10-01", qty=5000, price=10.0):
     execute_batch([BatchOrder(code="600001", name="股600001", side="buy",
                               qty=qty, price=price, reason="entry")],
-                  account=pool_config.ACCOUNT, held_counts={},
-                  cash=1_000_000.0, trade_date=trade_date,
+                  account=pool_config.ACCOUNT, trade_date=trade_date,
                   path=pool_config.POOL_LEDGER_PATH)
 
 
@@ -95,17 +95,17 @@ def test_snapshot_missing_status_row_fail_closed(env):
     assert snap.st["600001"] is False  # 在表中的码不受缺行影响
 
 
-def test_record_trades_maps_intent_to_batch(env):
-    """意图 → 台账批次；空计划零记账零派生。"""
-    assert assembly.record_trades(execution.ExecPlan(), "2026-10-02") == []
+def test_execution_records_exit_and_updates_state(env):
+    """通过执行 interface 验证真实记账与跨日队列，不测试内部映射。"""
+    assembly.run_execution("2026-10-02")
     assert load_trades(pool_config.POOL_LEDGER_PATH) == []
 
     _seed_holding()
-    plan = execution.ExecPlan(trades=[execution.TradeIntent(
-        code="600001", name="股600001", side="sell", qty=5000,
-        price=12.0, reason="out_of_pool")])
-    lines = assembly.record_trades(plan, "2026-10-02")
-    assert lines and all("600001" in ln for ln in lines)
+    pool_state.save_state({"exit_queue": {"600001": "out_of_pool"}},
+                          pool_config.STATE_PATH)
+    report = assembly.run_execution("2026-10-02")
+    assert "600001" in report and "已记账" in report
     trades = load_trades(pool_config.POOL_LEDGER_PATH)
     assert [t.side for t in trades] == ["buy", "sell"]
     assert trades[-1].qty == 5000 and trades[-1].price == 12.0
+    assert pool_state.load_state(pool_config.STATE_PATH)["exit_queue"] == {}
