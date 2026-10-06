@@ -15,9 +15,10 @@ import pytest
 from src.etf import industry_momentum as im
 from src.etf.industry_momentum import (
     TOPN, RotationRow,
-    adjust_series, build_buy_orders, build_pool, build_rows,
+    build_buy_orders, build_pool, build_rows,
     build_sell_orders, filter_by_name, momentum_score,
 )
+from data_provider.bars import adjust_series  # 复权单点已迁 bars
 from src.mx.executor import round_lot
 
 

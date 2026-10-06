@@ -29,7 +29,7 @@ research/studies/industry_momentum/lM_v3_1.py，2024 窗 +82.67% / 超额夏普 
      成交形态）。
 
 设计：
-- 判定核（momentum_score / filter_by_name / build_pool / adjust_series /
+- 判定核（momentum_score / filter_by_name / build_pool /
   build_rows / build_sell_orders / build_buy_orders）零 I/O、无状态——
   场景测试直接注入，不碰网络与台账；
 - 取数收在编排层（fetch_universe / fetch_bars / fetch_prices /
@@ -38,7 +38,8 @@ research/studies/industry_momentum/lM_v3_1.py，2024 窗 +82.67% / 超额夏普 
 - 池快照持久化 data/industry_momentum_pool.json（rebuilt_on + 成员）：
   距上次重建 ≥20 个交易日（交易日历；不可用时回退自然日 ≥28 天）则重建，
   重建日取数较重（全候选全历史），日常只取池成员；
-- 价格口径：日线为未复权原始价，份额折算/拆分由 adjust_series 前复权
+- 价格口径：日线经 bars.get_etf_daily(adjust="qfq") 前复权
+  （份额折算单点在 data_provider.bars.adjust_series）
   （单日 |ret|>25% 视为折算，A 股 ETF 涨跌停 ±10/20% 不可能到达），
   amount 为元口径不调整——与研究线本地复刻同一处理。
 """
@@ -78,7 +79,6 @@ CORR_LOOKBACK = 250             # 相关性去重窗口（日收益）
 CORR_DEDUPE = 0.90              # 相关 ≥0.90 视为同一底层暴露
 REBUILD_EVERY = 20              # 池重建周期（交易日）
 REBUILD_FALLBACK_DAYS = 28      # 交易日历不可用时的自然日回退阈值
-SPLIT_JUMP = 0.25               # 单日 |ret|>25% 视为份额折算/拆分（涨跌停 ±10/20%）
 
 CROSS_BORDER_PREFIX = "513"     # 沪市跨境 ETF 代码段：代码级硬剔除，不依赖命名
 
@@ -182,25 +182,6 @@ def momentum_score(close_tail: Sequence[float], last_price: float) -> float:
         return round(float(score), 4)
     except Exception:
         return 0.0
-
-
-def adjust_series(close: pd.Series) -> pd.Series:
-    """份额折算/拆分前复权（研究线 adjust_splits 单列版）。
-
-    单日 |ret| > 25%（A 股 ETF 涨跌停 ±10/20%，不可能到达）视为折算/合并：
-    factor = cur/prev，此前价格全乘 factor（连续化），多次折算按时间顺序
-    累积即前复权到样本末。amount 为元口径不调整，与本函数无关。
-    """
-    s = close.dropna().astype(float)
-    if len(s) < 2:
-        return close
-    out = s.copy()
-    r = s.pct_change()
-    for d in r[r.abs() > SPLIT_JUMP].index:
-        i = s.index.get_loc(d)
-        factor = float(s.at[d]) / float(s.iloc[i - 1])
-        out.loc[out.index < d] *= factor
-    return out
 
 
 def filter_by_name(etfs: List[dict]) -> List[dict]:
@@ -499,26 +480,26 @@ def fetch_universe() -> List[dict]:
 
 
 def fetch_bars(codes: List[str]) -> Dict[str, pd.DataFrame]:
-    """拉池成员日线全历史（新浪 fund_etf_hist_sina）并逐只前复权。
+    """拉池成员日线全历史并逐只前复权（bars.get_etf_daily(adjust="qfq") 单点）。
 
     Returns:
         {code: DataFrame(index=date_str 升序, columns=[close(前复权), amount(元)])}；
         单只失败跳过（缺口由 build_rows 的 no_bars 计数感知）。
     """
-    from data_provider.bars import get_etf_daily_full
+    from data_provider.bars import get_etf_daily
 
     bars: Dict[str, pd.DataFrame] = {}
     for code in codes:
         try:
-            df = get_etf_daily_full(code)
+            df = get_etf_daily(code, adjust="qfq")
         except Exception:
             logger.warning(f"ETF 全历史获取失败 {code}", exc_info=True)
             df = None
         if df is None or df.empty:
             continue
-        out = pd.DataFrame({"close": adjust_series(df["close"]),
-                            "amount": df["amount"]})
-        bars[code] = out.dropna(subset=["close"])
+        bars[code] = pd.DataFrame({"close": df["close"].values,
+                                   "amount": df["amount"].values},
+                                  index=df["date"])
     return bars
 
 

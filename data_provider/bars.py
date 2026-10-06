@@ -14,7 +14,8 @@ data_collector / momentum_check 此前各自拼 sh/sz 前缀、各自选接口�
 - 市场前缀显式：sh/sz 前缀优先；裸码仅按确定规则推断（ETF 码族→市场无歧义；
   指数 399→sz、其余→sh），规则写死在各自函数内，不扩散。
 - 源选择（单源为主；指数三腿是"互斥代码族路由 + 一次网络保底"，不是 failover）：
-    ETF(51/52/56/58/15/16/18) → 新浪 stock_zh_index_daily
+    ETF(51/52/53/55/56/58/15/16/18) → 新浪 fund_etf_hist_sina（带 amount；
+      未复权原始价；份额折算前复权 adjust="qfq"，单点 adjust_series）
     A股指数(000/399)          → 中证官网 csindex（000 权威源）
                                 → 东财 index_zh_a_hist（399 深证/国证不在 csindex）
                                 → 新浪 stock_zh_index_daily（东财不可达时保底；
@@ -76,22 +77,72 @@ def _finalize(df: Optional[pd.DataFrame]) -> Optional[pd.DataFrame]:
     return df if len(df) > 0 else None
 
 
-def get_etf_daily(code: str) -> Optional[pd.DataFrame]:
-    """ETF 日线（新浪单源，全历史）。
+# 份额折算/拆分前复权（复权口径单点；「原始价含份额折算须前复权」的落点）
+SPLIT_JUMP = 0.25               # 单日 |ret|>25% 视为份额折算/拆分（涨跌停 ±10/20%，不可能到达）
 
-    code 可为裸码（512400）或带前缀（sh512400 / sz159870）。
-    非 ETF 码族直接拒绝（个股请走 DataFetcherManager）。
+
+def adjust_series(close: pd.Series) -> pd.Series:
+    """份额折算/拆分前复权（研究线 adjust_splits 单列版）。
+
+    单日 |ret| > SPLIT_JUMP 视为折算/合并：factor = cur/prev，此前价格全乘
+    factor（连续化），多次折算按时间顺序累积即前复权到样本末。amount 为元
+    口径不调整，与本函数无关。
+    """
+    s = close.dropna().astype(float)
+    if len(s) < 2:
+        return close
+    out = s.copy()
+    r = s.pct_change()
+    for d in r[r.abs() > SPLIT_JUMP].index:
+        i = s.index.get_loc(d)
+        factor = float(s.at[d]) / float(s.iloc[i - 1])
+        out.loc[out.index < d] *= factor
+    return out
+
+
+def get_etf_daily(code: str, *, adjust: Optional[str] = None) -> Optional[pd.DataFrame]:
+    """ETF 日线全历史（新浪 fund_etf_hist_sina 单源，带 amount 成交额）。
+
+    统一入口（三路合一）：池分数线（momentum）、observe/台账读侧现价补口
+    都走这里。返回形状唯一：date 列升序，
+    columns=['date','open','high','low','close','volume','amount']；
+    空/失败返回 None；非 ETF 码族拒绝（个股走 DataFetcherManager）。
+
+    adjust 口径（复权单点，勿在调用方自行折算）：
+    - None（默认）：未复权原始价。现货价口径用这个——折算后的最新价本就是现价；
+    - "qfq"：份额折算/拆分前复权（见 adjust_series）。历史比值口径
+      （强弱分数等）必须用这个——原始价含份额折算会伪造假跳水。
+
+    amount 为元口径，不参与复权（与东财逐值一致，研究线实测核对过）。
     """
     if not is_etf_code(code):
         logger.warning(f"[bars] {code} 不是 ETF：ETF 日线请传 ETF 代码；个股走 DataFetcherManager")
         return None
     import akshare as ak
     try:
-        raw = ak.stock_zh_index_daily(symbol=_etf_sym(code))
-        return _finalize(_norm_etf(raw))
+        raw = ak.fund_etf_hist_sina(symbol=_etf_sym(code))
     except Exception as e:
         logger.warning(f"[bars] ETF {code} 取数失败: {e}")
         return None
+    if raw is None or raw.empty:
+        return None
+    df = raw.copy()
+    if "amount" not in df.columns:
+        df["amount"] = 0.0                 # 源缺列时补零（流动性门槛会自然剔除）
+    df["date"] = pd.to_datetime(df["date"], errors="coerce").dt.strftime("%Y-%m-%d")
+    for c in ["open", "high", "low", "close", "volume", "amount"]:
+        if c not in df.columns:
+            df[c] = float("nan")
+        df[c] = pd.to_numeric(df[c], errors="coerce")
+    out = _finalize(df)
+    if out is None:
+        return None
+    if adjust == "qfq":
+        out = out.copy()
+        out["close"] = adjust_series(out["close"])
+    elif adjust is not None:
+        raise ValueError(f"不支持的 adjust 口径: {adjust!r}（None / 'qfq'）")
+    return out
 
 
 def get_index_daily(code: str, days: int = 400) -> Optional[pd.DataFrame]:
@@ -159,41 +210,3 @@ def get_etf_universe() -> Optional[pd.DataFrame]:
         "name": raw[name_col].astype(str).str.strip(),
     }).dropna(subset=["code"])
     return out.drop_duplicates(subset="code").sort_values("code").reset_index(drop=True)
-
-
-def get_etf_daily_full(code: str) -> Optional[pd.DataFrame]:
-    """ETF 日线全历史（新浪 fund_etf_hist_sina，带 amount 成交额）。
-
-    与 get_etf_daily（stock_zh_index_daily）的差异：本口带 amount（元口径，
-    与东财逐值一致——研究线 pit_pool_retest 与本次 2026-10-03 实测 512880
-    988,006,776 均精确相同）且**价格未复权**——份额折算/拆分由调用方前复权
-    （单日 |ret|>25% 顺序累积法，amount 为元口径不调整）。
-
-    Returns:
-        DataFrame(index=date('YYYY-MM-DD') 升序,
-                  columns=['open','high','low','close','volume','amount'])；
-        空/失败返回 None。
-    """
-    if not is_etf_code(code):
-        logger.warning(f"[bars] {code} 不是 ETF：ETF 日线请传 ETF 代码；个股走 DataFetcherManager")
-        return None
-    import akshare as ak
-    try:
-        raw = ak.fund_etf_hist_sina(symbol=_etf_sym(code))
-    except Exception as e:
-        logger.warning(f"[bars] ETF {code} 全历史取数失败: {e}")
-        return None
-    if raw is None or raw.empty:
-        return None
-    df = raw.copy()
-    if "amount" not in df.columns:
-        df["amount"] = 0.0                 # 源缺列时补零（流动性门槛会自然剔除）
-    df["date"] = pd.to_datetime(df["date"], errors="coerce").dt.strftime("%Y-%m-%d")
-    for c in ["open", "high", "low", "close", "volume", "amount"]:
-        if c not in df.columns:
-            df[c] = float("nan")
-        df[c] = pd.to_numeric(df[c], errors="coerce")
-    return (df.dropna(subset=["date", "close"])
-              .drop_duplicates(subset="date", keep="last")
-              .sort_values("date").set_index("date")
-              [["open", "high", "low", "close", "volume", "amount"]])
