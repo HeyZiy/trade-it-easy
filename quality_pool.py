@@ -170,17 +170,26 @@ def main() -> int:
     parser.add_argument("command", choices=["signal", "execute"])
     parser.add_argument("--dry-run", action="store_true",
                         help="只出报告与计划，不写状态/台账")
+    parser.add_argument("--force", action="store_true",
+                        help="跳过交易日检查（手动调试用；非交易日一律只读不记账）")
     args = parser.parse_args()
     setup_logging()
 
     today = date.today()
-    if not is_trading_day(today):
+    trading = is_trading_day(today)
+    if not args.force and not trading:
         logger.info(f"{today} 非交易日，跳过")
         return 0
+
+    # 非交易日不可能有真实成交，硬记账就是假日假账 → --force 试跑一律只读
+    dry_run = args.dry_run or not trading
+    if dry_run and not args.dry_run:
+        logger.info("非交易日 --force：本次只读，不写状态/台账")
+
     if args.command == "signal":
-        run_signal(today, dry_run=args.dry_run)
+        run_signal(today, dry_run=dry_run)
     else:
-        run_execute(today, dry_run=args.dry_run)
+        run_execute(today, dry_run=dry_run)
     return 0
 
 
