@@ -27,6 +27,7 @@
 import argparse
 import io
 import logging
+import os
 import sys
 from datetime import date
 from typing import Dict, List, Optional
@@ -194,4 +195,8 @@ def main() -> int:
 
 
 if __name__ == "__main__":
-    sys.exit(main())
+    # AmazingData/TGW SDK 启动了非守护 SWIG 回调线程，正常 sys.exit 会
+    # 等不到该线程导致进程挂住（terminate 时打 Swig::DirectorMethodException）。
+    # 主流程（信号/执行/报告/飞书推送）已全部完成后用 os._exit 直接终止进程，
+    # 残留 C 线程随进程一起被回收。
+    os._exit(main())
