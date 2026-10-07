@@ -17,6 +17,7 @@
 """
 import argparse
 import logging
+import os
 import sys
 
 from src.logging_config import setup_logging
@@ -50,4 +51,6 @@ def main() -> int:
 
 
 if __name__ == "__main__":
-    sys.exit(main())
+    # AmazingData/TGW SDK 启动了非守护 SWIG 回调线程，sys.exit 会等不到该线程
+    # 导致进程挂住；主流程完成后用 os._exit 直接终止进程（同 quality_pool.py）。
+    os._exit(main())
