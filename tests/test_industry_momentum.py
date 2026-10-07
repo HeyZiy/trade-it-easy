@@ -1,15 +1,19 @@
 # -*- coding: utf-8 -*-
 """卫星仓日频截面轮动场景测试：判定核零取数，摆场景注入。
 
-规则单点（strategy/industry_momentum.md v3_1 口径）：
+规则单点（v3_3_2交易规则）：
 - 池 = 动态规则池（513/词表/成熟/流动/相关去重），每 20 交易日重建；
 - 打分 = 25 根收盘 + 当日现价的对数加权回归（年化 × R²，跳水清零）；
 - 买 = score>0 降序补空槽等权，量价热度阈值为 101 分，不限制正常评分；
-- 卖 = 评分排名跌出前 40%；无绝对收益止损、无市场门控。
+- 卖 = score≤0连续3日、成本-8%限亏或+12%浮盈触发保本抬升；出池直评。
 """
+import ast
 from datetime import date
 import logging
+import math
+from pathlib import Path
 
+import numpy as np
 import pandas as pd
 import pytest
 
@@ -94,7 +98,29 @@ def _mature_bars(n: int = 300, end: str = END, drift: float = 1.001,
 
 # ══════════════ momentum_score：加权回归打分 ══════════════
 
+# 159530，截至2025-05-06的25根历史收盘加当日收盘。
+# 回归斜率为正，旧R²却为负；取倒数后旧实现反而给下降趋势正分。
+SCORE_SIGN_CASE = [
+    1.355, 1.352, 1.339, 1.321, 1.313, 1.323, 1.290, 1.161, 1.102,
+    1.133, 1.172, 1.198, 1.212, 1.207, 1.185, 1.180, 1.177, 1.219,
+    1.208, 1.263, 1.246, 1.246, 1.221, 1.239, 1.284, 1.318,
+]
+
+
 class TestMomentumScore:
+    @pytest.mark.parametrize("inverse,expected", [(False, 0.0001), (True, -0.0001)])
+    def test_weighted_r2_cannot_reverse_trend_sign(self, inverse, expected):
+        prices = [1 / p for p in SCORE_SIGN_CASE] if inverse else SCORE_SIGN_CASE
+        assert momentum_score(prices[:-1], prices[-1]) == expected
+
+    def test_upward_fit_remains_eligible_through_buy_pipeline(self):
+        code = "159530"
+        bars = _bars([1.355] * 275 + SCORE_SIGN_CASE[:-1])
+        rows, _ = build_rows([{"code": code, "name": "机器人ETF"}],
+                             {code: bars}, {code: SCORE_SIGN_CASE[-1]}, as_of=END)
+        orders, _ = build_buy_orders(rows, set(), 1_000_000, 0.0, 100_000)
+        assert [o.code for o in orders] == [code]
+
     def test_straight_uptrend_positive(self):
         closes = _up_closes(25)
         s = momentum_score(closes, closes[-1] * 1.001)
@@ -122,6 +148,35 @@ class TestMomentumScore:
         closes = [10.0 * 0.999 ** k for k in range(25)]
         s = momentum_score(closes, closes[-1] * 0.999)
         assert s < 0.0
+
+
+def test_platform_dedupe_revision_changes_only_pool_order():
+    """修正后的两组共享评分、成交台账与交易规则，只改变建池去重顺序。"""
+    root = Path(__file__).resolve().parents[1] / "research/studies/industry_momentum"
+    old = ast.parse((root / "lM_v3_3_2.py").read_text(encoding="utf-8"))
+    new = ast.parse((root / "lM_v3_3_4.py").read_text(encoding="utf-8"))
+    for tree in (old, new):
+        for node in tree.body:
+            if isinstance(node, ast.FunctionDef) and node.body and \
+                    isinstance(node.body[0], ast.Expr) and \
+                    isinstance(node.body[0].value, ast.Constant) and \
+                    isinstance(node.body[0].value.value, str):
+                node.body.pop(0)
+    old_functions = {n.name: ast.dump(n) for n in old.body if isinstance(n, ast.FunctionDef)}
+    new_functions = {n.name: ast.dump(n) for n in new.body if isinstance(n, ast.FunctionDef)}
+    assert old_functions.keys() == new_functions.keys()
+    assert [k for k in old_functions if old_functions[k] != new_functions[k]] == ["rebuild_pool"]
+    assert [ast.dump(n) for n in old.body if isinstance(n, ast.Assign)] == \
+        [ast.dump(n) for n in new.body if isinstance(n, ast.Assign)
+         and not any(isinstance(t, ast.Name) and t.id == "DEDUPE_ORDER" for t in n.targets)]
+    score_node = next(n for n in new.body if isinstance(n, ast.FunctionDef)
+                      and n.name == "momentum_score")
+    namespace = {"np": np, "math": math, "SCORE_DAYS": im.SCORE_DAYS}
+    exec(compile(ast.Module(body=[score_node], type_ignores=[]), "platform_score", "exec"), namespace)
+    score = namespace["momentum_score"]
+    for prices in (SCORE_SIGN_CASE, [1 / p for p in SCORE_SIGN_CASE],
+                   _up_closes(26), [1.0] * 26, _up_closes(25) + [1.0]):
+        assert score(prices[:-1], prices[-1]) == momentum_score(prices[:-1], prices[-1])
 
 
 # ══════════════ adjust_series：份额折算前复权 ══════════════
@@ -226,6 +281,25 @@ class TestBuildPool:
             {"510001": _bars(closes, amounts=[10 ** 8] * 300),
              "510002": _bars(closes, amounts=[2 * 10 ** 8] * 300)}, as_of=END)
         assert [m["code"] for m in members] == ["510002"]   # corr=1.0 → 留流动性高者
+
+    def test_corr_between_085_and_090_is_now_deduplicated(self):
+        import numpy as np
+
+        rng = np.random.default_rng(42)
+        a = rng.normal(size=299)
+        b = 0.88 * a + np.sqrt(1 - 0.88 ** 2) * rng.normal(size=299)
+        bars = {
+            "510001": _bars(np.r_[10.0, 10.0 * np.cumprod(1 + a * .01)],
+                            amounts=[10 ** 8] * 300),
+            "510002": _bars(np.r_[10.0, 10.0 * np.cumprod(1 + b * .01)],
+                            amounts=[2 * 10 ** 8] * 300),
+        }
+        corr = bars["510001"]["close"].pct_change().tail(250).corr(
+            bars["510002"]["close"].pct_change().tail(250))
+        assert 0.85 <= corr < 0.90
+        members, _ = build_pool(
+            [{"code": c, "name": c} for c in bars], bars, as_of=END)
+        assert [m["code"] for m in members] == ["510002"]
 
     def test_nan_corr_kept(self):
         """相关性不可比（日期错开无交集）→ 视为不可比，保留。"""
@@ -513,7 +587,8 @@ class TestPoolState:
         assert im.pool_needs_rebuild({"members": []}) is True
 
     def test_trading_day_cadence(self, monkeypatch):
-        state = {"rebuilt_on": "2026-09-01", "members": [{"code": "512880"}]}
+        state = {"rebuilt_on": "2026-09-01", "corr_dedupe": im.CORR_DEDUPE,
+                 "members": [{"code": "512880"}]}
         monkeypatch.setattr(im, "get_trading_dates",
                             lambda s, e: [date(2026, 9, d) for d in range(2, 22)])
         assert im.pool_needs_rebuild(state, date(2026, 9, 22)) is True    # 满 20 交易日
@@ -523,7 +598,8 @@ class TestPoolState:
 
     def test_calendar_down_fallback(self, monkeypatch):
         """交易日历不可用 → 自然日 ≥28 天回退。"""
-        state = {"rebuilt_on": "2026-09-10", "members": [{"code": "512880"}]}
+        state = {"rebuilt_on": "2026-09-10", "corr_dedupe": im.CORR_DEDUPE,
+                 "members": [{"code": "512880"}]}
         monkeypatch.setattr(im, "get_trading_dates", lambda s, e: [])
         assert im.pool_needs_rebuild(state, date(2026, 9, 30)) is False   # 20 天
         assert im.pool_needs_rebuild(state, date(2026, 10, 10)) is True   # 30 天
@@ -534,6 +610,7 @@ class TestPoolState:
         im.save_pool_state([{"code": "512880", "name": "证券ETF"}], "2026-10-03")
         state = im.load_pool_state()
         assert state["rebuilt_on"] == "2026-10-03"
+        assert state["corr_dedupe"] == im.CORR_DEDUPE
         assert state["members"] == [{"code": "512880", "name": "证券ETF"}]
 
     def test_bad_state_returns_empty(self, tmp_path, monkeypatch):
@@ -541,14 +618,21 @@ class TestPoolState:
         tmp_path.joinpath("pool.json").write_text("{broken", encoding="utf-8")
         assert im.load_pool_state() == {}
 
+    @pytest.mark.parametrize("threshold", [None, 0.90])
+    def test_threshold_change_rebuilds_fresh_pool(self, threshold):
+        state = {"rebuilt_on": "2026-10-07", "members": [{"code": "512200"}]}
+        if threshold is not None:
+            state["corr_dedupe"] = threshold
+        assert im.pool_needs_rebuild(state, date(2026, 10, 7)) is True
+
 
 # ══════════════ 判定核与常量的口径锚 ══════════════
 
 def test_rules_match_v3_3_2_constants():
-    """与 lM_v3_3_2 定稿常量一一对应（漂移即红）。
+    """出场沿用 lM_v3_3_2，生产相关性门槛按 2026-10-07 决定降至 0.85。
 
     v3_3_2 = score 出场 3 日确认 + -8% 限亏 + 保本损抬升 + 量价热度闸常开 +
-    出池持仓直评（出场侧六次换血与本地反事实的收敛结果，2026-10-07 收线）。
+    出池持仓直评。参数保留，评分修正后的绩效与版本比较待重新验证。
     """
     assert im.TOPN == 3
     assert im.CROWD_PCT_MAX == 101.0
@@ -558,7 +642,7 @@ def test_rules_match_v3_3_2_constants():
     assert im.SCORE_EXIT_CONFIRM == 3
     assert im.LIQ_AMT20_MIN == 50_000_000.0
     assert im.MATURE_DAYS == 365
-    assert im.CORR_DEDUPE == 0.90
+    assert im.CORR_DEDUPE == 0.85
     assert im.REBUILD_EVERY == 20
     assert im.SCORE_DAYS == 25 and im.DIVE_RATIO == 0.95
     assert im.EXCLUDE_CODE_PREFIXES == ("513", "518")   # 518 段 = v3_1 后补

@@ -1,9 +1,47 @@
 # -*- coding: utf-8 -*-
-# lM_v3_3_1 —— v3_3 + score 出场加 3 日确认（2026-10-06，基于 lM_v3_3 复制）
-# 成交台账已修正：按实际成交记账；分批卖出合并，未清仓不重置退出状态。
-# R²已批量修正为 w² 加权口径；缓存评分、候选与持仓样本需重建。
-# 旧结果及裁决已从工作脚本移除；修正后平台结果待重跑。
-# 旧收益、缓存 score/rank 与版本优劣不能作为修正评分的结论。
+# lM_v3_3_4 —— v3_3_2 改 动量优先相关性去重（2026-10-07）
+# 策略收益
+# 9.78%
+# 策略年化收益
+# 3.56%
+# 超额收益
+# -13.56%
+# 基准收益
+# 27.00%
+# 阿尔法
+# -0.061
+# 贝塔
+# 1.042
+# 夏普比率
+# -0.016
+# 胜率
+# 0.408
+# 盈亏比
+# 1.052
+# 最大回撤 
+# 30.00%
+# 索提诺比率
+# -0.022
+# 日均超额收益
+# -0.01%
+# 超额收益最大回撤
+# 30.95%
+# 超额收益夏普比率
+# -0.480
+# 日胜率
+# 0.497
+# 盈利次数
+# 40
+# 亏损次数
+# 58
+# 信息比率
+# -0.300
+# 策略波动率
+# 0.274
+# 基准波动率
+# 0.186
+# 最大回撤区间
+# 2024/11/11,2025/06/20
 
 import math
 
@@ -13,12 +51,15 @@ from jqdata import *
 
 TOPN = 3
 STOP_COST_PCT = 0.08                 # 限亏：跌破成本 -8% 清仓
-SCORE_EXIT_CONFIRM = 3               # 本版唯一新参数：score≤0 连续 N 日才清仓（churn 缓冲，-8% 限亏不延迟）
+BREAKEVEN_TRIGGER = 0.12             # 本版唯一新参数：浮盈曾达 +12% → 限亏价抬到 保本上方 1%
+BREAKEVEN_STOP = 0.01                # 保本微利线（成本×1.01）；布尔置位只升不降，清仓重置
+SCORE_EXIT_CONFIRM = 3               # score≤0 连续 N 日才清仓（churn 缓冲，限亏不延迟）
 CROWD_LOOKBACK, CROWD_MIN_OBS, CROWD_MAX = 250, 60, 101.0   # 量价热度准入阈值沿用 101 分（闸常开），热度仍计算入日志
 MIN_BARS = 250
 LIQ_AMT20_MIN = 50_000_000.0
 REBUILD_EVERY = 20
 CORR_DEDUPE = 0.90
+DEDUPE_ORDER = "momentum"             # 实验版；原版流动性优先作为对照
 MATURE_DAYS = 365
 SCORE_DAYS = 25                      # new.py m_days：25 根收盘 + 当日价
 
@@ -56,6 +97,7 @@ def initialize(context):
     g.day = 0
     g.trades = []                         # 卖出台账：{date, code, name, pnl}
     g.neg_run = {}                        # score≤0 连续计数（确认期用），卖出时清除
+    g.be = {}                             # 保本置位：code -> True（浮盈曾达 +12%），卖出时清除
     run_daily(run_rotation, time='14:55')
 
 
@@ -102,7 +144,19 @@ def rebuild_pool(dt):
     rets = history(250, '1d', 'close', security_list=liq).pct_change()
     corr = rets.corr(min_periods=120)
     kept = []
-    for c in sorted(liq, key=lambda x: -amt20[x]):
+    # 唯一变量：重建日先评分，再以分数决定相关性去重的遍历顺序。
+    ordered = sorted(liq, key=lambda x: -amt20[x])
+    if DEDUPE_ORDER == "momentum":
+        tails = history(SCORE_DAYS, '1d', 'close', security_list=liq)
+        cd = get_current_data()
+        scores = {c: momentum_score(list(tails[c].dropna().values),
+                                    float(cd[c].last_price))
+                  if not cd[c].paused else 0.0 for c in liq}
+        # 同分仍按流动性降序；日常买入仍要求 score>0。
+        ordered.sort(key=lambda c: -scores[c])
+    elif DEDUPE_ORDER != "liquidity":
+        raise ValueError("未知 DEDUPE_ORDER: %s" % DEDUPE_ORDER)
+    for c in ordered:
         ok = True
         for k in kept:
             r = corr.at[c, k]
@@ -203,8 +257,9 @@ def run_rotation(context):
     rank = {r['code']: i + 1 for i, r in enumerate(rows)}
 
     # 先卖：两条自身规则，不依赖池——①自身动量 score 转负（≤0，含跳水清零），
-    # 加 3 日确认（本版唯一变更）；②现价跌破成本 -8%（急跌保险，不延迟）。
-    # 持仓出池则直接评分（attribute_history），池洞结构性消失
+    # 加 3 日确认；②限亏线：默认 成本×0.92（急跌保险，不延迟），浮盈曾达 +12%
+    # 后抬至 成本×1.01（保本损，布尔置位只升不降；浮盈比值对份额折算不变，
+    # 无 v3_5 式水位 bug）。持仓出池则直接评分，池洞结构性消失
     score_of = {r['code']: r['score'] for r in rows}
     for sec in list(context.portfolio.positions.keys()):
         pos = context.portfolio.positions[sec]
@@ -215,6 +270,11 @@ def run_rotation(context):
         px = float(cd[sec].last_price)
         if px <= 0:
             continue
+        if px >= pos.avg_cost * (1.0 + BREAKEVEN_TRIGGER):
+            g.be[sec] = True
+        latched = g.be.get(sec, False)
+        stop_ratio = (1.0 + BREAKEVEN_STOP) if latched else (1.0 - STOP_COST_PCT)
+        below_stop = px <= pos.avg_cost * stop_ratio
         score = score_of.get(sec)
         if score is None:                           # 出池持仓：直接取 25 根评分
             h = attribute_history(sec, SCORE_DAYS, '1d', ['close'],
@@ -222,12 +282,12 @@ def run_rotation(context):
             if h is None or len(h) < SCORE_DAYS:
                 continue                            # 数据不足不评估，仍持有
             score = momentum_score(list(h['close'].values), px)
-        below_cost = px <= pos.avg_cost * (1.0 - STOP_COST_PCT)
         neg = 0 if score > 0 else g.neg_run.get(sec, 0) + 1
         g.neg_run[sec] = neg
-        if not below_cost and neg < SCORE_EXIT_CONFIRM:
+        if not below_stop and neg < SCORE_EXIT_CONFIRM:
             continue                                # 确认期未满，仍持有
-        reason = "跌破成本-8%" if below_cost else "score转负x%d日" % neg
+        reason = ("保本损" if latched else "跌破成本-8%") if below_stop \
+            else "score转负x%d日" % neg
         _submit_sell(context, sec, reason, "score=%.4f 现价%.3f" % (score, px))
 
     # 后买：score>0 且量价热度闸常开（本版 CROWD_MAX=101）的前空槽数等权

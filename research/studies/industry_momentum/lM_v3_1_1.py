@@ -1,40 +1,9 @@
 # -*- coding: utf-8 -*-
 # lM_v3_1_1 —— v3_1 + 实盘命名补口径（2026-10-06，基于 lM_v3_1 复制）
-# 本版唯一变更=池的命名/代码段口径三处，打分、退出线、执行、成本模型一字未改：
-#   1) 货币四词 '短融''日利''添益''快线'：实盘建池测出 511360/511880/511990/159003
-#      四只命名不含 '货币'/'现金' 却能过成熟+流动两关；实测两两 250 日收益相关仅
-#      -0.11~+0.64，相关去重关对它们完全无效，只有名称关拦得住。
-#   2) 'A50'：A50ETF/中证A50/富时A50/中国A50 共 22 只宽基漏网，实测零行业票误杀。
-#   3) 代码段硬剔除扩为 ('513','518')：518 段 8 只全是上金所黄金现货，其中
-#      518600 金ETF广发、518680 金ETF富国 命名不含 '黄金'/'上海金'。注意 v3_1 加
-#      '上海金' 时假设 518600 显示名含该词，但新浪口径叫 "金ETF广发"——命名源不
-#      稳定，故这一裁决改用代码段承载（对数据源免疫）。
-#   保留不动（2026-10-06 用户裁决）：商品期货类 159981 能源化工 / 159980 有色。
-#   判读预期：本版本比 v3_1 的池少 26 只命名级成员；若成绩与 v3_1(+82.67%) 差异大，
-#   说明命名口径本身在收益里占了权重，需要重估，而不是简单认"更干净=更好"。
-#   ——2026-10-06 结案：差异 0.26pp（同窗切点 +82.41% vs +82.67%），命名口径
-#   在收益里几乎不占权重，v3_1_1 是零代价的纯口径改进（数字见下方回填区）。
-#
-# 结果头注（回填区）：
-#   对照基准 v3_1（2024-01-01 ~ 2026-06-01，10 万）：+82.67% / 年化 29.60% /
-#     回撤 -21.43% / 夏普 0.860 / 64 笔；完整面板/台账及 v3、v2_1 实验史见
-#     lM_v3_1.py 与 lM_v3.py 头注。
-#   v3_1_1 本轮（2024-01-02 ~ 2026-09-30，10 万，实测已回填）：
-#     总 +69.45% / 年化 21.20% / **maxDD -31.06%**（2026-06-30→09-15，未修复）/
-#     夏普 0.784 / 波动 31.6% / β 1.308 / 超额 +42.45pp / 59 笔（24盈35亏）。
-#     分年：2024 +15.91%（基准 +14.68，超额 +1.23pp 建线首次年超额转正）/
-#     2025 +35.63%（+17.96pp）/ 2026YTD +7.79%（+13.67pp）。
-#     同窗切点对照（截至 2026-06-01）：+82.41% vs v3_1 +82.67%、段内 maxDD
-#     19.83% vs 21.43%、2024 已实现 +7,114 vs +3.0k——**命名口径补丁在收益里
-#     几乎不占权重，v3_1_1 是纯口径改进**，顶部那个待验问题结案为否。
-#     台账：Σ已实现 +22,796（占总利润 32.8%）、TOP3 +53,708=235.6%、其余 56 笔
-#     -30,912；期末未实现 +41,398（半导体 512480 一只 +38,531=全部利润 55%）。
-#     2026-06-01 之后增量段：8 笔净 -581——多跑的 4 个月交易口径零贡献。
-#
-# 规则口径：池六关/打分器/排名闸/执行与成本 = v3_1 一字未改，本版唯一变更
-#   见顶部；正式规格见 strategy/industry_momentum.md。
-# 运行：原计划 2024-01-01 ~ 2026-06-01 对照窗；实测改跑 2024-01-02 ~
-#   2026-09-30（见上方回填），初始资金 10 万，天频率。
+# 成交台账已修正：按实际成交记账；分批卖出合并，未清仓不重置退出状态。
+# R²已批量修正为 w² 加权口径；缓存评分、候选与持仓样本需重建。
+# 旧结果及裁决已从工作脚本移除；修正后平台结果待重跑。
+# 旧收益、缓存 score/rank 与版本优劣不能作为修正评分的结论。
 
 import math
 
@@ -171,9 +140,11 @@ def momentum_score(close_tail, price):
         w = np.linspace(1, 2, len(logp))
         slope, intercept = np.polyfit(x, logp, 1, w=w)
         ann = math.exp(slope * 250) - 1.0
-        ss_res = np.sum(w * (logp - (slope * x + intercept)) ** 2)
-        ss_tot = np.sum(w * (logp - np.mean(logp)) ** 2)
-        r2 = 1.0 - ss_res / ss_tot if ss_tot > 0 else 0.0
+        effective_w = w ** 2
+        mean_logp = float(np.average(logp, weights=effective_w))
+        ss_res = float(np.sum(effective_w * (logp - (slope * x + intercept)) ** 2))
+        ss_tot = float(np.sum(effective_w * (logp - mean_logp) ** 2))
+        r2 = float(np.clip(1.0 - ss_res / ss_tot, 0.0, 1.0)) if ss_tot > 0 else 0.0
         score = ann * r2
         if min(prices[-1] / prices[-2], prices[-2] / prices[-3],
                prices[-3] / prices[-4]) < 0.95:
@@ -238,13 +209,7 @@ def run_rotation(context):
             continue
         if r > math.ceil(EXIT_PCT * n):
             px = float(cd[sec].last_price)
-            pnl = ((px - pos.avg_cost) * pos.total_amount
-                   - px * pos.total_amount * 0.0001)   # 卖出万一佣金
-            order_target(sec, 0)
-            g.trades.append({'date': today, 'code': sec,
-                             'name': get_security_name(sec), 'pnl': pnl})
-            log.info("卖出 %s %s rank %d/%d 平仓盈亏 %+.0f"
-                     % (sec, get_security_name(sec), r, n, pnl))
+            _submit_sell(context, sec, "排名", "rank %d/%d" % (r, n))
 
     # 后买：score>0 且量价热度<90（None 放行）的前空槽数等权
     held = {s for s, p in context.portfolio.positions.items() if p.total_amount > 0}
@@ -273,36 +238,139 @@ def run_rotation(context):
             bought += 1
 
 
+# BEGIN SHARED PLATFORM LEDGER
+# Canonical functions mirrored into standalone JoinQuant scripts by
+# research/tools/sync_industry_momentum.py. No local import is needed on JoinQuant.
+
+
+def _ensure_sell_ledger():
+    for name, initial in (('sell_orders', {}), ('sell_partial', {}), ('sell_fills', [])):
+        if not hasattr(g, name):
+            setattr(g, name, initial)
+
+
+def _record_sell_order(context, order, meta):
+    """Reconcile cumulative fills; never use requested shares as executed shares."""
+    filled = int(order.filled)
+    if filled <= 0:
+        return 0
+    notional = float(order.price) * filled
+    # The standalone scripts set ETF selling commission to 0.0001, no minimum.
+    fee = getattr(order, 'commission', None)
+    fee = float(fee) if fee is not None else notional * 0.0001
+    delta = filled - meta['filled']
+    pnl = notional - meta['notional'] - meta['cost'] * delta - (fee - meta['fee'])
+    if delta == 0 and abs(pnl) < 1e-9:
+        return 0
+    meta.update(filled=filled, notional=notional, fee=fee)
+    code = meta['code']
+    today = context.current_dt.strftime('%Y-%m-%d')
+    g.sell_fills.append({'date': today, 'code': code, 'name': meta['name'],
+                         'amount': delta, 'pnl': pnl})
+    if delta > 0 and meta.get('ban_until') is not None:
+        g.ban[code] = meta['ban_until']
+    if meta['closed_index'] is not None:
+        # A final commission adjustment must update the same closed trade.
+        g.trades[meta['closed_index']]['pnl'] += pnl
+        return delta
+    g.sell_partial[code] = g.sell_partial.get(code, 0.0) + pnl
+    pos = context.portfolio.positions.get(code)
+    remaining = int(pos.total_amount) if pos is not None else 0
+    log.info('卖出成交 %s %s 触发[%s] %s | 本次%d份 累计%d份 剩余%d份 '
+             '成交均价%.4f 本次成交盈亏 %+.2f'
+             % (code, meta['name'], meta['reason'], meta['detail'], delta, filled,
+                remaining, float(order.price), pnl))
+    if remaining <= 0:
+        total = g.sell_partial.pop(code)
+        closed_index = len(g.trades)
+        for pending in g.sell_orders.values():
+            if pending['code'] == code and pending['closed_index'] is None:
+                pending['closed_index'] = closed_index
+        g.trades.append({'date': today, 'code': code, 'name': meta['name'], 'pnl': total})
+        for name in ('neg_run', 'be', 'peak', 'peaks'):
+            state = getattr(g, name, None)
+            if state is not None:
+                state.pop(code, None)
+        log.info('完成平仓 %s %s 合并成交盈亏 %+.2f' % (code, meta['name'], total))
+    return delta
+
+
+def _submit_sell(context, code, reason, detail='', ban_until=None):
+    """Snapshot cost before order_target mutates the platform position object."""
+    _ensure_sell_ledger()
+    cost = float(context.portfolio.positions[code].avg_cost)
+    order = order_target(code, 0)
+    if order is None:
+        log.info('卖出未成交 %s 触发[%s]，保留剩余持仓与退出状态' % (code, reason))
+        return 0
+    meta = {'code': code, 'name': get_security_name(code), 'cost': cost,
+            'reason': reason, 'detail': detail, 'filled': 0, 'notional': 0.0,
+            'fee': 0.0, 'closed_index': None, 'ban_until': ban_until}
+    # Store only serializable metadata in g, not platform Order objects.
+    g.sell_orders[str(order.order_id)] = meta
+    delta = _record_sell_order(context, order, meta)
+    if delta == 0:
+        log.info('卖出未成交 %s 触发[%s]，保留剩余持仓与退出状态' % (code, reason))
+    return delta
+
+
+def _sync_sell_orders(context):
+    _ensure_sell_ledger()
+    for order in get_orders().values():
+        meta = g.sell_orders.get(str(order.order_id))
+        if meta is not None:
+            _record_sell_order(context, order, meta)
+
+
+def after_trading_end(context):
+    """Capture subsequent fills and fees without counting the same fill twice."""
+    _sync_sell_orders(context)
+
+
 def on_strategy_end(context):
-    """免费日志替代交易 CSV 导出：集中度/分年/浮盈口径一次性打全。"""
+    """Report confirmed closed trades, partial realized P&L and reconciliation."""
+    # JoinQuant globals can shadow Python's sum with numpy.sum.
+    import builtins as python_builtins
+
+    _sync_sell_orders(context)
     trades = g.trades
-    total = float(sum([t['pnl'] for t in trades]))
-    wins = [t for t in trades if t['pnl'] > 0]
-    log.info("【台账】平仓 %d 笔（盈 %d 亏 %d）| Σ已实现 %+.0f"
-             % (len(trades), len(wins), len(trades) - len(wins), total))
-    ts = sorted(trades, key=lambda t: -t['pnl'])
-    for i, t in enumerate(ts[:5]):
-        log.info("【台账】TOP%d %s %s %s pnl=%+.0f"
-                 % (i + 1, t['date'], t['code'], t['name'], t['pnl']))
-    top3 = float(sum([t['pnl'] for t in ts[:3]]))
-    ratio = top3 / total * 100 if total > 0 else float('nan')
-    log.info("【台账】TOP3=%+.0f 占净利 %.1f%% | 其余 %d 笔合计 %+.0f"
-             % (top3, ratio, len(ts) - 3, total - top3))
+    closed = float(python_builtins.sum(t['pnl'] for t in trades))
+    partial = float(python_builtins.sum(g.sell_partial.values()))
+    realized = closed + partial
+    wins = len([t for t in trades if t['pnl'] > 0])
+    losses = len([t for t in trades if t['pnl'] < 0])
+    log.info('【台账】完成平仓 %d 笔（盈 %d 亏 %d 平 %d）| 合并盈亏 %+.2f'
+             % (len(trades), wins, losses, len(trades)-wins-losses, closed))
+    log.info('【台账】未清仓已实现 %+.2f | 全部成交已实现 %+.2f' % (partial, realized))
+    ranked = sorted(trades, key=lambda t: -t['pnl'])
+    for i, t in enumerate(ranked[:5]):
+        log.info('【台账】TOP%d %s %s %s pnl=%+.2f'
+                 % (i+1, t['date'], t['code'], t['name'], t['pnl']))
+    top3 = float(python_builtins.sum(t['pnl'] for t in ranked[:3]))
+    ratio = top3 / closed * 100 if closed > 0 else float('nan')
+    log.info('【台账】TOP3=%+.2f 占完成平仓净利 %.1f%% | 其余 %d 笔合计 %+.2f'
+             % (top3, ratio, python_builtins.max(0, len(trades)-3), closed-top3))
     years = {}
-    for t in trades:
-        d = years.setdefault(t['date'][:4], [0.0, 0])
-        d[0] += t['pnl']
-        d[1] += 1
-    for y in sorted(years):
-        log.info("【台账】分年平仓 %s: %+.0f（%d 笔）" % (y, years[y][0], years[y][1]))
-    upnl = 0.0
-    for s, p in context.portfolio.positions.items():
-        if p.total_amount > 0:
-            u = p.value - p.total_amount * p.avg_cost
-            upnl += u
-            log.info("【台账】期末持仓 %s %s 浮盈 %+.0f"
-                     % (s, get_security_name(s), u))
-    tv = context.portfolio.total_value
-    sc = context.portfolio.starting_cash
-    log.info("【台账】期末未实现 %+.0f | 期末权益 %.0f（总收益 %.2f%%）| 已实现占利润 %.1f%%"
-             % (upnl, tv, (tv / sc - 1) * 100, total / (tv - sc) * 100))
+    for fill in g.sell_fills:
+        year = fill['date'][:4]
+        years[year] = years.get(year, 0.0) + fill['pnl']
+    for year in sorted(years):
+        log.info('【台账】分年成交已实现 %s: %+.2f' % (year, years[year]))
+    unrealized = 0.0
+    for code, pos in context.portfolio.positions.items():
+        if pos.total_amount > 0:
+            value = pos.value - pos.total_amount * pos.avg_cost
+            unrealized += value
+            log.info('【台账】期末持仓 %s %s 浮盈 %+.2f'
+                     % (code, get_security_name(code), value))
+    equity = context.portfolio.total_value
+    initial = context.portfolio.starting_cash
+    log.info('【台账】期末未实现 %+.2f | 期末权益 %.2f（总收益 %.2f%%）'
+             % (unrealized, equity, (equity/initial-1)*100))
+    difference = equity - initial - realized - unrealized
+    if abs(difference) < 0.005:
+        difference = 0.0
+    log.info('【台账核对】权益增量 %+.2f = 成交已实现 %+.2f + 未实现 %+.2f '
+             '+ 待核对账户差额 %+.2f（含现金分红等未按成交归因的变动）'
+             % (equity-initial, realized, unrealized, difference))
+# END SHARED PLATFORM LEDGER

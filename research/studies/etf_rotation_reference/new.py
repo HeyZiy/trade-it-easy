@@ -243,9 +243,11 @@ class GlobalFundSelectionStrategy(BaseStrategy):
                 ann = math.exp(slope * 250) - 1.0
 
                 resid = y - (slope * x + intercept)
-                ss_res = float(np.sum(w * resid * resid))
-                ss_tot = float(np.sum(w * (y - np.mean(y)) ** 2))
-                r2 = 1 - ss_res / ss_tot if ss_tot > 0 else 0.0
+                effective_w = w ** 2
+                mean_y = float(np.average(y, weights=effective_w))
+                ss_res = float(np.sum(effective_w * resid * resid))
+                ss_tot = float(np.sum(effective_w * (y - mean_y) ** 2))
+                r2 = float(np.clip(1 - ss_res / ss_tot, 0.0, 1.0)) if ss_tot > 0 else 0.0
 
                 score = ann * r2
 
@@ -517,9 +519,11 @@ class EtfRotationStrategy(BaseStrategy):
                 annualized_return = math.exp(slope * 250) - 1
                 scores_data.loc[code, "annualized_returns"] = annualized_return
 
-                ss_res = np.sum(weights * (log_prices - (slope * x_values + intercept)) ** 2)
-                ss_tot = np.sum(weights * (log_prices - np.mean(log_prices)) ** 2)
-                r2 = 1 - ss_res / ss_tot if ss_tot > 0 else 0
+                effective_w = weights ** 2
+                mean_logp = float(np.average(log_prices, weights=effective_w))
+                ss_res = float(np.sum(effective_w * (log_prices - (slope * x_values + intercept)) ** 2))
+                ss_tot = float(np.sum(effective_w * (log_prices - mean_logp) ** 2))
+                r2 = float(np.clip(1 - ss_res / ss_tot, 0.0, 1.0)) if ss_tot > 0 else 0.0
                 scores_data.loc[code, "r2"] = r2
 
                 momentum_score = annualized_return * r2

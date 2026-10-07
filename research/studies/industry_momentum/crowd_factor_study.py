@@ -1,33 +1,9 @@
 # -*- coding: utf-8 -*-
-"""量价热度因子按 single_factor 工具口径的正式检验（ETF 适配器，2026-10-06）。
-
-实验：复用 research/tools/single_factor/single_factor_test.py 的纯统计核
-（evaluate_period / summarize_ic / membership_turnover），数据侧喂
-crowd_fwd_v1 面板（生产引擎原函数算出的 crowd/sp/cp + qfq 前瞻收益，
-分量镜像与 build_rows 对账 0 不一致；池=生产动态池每 20 交易日重建）。
-
-与工具默认的口径差异（均为本线约定）：
-- 信号=决策=入场日（14:55≈收盘，生产与回测同口径）；工具默认的股票
-  T+1 开盘入场不适用；收益=收盘→收盘 qfq，非重叠（h20 每 20 交易日、
-  h60 每 60 交易日一个信号，信号日=池重建网格点）；
-- 中性化不可用：ETF 无行业/市值控制变量（每只 ETF 即一个行业），仅原始；
-- 全截面主检验 groups=5、min_ic_stocks=15（池中位 28，取过半）；
-  候选集副检验（score>0 且 rank≤40%，均值 11.8 只/日）改为 groups=3、
-  min_ic_stocks=8——五分位在候选集上没有自由度；
-- hac_lags=3，mad 不截断，同工具默认。
-
-问题：验证生产闸门的方向假设"高热度→后续差"，即 IC<0、高减低<0（composite
-与占比分位按此判读）；价格分位在 crowd_fwd_v1 体检中呈弱正号，只作描述性
-对照，不按负向判读。
-声明：crowd_fwd_v1 已看过同段历史的分组表现，本检验是形式化复测
-（描述统计→按期 IC+HAC t），不是样本外验证。
-结论（2026-10-06）：**方向假设证伪**——全截面 20 日 IC -0.051 / t -1.49，
-方向对但不过显著性线，其余主检验 |t|≤1.64；闸门真正生效的候选集 20 日
-IC 反号 +0.016（t +0.30），即量价热度在"它被使用的地方"没有区分力。
-
-产出：research/studies/industry_momentum/reports/crowd_factor_v1/
-（periods_*.csv + summary.csv + README 追加判读）。
-"""
+# crowd_factor_study —— 量价热度因子检验（ETF 适配器）
+# 面板中的 score/rank 及候选集依赖旧评分；使用前重建面板并复核口径。
+# 方法：复用 single_factor 统计核，计算分组收益、IC、HAC t 与换手。
+# 旧结果及裁决已移除；使用前核对评分口径、重建派生样本并重新验证。
+# 旧收益、缓存 score/rank 与版本优劣不能作为修正评分的结论。
 
 import sys
 from pathlib import Path

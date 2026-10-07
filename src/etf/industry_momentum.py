@@ -1,19 +1,19 @@
 # -*- coding: utf-8 -*-
 """
 ===================================
-行业动量轮动 — 卫星仓引擎（日频截面，v3_3_2 口径）
+行业动量轮动 — 卫星仓引擎（日频截面，v3_3_2 交易规则 + R²修正）
 ===================================
 
 主账户卫星仓的战术策略：日频行业横截面动量，交易的是行业相对强弱的延续。
 核心逻辑一句话——持有当下最强的行业，不再是强者就换：入场、持有、退出全部使用同一个打分问题（"它的趋势还在不在"）。
 
-规则（strategy/industry_momentum.md，研究线定稿口径 v3_3_2 =
-research/studies/industry_momentum/lM_v3_3_2.py，2024 窗 +64.86% / maxDD
--21.72% / 夏普 0.611）：
+规则（strategy/industry_momentum.md，出场基于研究线 v3_3_2，
+相关性门槛于 2026-10-07 从 0.90 调整为 0.85，并修正 R²权重；
+研究基线 lM_v3_3_2 已原位修正评分，平台绩效待重跑）：
   1. 标的名单 = 动态规则池，每 20 交易日重建：全市场 ETF 表 → 513 前缀 +
      名称跨境词硬剔除 → 宽基/规模/风格/债券/货币/商品词表剔除（含单字'债'、
      '上海金'）→ 上市 ≥365 自然日 → 近 20 日均额 ≥5000 万 → 250 日收益相关
-     ≥0.90 贪心去重（留流动性最高）。固定 34 池已废弃（纳入/遗漏两层后视）。
+     ≥0.85 贪心去重（留流动性最高）。固定 34 池已废弃（纳入/遗漏两层后视）。
   2. 打分 = 近 25 根日收盘 + 当日现价共 26 点的对数价格加权线性回归
      （w=linspace(1,2)，后期权重大）→ score = 年化 × 加权 R²；近 3 个日环比
      任一 <0.95（跳水）则 score 清零。不用裸涨幅（ret20 把噪声当趋势）。
@@ -67,7 +67,7 @@ from src.trading_calendar import (get_trading_dates,
 
 logger = logging.getLogger(__name__)
 
-# ── 规则常量（与回测定稿口径 research/studies/industry_momentum/lM_v3_3_2.py 一一对应）──
+# ── 规则常量（出场沿用研究线 v3_3_2；生产相关性门槛已调整为 0.85）──
 
 SATELLITE_BUDGET_RATIO = 0.10   # 卫星仓总仓位上限（总资产占比）
 TOPN = 3                        # 等权持有只数
@@ -87,7 +87,7 @@ LIQ_LOOKBACK = 20               # 流动性门槛窗口（日均额）
 LIQ_AMT20_MIN = 50_000_000.0    # 近 20 日均成交额 ≥5000 万
 MATURE_DAYS = 365               # 上市 ≥365 自然日（首根日线计）
 CORR_LOOKBACK = 250             # 相关性去重窗口（日收益）
-CORR_DEDUPE = 0.90              # 相关 ≥0.90 视为同一底层暴露
+CORR_DEDUPE = 0.85              # 相关 ≥0.85 视为重复暴露，保留流动性更高者
 REBUILD_EVERY = 20              # 池重建周期（交易日）
 REBUILD_FALLBACK_DAYS = 28      # 交易日历不可用时的自然日回退阈值
 
@@ -158,10 +158,12 @@ class RotationRow:
 # ── 判定核（零 I/O）──
 
 def momentum_score(close_tail: Sequence[float], last_price: float) -> float:
-    """25 根日收盘 + 当日现价共 26 点的对数价格加权回归动量（lM_v3_1 镜像）。
+    """25 根日收盘 + 当日现价的对数回归动量（与修正后的 lM_v3_3_2 一致）。
 
     对数价格对 w=linspace(1,2) 加权线性回归 → 年化 = exp(slope×250)−1 →
     score = 年化 × 加权 R²（R² 惩罚歪斜路径，只放行"走得直"的趋势）；
+    polyfit 的有效残差平方权重为 w²，R²也用 w²残差、总离差和加权均值。
+    回归斜率不变；R²限于[0,1]，仅防浮点误差，不会反转趋势符号。
     近 3 个日环比任一 <0.95（跳水）清零；数据不足/非正价格返回 0。
     负分保留（排序供卖出用，买入侧 score>0 门槛）。
     """
@@ -176,9 +178,11 @@ def momentum_score(close_tail: Sequence[float], last_price: float) -> float:
         w = np.linspace(1.0, 2.0, len(logp))
         slope, intercept = np.polyfit(x, logp, 1, w=w)
         ann = math.exp(slope * 250.0) - 1.0
-        ss_res = float(np.sum(w * (logp - (slope * x + intercept)) ** 2))
-        ss_tot = float(np.sum(w * (logp - float(np.mean(logp))) ** 2))
-        r2 = 1.0 - ss_res / ss_tot if ss_tot > 0 else 0.0
+        effective_w = w ** 2
+        mean_logp = float(np.average(logp, weights=effective_w))
+        ss_res = float(np.sum(effective_w * (logp - (slope * x + intercept)) ** 2))
+        ss_tot = float(np.sum(effective_w * (logp - mean_logp) ** 2))
+        r2 = float(np.clip(1.0 - ss_res / ss_tot, 0.0, 1.0)) if ss_tot > 0 else 0.0
         score = ann * r2
         if min(prices[-1] / prices[-2], prices[-2] / prices[-3],
                prices[-3] / prices[-4]) < DIVE_RATIO:
@@ -518,7 +522,8 @@ def save_pool_state(members: List[dict], rebuilt_on: str) -> None:
     try:
         POOL_STATE_PATH.parent.mkdir(parents=True, exist_ok=True)
         POOL_STATE_PATH.write_text(
-            json.dumps({"rebuilt_on": rebuilt_on, "members": members},
+            json.dumps({"rebuilt_on": rebuilt_on, "corr_dedupe": CORR_DEDUPE,
+                        "members": members},
                        ensure_ascii=False, indent=1),
             encoding="utf-8")
     except OSError:
@@ -527,8 +532,8 @@ def save_pool_state(members: List[dict], rebuilt_on: str) -> None:
 
 def pool_needs_rebuild(state: dict, today: Optional[date] = None) -> bool:
     """距上次重建 ≥REBUILD_EVERY 个交易日 → 重建；交易日历不可用时回退
-    自然日 ≥REBUILD_FALLBACK_DAYS（宁可多重建不漏重建）。空快照必重建。"""
-    if not state or not state.get("rebuilt_on"):
+    自然日 ≥REBUILD_FALLBACK_DAYS（宁可多重建不漏重建）。空快照或去重门槛变更必重建。"""
+    if not state or not state.get("rebuilt_on") or state.get("corr_dedupe") != CORR_DEDUPE:
         return True
     today = today or date.today()
     try:

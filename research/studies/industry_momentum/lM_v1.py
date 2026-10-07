@@ -1,21 +1,8 @@
 # -*- coding: utf-8 -*-
 # rotation_env 平台重测——l2_etfself 已定版 + gate 三态门控（2026-09-30）
-# 引擎 = research/rotation_l2_JQ/l2_etfself.py 已定版（2026-09-29 平台跑分通过：
-# +247.07%/年化 18.9%），一字未改；本脚本只叠加环境门控层，用于重验
-# rotation_env 的方向性裁决（gate 轴优于 baseline，gate_down_flat 最优）。
-# 旧 rotation_env 底稿为不复权 ETF bars，绝对数字已作废（见该线 README）。
-#
-# 镜像纪律（冻结，不跟生产）：
-#   五态判定 _gate_state_label 镜像 src/market_state/market_gate.py（2026-09-30 冻结）；
-#   放行/清仓 policy 镜像 src/etf/industry_momentum.py::satellite_gate_policy（同日冻结）。
-#   对账件 research/rotation_env/check_gate_parity.py：平台 GATE 日志贴入后与
-#   生产 gate_state_series 逐日比对，不许带病采信跑分。
-#
-# 跑分方式：改 GATE_MODE 常量，同一文件分 4 次回测（其余参数一律不动）——
-#   baseline / gate_block / gate_flat / gate_down_flat
-# 已知近似：
-#   - 指数当日收盘用 14:55 的 last_price 近似（与生产快照补当日 bar 的尾盘口径一致）；
-#   - 门控清仓先于常规卖出、block_new 跳过买入（与旧 rotation_env 挂点语义一致）。
+# 历史版本：使用时核对评分与样本口径，重新验证与当前基线的比较。
+# 旧结果及裁决已移除；使用前核对评分口径、重建派生样本并重新验证。
+# 旧收益、缓存 score/rank 与版本优劣不能作为修正评分的结论。
 
 import math
 from jqdata import *
