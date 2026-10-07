@@ -49,7 +49,7 @@ v1.1.5 同时扩大候选范围、允许原来因财务缺失或未披露而排�
 
 交易层：原1日排序100万元 v1.1.2 收益+95.7%，随机一次运行+29.40%，5日排序约+89.5%，ROE 排序−21.99%。随机只有种子0且本金口径未统一，该差距不是原排序显著优于随机选择的统计证据。
 
-信号层：`../../tools/single_factor/roe_factor_study_jq.py` 已平台实跑。130轮信号、129个完整区间，123个区间满足 IC 最低样本数，配对覆盖率约99.7%。同一候选池测试1日/5日涨幅及行业、log市值中性化残差：
+信号层：`roe_factor_study_jq.py`（本目录）已平台实跑。130轮信号、129个完整区间，123个区间满足 IC 最低样本数，配对覆盖率约99.7%。同一候选池测试1日/5日涨幅及行业、log市值中性化残差：
 
 | 因子 | 平均 rank-IC | 普通均值 t | 每期最高组减最低组收益差 |
 |---|---:|---:|---:|
@@ -65,7 +65,7 @@ v1.1.5 同时扩大候选范围、允许原来因财务缺失或未披露而排�
 
 ## 问题三：筛选池本身能否改善后续收益？
 
-`../../tools/single_factor/pool_ic_probe_v1.py` 的128轮诊断：
+`pool_ic_probe_v1.py`（本目录）的128轮诊断：
 
 - 池内 rank-IC 均值+0.0029，t=+0.16，与前述排序诊断方向一致。
 - 池内后续收益均值+0.89%，池外+0.68%，差约+0.20个百分点，t=+0.61。
@@ -130,11 +130,13 @@ v1.1.5 同时扩大候选范围、允许原来因财务缺失或未披露而排�
 | `roe_rotation_v1_1_trades.csv` / `roe_rotation_v2_trades.csv` | 对应成交明细 |
 | `pool_rotation_v1_equity.csv` / `pool_rotation_v1_trades.csv` | 质量池轮动 v1 日频收益曲线与成交明细 |
 | `reports/market_regimes/report.html` | 上述导出曲线的状态归因 |
-| `../../tools/single_factor/roe_factor_study_jq.py` | 单文件、不下单的池内因子诊断；已平台实跑 |
-| `../../tools/single_factor/pool_ic_probe_v1.py` | 池内/池外探针；比较限制见上文 |
-| `../../tools/single_factor/roe_pool.py` / `roe_factor_study.py` | 多文件研究入口，供研究环境复用 |
+| `roe_factor_study_jq.py` | 单文件、不下单的池内因子诊断；已平台实跑（2026-10-06 自 tools/single_factor 迁入） |
+| `pool_ic_probe_v1.py` | 池内/池外探针；比较限制见上文（同日迁入） |
+| `roe_pool.py` / `roe_factor_study.py` | 多文件研究入口，供研究环境复用（同日迁入） |
 
-`../../tools/single_factor/README.md` 中旧的“池为装饰”“判死归档”等表述超出当前证据，本页记录上述研究边界；工具运行方式仍参考该目录说明。
+ROE 因子诊断工作流与实跑判读见本目录 `README_factor_study.md`（2026-10-06 自
+tools/single_factor/README.md 拆出——研究专属驱动随研究归档，工具目录只留可复用引擎）；
+单因子引擎的运行方式参考 `../../tools/single_factor/README.md`。
 
 ## 数据与执行局限
 

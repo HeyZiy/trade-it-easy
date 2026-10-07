@@ -44,7 +44,7 @@ class ROECandidatePool:
     def __init__(self, api, source_path=None):
         self.api = api
         self.source_path = Path(source_path or
-            Path(__file__).resolve().parents[2] / 'studies' / 'roe_quality' / 'roe_rotation_v1_1_2.py')
+            Path(__file__).resolve().parent / 'roe_rotation_v1_1_2.py')
         self.ns = load_pool_functions(self.source_path, api)
         self.history_closes = None
         self.history_asof = None

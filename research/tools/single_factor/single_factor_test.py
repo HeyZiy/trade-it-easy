@@ -108,7 +108,7 @@ def evaluate_period(factor, future_return, n_groups=5, min_ic_stocks=20):
     factor, future_return = clean(factor), clean(future_return)
     members = assign_groups(factor, n_groups)
     matched = pd.concat([factor.rename('factor'), future_return.rename('return')],
-                        axis=1).reindex(factor.index).dropna()
+                        axis=1, sort=False).reindex(factor.index).dropna()
     ic = np.nan
     if (len(matched) >= min_ic_stocks and matched['factor'].nunique() > 1
             and matched['return'].nunique() > 1):

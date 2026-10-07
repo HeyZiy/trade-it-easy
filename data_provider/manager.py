@@ -95,28 +95,26 @@ class DataFetcherManager:
         """
         初始化默认数据源列表
 
-        优先级动态调整逻辑：
-        - 如果配置了 TUSHARE_TOKEN：Tushare 优先级提升为 -1（仅次于 AmazingData）
-        - 否则按默认优先级：
-          -2. AmazingDataFetcher (Priority -2) - 配置了 TGW 凭证时启用（最高）
-          -1. TushareFetcher (Priority -1) - 配置了 Token 且初始化成功时（仅次于 AmazingData）
-           0. AkshareFetcher (Priority 0)
-           1. EfinanceFetcher (Priority 1)
-           2. TushareFetcher (Priority 2)
+        优先级（数字越小越先试）：
+          -2. AmazingDataFetcher - 配置了 TGW 凭证时启用（最高）
+           0. AkshareFetcher
+           1. EfinanceFetcher
+
+        Tushare 不在此列：它只声明个股日线（`KIND_STOCK_DAILY`），实盘链当前
+        无个股日线消费方，且账号积分不足以覆盖 ETF 日线与实时 Pro 接口，
+        留在列表里就是一个每次必失败的占位。`TushareFetcher` 类保留，
+        要启用时在 REALTIME_SOURCE_PRIORITY / 本列表显式加入即可。
         """
         from data_provider.fetchers.efinance_fetcher import EfinanceFetcher
         from data_provider.fetchers.akshare_fetcher import AkshareFetcher
-        from data_provider.fetchers.tushare_fetcher import TushareFetcher
         # 创建所有数据源实例（优先级在各 Fetcher 的 __init__ 中确定）
         efinance = EfinanceFetcher()
         akshare = AkshareFetcher()
-        tushare = TushareFetcher()  # 会根据 Token 配置自动调整优先级
 
         # 初始化数据源列表
         self._fetchers = [
             efinance,
             akshare,
-            tushare,
         ]
 
         # 配置了 TGW 凭证时启用 AmazingData（优先数据源）
@@ -132,7 +130,7 @@ class DataFetcherManager:
         except Exception as e:
             logger.warning(f"AmazingDataFetcher 初始化失败，已跳过: {e}")
 
-        # 按优先级排序（Tushare 如果配置了 Token 且初始化成功，优先级为 -1，仅次于 AmazingData）
+        # 按优先级排序（数字越小越先试，同优先级按初始化顺序）
         self._fetchers.sort(key=lambda f: f.priority)
 
         # 构建优先级说明

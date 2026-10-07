@@ -102,7 +102,7 @@ class TushareFetcher(BaseFetcher):
         如果 Token 未提供，此数据源将不可用
         """
         if not token:
-            logger.warning("Tushare Token 未提供（组装点未供料），此数据源不可用")
+            logger.debug("Tushare Token 未供料，此数据源不可用")
             return
 
         try:

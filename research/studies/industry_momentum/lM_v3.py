@@ -36,7 +36,7 @@
 #   R² 惩罚歪斜路径，只放行"走得直"的趋势——直接冲着 37% 胜率的噪声排名去。
 # 保留决定：
 #   - 买入侧加 score > 0 门槛（负分=下降趋势，排序里保留供卖出用，但不买）；
-#   - new.py 的 score < 5/6 上界**不抄**：过热防线仍是本线拥挤度 <90，
+#   - new.py 的 score < 5/6 上界**不抄**：过热防线仍是本线量价热度 <90，
 #     叠别人的调参常数会搅浑归因；
 #   - 卖出仍按 score 降序 rank 跌出前 40%，其余引擎与 v2_1 一字未改。
 # 已知口径差：new.py 用 attribute_history(code, 25) 拉分，本件复用既有 249 根
@@ -264,7 +264,7 @@ def run_rotation(context):
             order_target(sec, 0)
             log.info("卖出 %s %s rank %d/%d" % (sec, get_security_name(sec), r, n))
 
-    # 后买：score>0 且拥挤度<90（None 放行）的前空槽数等权
+    # 后买：score>0 且量价热度<90（None 放行）的前空槽数等权
     held = {s for s, p in context.portfolio.positions.items() if p.total_amount > 0}
     slots = TOPN - len(held)
     if slots > 0:
@@ -285,7 +285,7 @@ def run_rotation(context):
             if amount < 100:
                 continue
             order(code, amount)
-            log.info("买入 %s %s %d份 @%.3f score=%.4f crowd=%s rank %d/%d"
+            log.info("买入 %s %s %d份 @%.3f score=%.4f 量价热度=%s分 rank %d/%d"
                      % (code, r['name'], amount, px, r['score'],
                         r['crowd'], rank[code], n))
             bought += 1

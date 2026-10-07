@@ -22,7 +22,7 @@
 # 变更（v2 → v2_1，仅池口径，引擎其余一字未改）：
 #   命题定为"纯 A 股行业/主题动量轮动"，跨境资产剔除——理由：①收益源异质
 #   （油价/美股β/汇率/QDII溢价），ret20 排名失去同质可比性；②QDII 场内溢价
-#   使 14:55 中间价成交假设最不可靠（油气 +12.2k 是第 3 大利润）；③拥挤度
+#   使 14:55 中间价成交假设最不可靠（油气 +12.2k 是第 3 大利润）；③量价热度
 #   分母与 gate 语境均为 A 股。跨境暴露如需要，另立大类资产 sleeve 单独验证。
 #   实现：513 前缀（沪市跨境段）代码级硬剔除 + 名称补词 'HK','225','东证',
 #   '中韩','美国','恒指','油气'（堵深市跨境与变体命名）。
@@ -34,7 +34,7 @@
 # 池规则：每 20 交易日重建——全表 ETF → 513 前缀剔除 → 名称剔除（宽基/债券/
 #   货币/商品/跨境/风格）→ 上市 ≥365 自然日 → 近 20 日均额 ≥5000 万 →
 #   250 日收益相关 ≥0.90 去重（贪心留流动性最高者）。
-# 引擎与 v1/v2 逐条一致：20 日收益从强到弱、拥挤度 <90 放行 None、前 3 等权、
+# 引擎与 v1/v2 逐条一致：20 日收益从强到弱、量价热度 <90 放行 None、前 3 等权、
 #   跌出前 40% 卖、停牌持有、万一单边、无滑点、整手 100。
 # 运行：聚宽回测 2024-01-01 ~ 2026-06-01（对齐 v2 窗口），初始资金 10 万，
 #   天频率。
@@ -220,7 +220,7 @@ def run_rotation(context):
             order_target(sec, 0)
             log.info("卖出 %s %s rank %d/%d" % (sec, get_security_name(sec), r, n))
 
-    # 后买：拥挤度<90（None 放行）的前空槽数等权
+    # 后买：量价热度<90（None 放行）的前空槽数等权
     held = {s for s, p in context.portfolio.positions.items() if p.total_amount > 0}
     slots = TOPN - len(held)
     if slots > 0:
@@ -240,7 +240,7 @@ def run_rotation(context):
             if amount < 100:
                 continue
             order(code, amount)
-            log.info("买入 %s %s %d份 @%.3f ret20=%.2f crowd=%s rank %d/%d"
+            log.info("买入 %s %s %d份 @%.3f ret20=%.2f 量价热度=%s分 rank %d/%d"
                      % (code, r['name'], amount, px, r['ret20'],
                         r['crowd'], rank[code], n))
             bought += 1

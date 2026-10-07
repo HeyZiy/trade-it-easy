@@ -26,6 +26,44 @@ from src.notify.email import EmailSender
 logger = logging.getLogger(__name__)
 
 
+def _chunk_by_line(text: str, max_bytes: int) -> List[str]:
+    """按行累加到 UTF-8 字节预算内切片。
+
+    卡片 payload 必须在 json.dumps 之前切内容（切编码后的 JSON 会切坏结构，
+    旧法按字节硬切还会截断多字节汉字）；单行超预算时整行放行，不拆行。
+    """
+    chunks: List[str] = []
+    buf: List[str] = []
+    size = 0
+    for line in text.splitlines():
+        cost = len(line.encode("utf-8")) + 1
+        if buf and size + cost > max_bytes:
+            chunks.append("\n".join(buf))
+            buf, size = [], 0
+        buf.append(line)
+        size += cost
+    if buf:
+        chunks.append("\n".join(buf))
+    return chunks or [text]
+
+
+def _feishu_card(content: str) -> dict:
+    """把一段 lark_md 正文包成飞书自定义机器人卡片 payload。
+
+    卡片内 lark_md 渲染加粗/斜体/颜色/链接（text 消息里这些全按字面量显示）；
+    表格与图片仍不支持，故正文继续由 format_feishu_markdown 拍平。
+    """
+    return {
+        "msg_type": "interactive",
+        "card": {
+            "config": {"wide_screen_mode": True},
+            "elements": [
+                {"tag": "div", "text": {"tag": "lark_md", "content": content}},
+            ],
+        },
+    }
+
+
 class NotificationChannel(Enum):
     """通知渠道类型"""
     WECHAT = "wechat"      # 企业微信
@@ -191,10 +229,11 @@ class NotificationService(EmailSender):
    
     def _send_feishu(self, content: str) -> bool:
         """
-        通过飞书群机器人 Webhook 推送 Markdown 报告。
+        通过飞书群机器人 Webhook 以交互卡片推送报告。
 
-        飞书自定义机器人 Webhook 仅原生支持 text/post 等消息类型（不直接渲染 Markdown），
-        故先用 format_feishu_markdown 转换为飞书友好的纯文本，再按字节分片发送以避开长度限制。
+        text 消息不渲染任何 Markdown（`**加粗**` 原样显示），故走 msg_type=interactive
+        卡片：正文先由 format_feishu_markdown 拍平表格（卡片同样不支持表格），
+        再按行分片包成多张卡片以避开长度限制。
         注意：机器人安全设置请选「无需」或「自定义关键词」，勿选「签名校验」（本方法不计算签名）。
         """
         from src.notify.formatters import format_feishu_markdown
@@ -207,15 +246,11 @@ class NotificationService(EmailSender):
 
             text = format_feishu_markdown(content)
             max_bytes = int(getattr(cfg, 'feishu_max_bytes', 20000) or 20000)
-            raw = text.encode('utf-8')
-            chunks = [
-                raw[i:i + max_bytes].decode('utf-8', errors='ignore')
-                for i in range(0, len(raw), max_bytes)
-            ] or [text]
+            chunks = _chunk_by_line(text, max_bytes)
 
             ok = True
             for idx, chunk in enumerate(chunks, 1):
-                payload = {"msg_type": "text", "content": {"text": chunk}}
+                payload = _feishu_card(chunk)
                 try:
                     resp = requests.post(url, json=payload, timeout=15)
                     data = resp.json()

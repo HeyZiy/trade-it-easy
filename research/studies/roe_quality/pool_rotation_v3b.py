@@ -25,7 +25,7 @@ import pandas as pd
 TOP_N = 20
 KEEP_RANK = 30
 MOMENTUM_DAYS = 120
-MA_SCORE_WINDOW = 20     # 位置强度分数的均线窗口，预登记变体v3b
+MA_SCORE_WINDOW = 20     # 位置强度分数的均线窗口，变体v3b
 ROTATE_EVERY = 20
 ROE_MIN = 12.0
 NP_YOY_MIN = 10.0

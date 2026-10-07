@@ -75,6 +75,15 @@ def latest_trading_day_on_or_before(
     return d
 
 
+def trading_days_lag(earlier: date, later: date) -> Optional[int]:
+    """earlier 落后 later 几个交易日（同日为 0，跨周末/假期不计数）。
+
+    新鲜度类阈值的计数口径；日历区间查不到时返回 None，降级方向归调用方。
+    """
+    days = get_trading_dates(earlier, later)
+    return len(days) - 1 if days else None
+
+
 def is_trading_day(day: Optional[date] = None) -> bool:
     """判断某天是否为 A 股交易日（默认今天）。
 

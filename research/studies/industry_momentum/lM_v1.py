@@ -180,7 +180,7 @@ def run_rotation(context):
         if price <= 0:
             continue
         ret20 = round((price / list(h['close'].values)[-21] - 1) * 100, 3)
-        # ETF 自身拥挤度代理
+        # ETF 自身量价热度代理
         comps = []
         if code in money.columns:
             share_vals = [m / s for m, s in zip(money[code].values, rowsum.values)
@@ -199,7 +199,7 @@ def run_rotation(context):
     n = len(rows)
     rank = {r['code']: i + 1 for i, r in enumerate(rows)}
 
-    # 先卖：持仓跌出前 40%（与拥挤度无关）
+    # 先卖：持仓跌出前 40%（与量价热度无关）
     for sec in list(context.portfolio.positions.keys()):
         pos = context.portfolio.positions[sec]
         if pos.total_amount <= 0:
@@ -211,7 +211,7 @@ def run_rotation(context):
             order_target(sec, 0)
             log.info("卖出 %s %s rank %d/%d" % (sec, get_security_name(sec), r, n))
 
-    # 后买：拥挤度<90 的前 3 等权（block_new 时跳过）
+    # 后买：量价热度<90 的前 3 等权（block_new 时跳过）
     if not block_new:
         held = {s for s, p in context.portfolio.positions.items() if p.total_amount > 0}
         slots = TOPN - len(held)
@@ -232,7 +232,7 @@ def run_rotation(context):
                 if amount < 100:
                     continue
                 order(code, amount)
-                log.info("买入 %s %s %d份 @%.3f ret20=%.2f crowd=%s rank %d/%d"
+                log.info("买入 %s %s %d份 @%.3f ret20=%.2f 量价热度=%s分 rank %d/%d"
                          % (code, r['name'], amount, px, r['ret20'],
                             r['crowd'], rank[code], n))
                 bought += 1

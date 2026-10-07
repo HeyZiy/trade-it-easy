@@ -26,6 +26,15 @@ IGNORED_LOGGER_PREFIXES = (
     "charset_normalizer",
 )
 
+# 取数遥测类模式：失败由调用方按设计降级（多源合并/回退收盘，diag 与日报计数），
+# 只进日志文件不进告警——否则休市日/限流日的正常降级会刷屏，淹没真故障
+SUPPRESSED_PATTERNS = (
+    "[熔断]",       # 数据源熔断器记录
+    "[API错误]",    # 取数重试与最终失败遥测
+    "[实时合并]",   # 实时行情合并无可用数据源（回退最新收盘）
+    "[实时行情]",   # 单源快照为空
+)
+
 
 class LogAlertHandler(logging.Handler):
     """将 WARNING 及以上日志推送到通知渠道。
@@ -67,6 +76,8 @@ class LogAlertHandler(logging.Handler):
         """入队 WARNING+ 记录（去重 + 限流）。"""
         try:
             if record.name.startswith(IGNORED_LOGGER_PREFIXES):
+                return
+            if any(p in record.getMessage() for p in SUPPRESSED_PATTERNS):
                 return
             msg = self.format(record)
             key = (record.levelno, msg)

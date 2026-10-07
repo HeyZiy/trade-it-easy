@@ -27,14 +27,13 @@
 - 编排纯函数（daily.fetch_stock_daily / routing.query_first / realtime.merge_realtime_quotes）
   → 需自持 fetcher 集合的场景（研究 / 回测）直接 import 子模块，无需构造 manager。
 
-数据源优先级（动态调整）：
-【配置了 TGW 凭证（TGW_APPID + TGW_APP_KEY）+ TUSHARE_TOKEN 时】
-1. AmazingDataFetcher (Priority -2) - 最高优先级（星耀数智，需要 TGW 凭证）
-2. TushareFetcher (Priority -1) - 次高优先级（动态提升）
-3. AkshareFetcher (Priority 0)
-4. EfinanceFetcher (Priority 1)
+数据源优先级（默认列表，数字越小越先试）：
+1. AmazingDataFetcher (Priority -2) - 配置了 TGW 凭证（TGW_APPID + TGW_APP_KEY）时启用
+2. AkshareFetcher (Priority 0)
+3. EfinanceFetcher (Priority 1)
 
-提示：优先级数字越小越优先，同优先级按初始化顺序排列
+Tushare 不在默认列表（只声明个股日线、且当前账号积分覆盖不到 ETF 日线与实时
+Pro 接口）；`TushareFetcher` 类仍在，需要时在本列表显式加入。
 """
 
 from data_provider.fetchers.base import BaseFetcher

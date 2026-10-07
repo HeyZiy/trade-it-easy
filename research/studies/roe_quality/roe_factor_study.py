@@ -5,10 +5,16 @@ Notebook上传本文件、single_factor_test.py、roe_pool.py、roe_rotation_v1_
 %run roe_factor_study.py；可先在Config中缩短区间进行数据接口验证。
 完整候选池，不取前10只；不下单，不改变原策略文件。
 """
+import sys
 from pathlib import Path
 from dataclasses import asdict
 import hashlib
 import json
+
+# 平台四文件平铺同目录直接平导入；仓库内引擎在 tools/single_factor，补路径
+_REPO_TOOLS = Path(__file__).resolve().parents[2] / 'tools' / 'single_factor'
+if _REPO_TOOLS.is_dir():
+    sys.path.insert(0, str(_REPO_TOOLS))
 
 from single_factor_test import Config, run_study, report
 from roe_pool import ROECandidatePool

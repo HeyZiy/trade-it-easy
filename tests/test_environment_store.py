@@ -4,7 +4,11 @@ import json
 from datetime import date, timedelta
 from pathlib import Path
 
+import pytest
+
+import src.trading_calendar as tc
 from src.market_state.environment import (
+    SNAPSHOT_MAX_AGE_TRADING_DAYS,
     EnvironmentView,
     GATE_STATE_LABELS,
     GateRead,
@@ -21,6 +25,15 @@ def _diag(data_date="2026-09-27", gate_state="trending_up"):
     return GateDiagnosis(gate_state=gate_state, ma5=10.0, ma10=9.9, ma20=9.8, close=10.1,
                            bias_ma20=3.06, alignment="MA5>MA10>MA20（多头排列）",
                            path="②", note="", data_date=data_date)
+
+
+@pytest.fixture(autouse=True)
+def _every_day_is_trading(monkeypatch):
+    """默认日历口径：每天都是交易日、锚点=今天 → 年龄等价自然日数（假期另测）。"""
+    monkeypatch.setattr(tc, "latest_trading_day_on_or_before", lambda d, **kw: d)
+    monkeypatch.setattr(
+        tc, "get_trading_dates",
+        lambda s, e: [s + timedelta(days=i) for i in range(max((e - s).days + 1, 0))])
 
 
 def test_roundtrip(tmp_path: Path):
@@ -46,15 +59,53 @@ def test_gate_state_unavailable(tmp_path: Path):
 
 def test_stale_by_data_date(tmp_path: Path):
     f = tmp_path / "environment.json"
-    old = (date.today() - timedelta(days=5)).isoformat()
+    old = (date.today() - timedelta(days=SNAPSHOT_MAX_AGE_TRADING_DAYS + 1)).isoformat()
     save_environment(_diag(data_date=old), path=f)
     view = load_environment(path=f)
     assert view.gate_state.is_stale() is True
-    assert view.gate_state.age_days == 5
+    assert view.gate_state.age_trading_days == SNAPSHOT_MAX_AGE_TRADING_DAYS + 1
 
     fresh = date.today().isoformat()
     save_environment(_diag(data_date=fresh), path=f)
     assert load_environment(path=f).gate_state.is_stale() is False
+
+
+def test_holiday_gap_is_not_stale(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    """假期：数据日期已是最后交易日 → 年龄 0；跨过 6 个自然日不再误判过期。"""
+    anchor = date(2026, 9, 30)                      # 国庆前最后交易日
+    days = [date(2026, 9, 29), anchor]
+    monkeypatch.setattr(tc, "latest_trading_day_on_or_before", lambda d, **kw: anchor)
+    monkeypatch.setattr(tc, "get_trading_dates",
+                        lambda s, e: [d for d in days if s <= d <= e])
+    f = tmp_path / "environment.json"
+    save_environment(_diag(data_date="2026-09-30"), path=f)
+    view = load_environment(path=f)
+    assert view.gate_state.age_trading_days == 0
+    assert view.gate_state.is_stale() is False
+    assert gate_verdict_issue(view.gate_state) is None
+
+
+def test_holiday_first_trading_day_rolls_over(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    """连休后首个交易日用节前快照：落后 1 个交易日，仍在阈值内。"""
+    anchor = date(2026, 10, 9)
+    days = [date(2026, 9, 29), date(2026, 9, 30), anchor]
+    monkeypatch.setattr(tc, "latest_trading_day_on_or_before", lambda d, **kw: anchor)
+    monkeypatch.setattr(tc, "get_trading_dates",
+                        lambda s, e: [d for d in days if s <= d <= e])
+    f = tmp_path / "environment.json"
+    save_environment(_diag(data_date="2026-09-30"), path=f)
+    view = load_environment(path=f)
+    assert view.gate_state.age_trading_days == 1
+    assert gate_verdict_issue(view.gate_state) is None
+
+
+def test_calendar_down_falls_back_to_natural_days(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    """日历不可用 → 回退自然日计数（宁可放行不误杀）。"""
+    monkeypatch.setattr(tc, "get_trading_dates", lambda s, e: [])
+    f = tmp_path / "environment.json"
+    old = (date.today() - timedelta(days=5)).isoformat()
+    save_environment(_diag(data_date=old), path=f)
+    assert load_environment(path=f).gate_state.age_trading_days == 5
 
 
 def test_missing_file_returns_none(tmp_path: Path):
@@ -120,7 +171,7 @@ def test_issue_stale_verdict(tmp_path: Path):
     old = (date.today() - timedelta(days=5)).isoformat()
     save_environment(_diag(data_date=old), path=f)
     issue = gate_verdict_issue(load_environment(path=f).gate_state)
-    assert issue is not None and "5 天未更新" in issue
+    assert issue is not None and "5 个交易日未更新" in issue
 
 
 # ── GateRead / load_gate_verdict：消费方读取单点 ──

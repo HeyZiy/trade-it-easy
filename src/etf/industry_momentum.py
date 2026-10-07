@@ -1,16 +1,15 @@
 # -*- coding: utf-8 -*-
 """
 ===================================
-行业动量轮动 — 卫星仓引擎（日频截面，v3_1 口径）
+行业动量轮动 — 卫星仓引擎（日频截面，v3_3_2 口径）
 ===================================
 
 主账户卫星仓的战术策略：日频行业横截面动量，交易的是行业相对强弱的延续。
-核心逻辑一句话——持有当下最强的行业，不再是强者就换：入场、持有、退出全部
-使用同一个截面问题（"它还是不是最强之一"），没有突破条件、没有趋势过滤、
-没有绝对收益止损（大盘回调时最强行业也会收益转负，但"仍是最强"就该继续持有）。
+核心逻辑一句话——持有当下最强的行业，不再是强者就换：入场、持有、退出全部使用同一个打分问题（"它的趋势还在不在"）。
 
-规则（strategy/industry_momentum.md，研究线定稿口径 v3_1 =
-research/studies/industry_momentum/lM_v3_1.py，2024 窗 +82.67% / 超额夏普 +0.379）：
+规则（strategy/industry_momentum.md，研究线定稿口径 v3_3_2 =
+research/studies/industry_momentum/lM_v3_3_2.py，2024 窗 +64.86% / maxDD
+-21.72% / 夏普 0.611）：
   1. 标的名单 = 动态规则池，每 20 交易日重建：全市场 ETF 表 → 513 前缀 +
      名称跨境词硬剔除 → 宽基/规模/风格/债券/货币/商品词表剔除（含单字'债'、
      '上海金'）→ 上市 ≥365 自然日 → 近 20 日均额 ≥5000 万 → 250 日收益相关
@@ -18,26 +17,33 @@ research/studies/industry_momentum/lM_v3_1.py，2024 窗 +82.67% / 超额夏普 
   2. 打分 = 近 25 根日收盘 + 当日现价共 26 点的对数价格加权线性回归
      （w=linspace(1,2)，后期权重大）→ score = 年化 × 加权 R²；近 3 个日环比
      任一 <0.95（跳水）则 score 清零。不用裸涨幅（ret20 把噪声当趋势）。
-  3. 买 = score>0（负分=下降趋势不接）且复合拥挤度 <90（缺数据放行），评分
-     降序补足空槽等权（每只 = min(可用现金/空槽数, 卫星总值/3)）；当期卖出
-     标的当期不占槽；卖 = 评分排名跌出前 40%（不设绝对收益止损）。卖出优先。
-  4. 复合拥挤度 = 两分量均值：成交额占池内比重 250 日分位 + 自身收盘价
-     250 日分位（PE 分位分量已删：数据侧后视风险 + 与价格分位语义重复）。
-  5. 无市场门控——截面退出 + 准入过滤即引擎的全部防御。
+  3. 卖（v3_3_2 出场，持仓出池也直评——池洞结构性消失）：
+     ① score ≤ 0 连续 3 个交易日（确认期滤 0 轴震荡误杀）；
+     ② 限亏线：现价 ≤ 成本×0.92（急跌保险，当日执行不延迟）；
+     ③ 保本损抬升：浮盈曾达 +12% 后限亏价抬至 成本×1.01（布尔置位只升不降，
+       清仓重置；浮盈比值对份额折算不变，无 v3_5 式水位 bug）。
+  4. 买 = score>0（负分=下降趋势不接）且量价热度闸常开（CROWD_PCT_MAX=101，量价热度
+     仍计算入报告），评分降序补足空槽等权（每只 = min(可用现金/空槽数,
+     卫星总值/3)）；全部卫星持仓占槽（出池持仓受管，不再有人工处置残留）。
+  5. 量价热度（0～100 分）= 两分量均值：成交额占池内比重 250 日分位 + 自身收盘价
+     250 日分位（PE 分位分量已删：数据侧后视风险 + 与价格分位语义重复）；
+     当前准入阈值 101 分，量价热度不限制买入；该指标描述量价状态，不测量持仓拥挤。
   6. 执行：本引擎只出指令；尾盘入口 industry_momentum.py（14:45~14:55）经
      trade_ledger.execute_batch 记名义台账（account=satellite，信号当日现价
      成交形态）。
 
 设计：
-- 判定核（momentum_score / filter_by_name / build_pool /
-  build_rows / build_sell_orders / build_buy_orders）零 I/O、无状态——
-  场景测试直接注入，不碰网络与台账；
+- 判定核（momentum_score / filter_by_name / build_pool / build_rows /
+  held_exit_facts / build_sell_orders / build_buy_orders）零 I/O、无状态——
+  退出判定从持仓期收盘序列**无状态重算**（neg_run 逐日重放、保本置位由
+  入场以来收盘比值导出），不维护跨日可变状态，自愈且可测；
 - 取数收在编排层（fetch_universe / fetch_bars / fetch_prices /
   rotation_snapshot）：全市场名单与带 amount 日线走 data_provider 新浪单源，
-  当日现价走实时报价（缺数据回退最新收盘并在 diag 计数）；
+  当日现价走实时报价（缺数据回退最新收盘并在 diag 计数）；卫星持仓的 K 线
+  由 analyze_rotation 按持仓码补拉（出池直评的数据面）；
 - 池快照持久化 data/industry_momentum_pool.json（rebuilt_on + 成员）：
   距上次重建 ≥20 个交易日（交易日历；不可用时回退自然日 ≥28 天）则重建，
-  重建日取数较重（全候选全历史），日常只取池成员；
+  重建日取数较重（全候选全历史），日常只取池成员；池只管买入侧，卖出不依赖；
 - 价格口径：日线经 bars.get_etf_daily(adjust="qfq") 前复权
   （份额折算单点在 data_provider.bars.adjust_series）
   （单日 |ret|>25% 视为折算，A 股 ETF 涨跌停 ±10/20% 不可能到达），
@@ -56,17 +62,22 @@ import numpy as np
 import pandas as pd
 
 from src.mx.executor import round_lot
-from src.trading_calendar import get_trading_dates
+from src.trading_calendar import (get_trading_dates,
+                                  latest_trading_day_on_or_before)
 
 logger = logging.getLogger(__name__)
 
-# ── 规则常量（与回测定稿口径 research/studies/industry_momentum/lM_v3_1.py 一一对应）──
+# ── 规则常量（与回测定稿口径 research/studies/industry_momentum/lM_v3_3_2.py 一一对应）──
 
 SATELLITE_BUDGET_RATIO = 0.10   # 卫星仓总仓位上限（总资产占比）
 TOPN = 3                        # 等权持有只数
-EXIT_RANK_PCT = 0.40            # 退出线：评分排名跌出前 40%
-CROWD_PCT_MAX = 90.0            # 复合拥挤度准入上限（≥90 禁买，缺数据放行）
-CROWD_LOOKBACK = 250            # 拥挤度分量的历史分位窗口（日）
+STOP_COST_PCT = 0.08            # 限亏：现价 ≤ 成本×0.92 当日清仓（急跌保险，不延迟）
+BREAKEVEN_TRIGGER = 0.12        # 保本损置位：浮盈曾达 +12%（相对成本）
+BREAKEVEN_STOP = 0.01           # 置位后限亏价抬至 成本×1.01（只升不降，清仓重置）
+SCORE_EXIT_CONFIRM = 3          # score≤0 连续 N 日清仓（滤 0 轴震荡误杀）
+# crowd / CROWD_* 沿用历史字段名，统一表示量价热度评分（单位：分）。
+CROWD_PCT_MAX = 101.0           # 准入阈值高于评分上限，量价热度不限制买入
+CROWD_LOOKBACK = 250            # 量价热度分量的历史分位窗口（日）
 CROWD_MIN_OBS = 60              # 分量最少观测数（不足则该分量缺失）
 MIN_BARS = 250                  # 截面/入池门槛（与相关性去重窗口同宽）
 STALE_DAYS = 10                 # 最后日线距今超过 N 个自然日 → 停牌/退市，剔除截面
@@ -80,13 +91,20 @@ CORR_DEDUPE = 0.90              # 相关 ≥0.90 视为同一底层暴露
 REBUILD_EVERY = 20              # 池重建周期（交易日）
 REBUILD_FALLBACK_DAYS = 28      # 交易日历不可用时的自然日回退阈值
 
-CROSS_BORDER_PREFIX = "513"     # 沪市跨境 ETF 代码段：代码级硬剔除，不依赖命名
+# 代码段硬剔除（结构口径，不依赖命名）：513 沪市跨境 ETF / 518 上金所黄金现货 ETF。
+# 518 段实测 8 只全是商品现货，其中 518600 金ETF广发、518680 金ETF富国 命名不含
+# '黄金'/'上海金'，仅靠词表漏网——与 v3_1 剔上海金同一裁决，只是换成代码段。
+EXCLUDE_CODE_PREFIXES = ("513", "518")
 
 # 名称剔除词：宽基/规模/风格/债券/货币/商品/跨境——行业与主题保留。
 # 末尾 '债'（单字，盖国开债/地债，行业名无'债'字不误杀）与 '上海金'
 # （不能用单字'金'，误杀稀有金属/稀土）= v3_1 堵商品/债漏网的单变量改动。
-EXCLUDE_KW = ('沪深300', '中证500', '中证1000', '中证800', '中证全指', '中证2000',
-              '中证A500', 'A500', 'A100', '上证50', '上证180', '上证380', '上证580',
+# 'A50'（宽基组内）= 2026-10-06 补的漏网：A50ETF/中证A50/富时A50/中国A50 共 22 只命名
+#   不含 'A500'，实测无一只行业票含 'A50' 子串。
+# 末尾货币四词 = 2026-10-06 实盘建池测出的漏网：511360 短融、511880 日利、
+# 511990 添益、159003 快线，命名都不含 '货币'/'现金'，却能过成熟+流动两关占池位。
+EXCLUDE_KW = ('沪深300', '中证500', '中证1000', '中证800', '中证全指', '2000', '200',
+              '中证A500', 'A500', 'A50', 'A100', '上证50', '上证180', '上证380', '上证580',
               '上证指数', '科创50',
               '科创100', '科创综', '创业板50', '创业板综', '创业板指', '创业板',
               '双创', '北证', '深证100', '基本面50', '红利', '股息', '国债', '政金',
@@ -96,7 +114,8 @@ EXCLUDE_KW = ('沪深300', '中证500', '中证1000', '中证800', '中证全指
               '龙头', 'ESG', '养老', 'FOF', '联动', '增强', '价值', '成长',
               '质量', '低波', '动量', '多因子', '自由现金流',
               'HK', '225', '东证', '中韩', '美国', '恒指', '油气',
-              '债', '上海金')
+              '债', '上海金',
+              '短融', '日利', '添益', '快线')
 
 POOL_STATE_PATH = Path(__file__).parent.parent.parent / "data" / "industry_momentum_pool.json"
 
@@ -120,25 +139,20 @@ class RotationOrder:
 
 @dataclass
 class RotationRow:
-    """截面单只 ETF 的当日事实：动量评分 + 拥挤度，判定核只读此表。"""
+    """截面单只 ETF 的当日事实：动量评分 + 量价热度，判定核只读此表。"""
     code: str
     name: str
     close: float                        # 最新前复权收盘（实时价缺失时=price）
     price: float                        # 当日现价（实时报价，成交价口径）
     score: float                        # 动量评分 = 年化 × 加权 R²（跳水/失败=0）
     rank: int = 0                       # 1 = 最强
-    n: int = 0                          # 截面成员数（退出线 = ceil(EXIT_RANK_PCT * n)）
-    crowd: Optional[float] = None       # 复合拥挤度（缺数据放行）
+    n: int = 0                          # 截面成员数（买入排序展示用）
+    crowd: Optional[float] = None       # 量价热度（0～100 分；分量缺数据时为 None）
 
     @property
     def buy_allowed(self) -> bool:
-        """准入：拥挤度 <90（缺数据放行）；score>0 门槛在买入侧单独判。"""
+        """准入：量价热度 < CROWD_PCT_MAX（闸常开，缺数据放行）；score>0 门槛在买入侧单独判。"""
         return self.crowd is None or self.crowd < CROWD_PCT_MAX
-
-    @property
-    def exit_rank(self) -> int:
-        """退出线：排名 > 此值 → 卖出。"""
-        return math.ceil(EXIT_RANK_PCT * self.n)
 
 
 # ── 判定核（零 I/O）──
@@ -175,7 +189,7 @@ def momentum_score(close_tail: Sequence[float], last_price: float) -> float:
 
 
 def filter_by_name(etfs: List[dict]) -> List[dict]:
-    """池第 1-2 关（纯函数）：513 前缀硬剔除 + 名称剔除词表。
+    """池第 1-2 关（纯函数）：代码段硬剔除（513 跨境 / 518 黄金现货）+ 名称剔除词表。
 
     全部用当时数据，无后视。词表命中判定用列表推导——不用裸 any(生成器)，
     numpy 覆盖下 np.any 对生成器恒真（v2 空池事故真因）。
@@ -184,7 +198,7 @@ def filter_by_name(etfs: List[dict]) -> List[dict]:
     for e in etfs:
         code = str(e.get("code", "")).zfill(6)
         name = str(e.get("name", ""))
-        if not code or code.startswith(CROSS_BORDER_PREFIX):
+        if not code or code.startswith(EXCLUDE_CODE_PREFIXES):
             continue
         hits = [k for k in EXCLUDE_KW if k in name]
         if hits:
@@ -262,11 +276,11 @@ def _pct_in_window(vals: Sequence[float], lookback: int) -> Optional[float]:
 def build_rows(pool: List[dict], bars: Dict[str, pd.DataFrame],
                prices: Dict[str, float], as_of: Optional[str] = None
                ) -> Tuple[List[RotationRow], dict]:
-    """构建当日截面：动量评分从强到弱排名 + 两分量复合拥挤度。
+    """构建当日截面：动量评分从强到弱排名 + 两分量量价热度。
 
     prices[code] = 当日现价（实时报价；缺失回退最新收盘并计入 diag）。
     停牌/退市（最后日线距今 > STALE_DAYS）与不足 MIN_BARS 的池成员不入截面。
-    拥挤度成交额占比分量的分母 = 池内有数据成员的当日成交额之和（缺数据
+    量价热度成交额占比分量的分母 = 池内有数据成员的当日成交额之和（缺数据
     成员贡献 0，与平台停牌零填充同效）；两分量齐才产出（≥2），否则 None 放行。
 
     Returns:
@@ -334,34 +348,106 @@ def build_rows(pool: List[dict], bars: Dict[str, pd.DataFrame],
     return rows, diag
 
 
-def build_sell_orders(rows: List[RotationRow], positions: List[dict]
-                      ) -> Tuple[List[RotationOrder], List[str]]:
-    """生成卫星卖出订单：评分排名跌出前 40% → 清仓。唯一退出规则。
+def held_exit_facts(close_hist: Sequence[float], price: float,
+                    avg_cost: float) -> dict:
+    """持仓退出判定事实（v3_3_2 口径，无状态重算——不维护跨日可变状态）。
 
-    不设绝对收益止损——大盘回调时最强行业也会收益转负，但"仍是最强"就该
-    继续持有。截面外持仓（停牌剔除/池重建后出池）不动——没有排名就没有
-    退出判定，由人工处置。卖出股数收敛单点在 trade_ledger.execute_batch，
-    本函数只报全仓股数。
+    close_hist = 持仓期内的 qfq 收盘序列（入场日含，今日现价不含，升序）。
+    - latched：持仓期内任一日收盘 ≥ 入场日收盘×(1+BREAKEVEN_TRIGGER)，或今日
+      现价 ≥ 成本×(1+BREAKEVEN_TRIGGER)。用 qfq 比值表达（对份额折算不变，
+      无 v3_5 式水位 bug）；入场日收盘 ≈ 成本（尾盘全仓建仓）。
+    - stop_ratio：latched → 成本×(1+BREAKEVEN_STOP)；否则 成本×(1-STOP_COST_PCT)。
+    - below_stop：现价 ≤ 成本×stop_ratio。
+    - neg_run：score≤0 连续天数，逐日重放（t 日 score = 前 25 根收盘 + t 日
+      收盘），只数持仓期内交易日，自今日往前数到首个正分为止。
+    数据不足（收盘历史 <SCORE_DAYS+1）或价格/成本非法 → evaluated=False
+    （不评估，仍持有——与回测"数据不足按持有"同口径）。
     """
-    row_map = {r.code: r for r in rows}
+    facts = {"evaluated": False, "score": None, "neg_run": 0, "latched": False,
+             "stop_ratio": 1.0 - STOP_COST_PCT, "below_stop": False}
+    if avg_cost <= 0 or price <= 0:
+        return facts
+    hist = [float(c) for c in close_hist if c == c and c > 0]
+    if len(hist) < SCORE_DAYS + 1:
+        return facts
+    facts["evaluated"] = True
+    entry_ref = hist[0]
+    facts["latched"] = (any(c >= entry_ref * (1.0 + BREAKEVEN_TRIGGER)
+                            for c in hist)
+                        or price >= avg_cost * (1.0 + BREAKEVEN_TRIGGER))
+    facts["stop_ratio"] = ((1.0 + BREAKEVEN_STOP) if facts["latched"]
+                           else (1.0 - STOP_COST_PCT))
+    facts["below_stop"] = price <= avg_cost * facts["stop_ratio"]
+    full = hist + [price]
+    neg = 0
+    for back in range(SCORE_EXIT_CONFIRM):
+        i = len(full) - 1 - back
+        if i < SCORE_DAYS:
+            break
+        if momentum_score(full[i - SCORE_DAYS:i], full[i]) > 0:
+            break
+        neg += 1
+    facts["neg_run"] = neg
+    facts["score"] = momentum_score(hist[-SCORE_DAYS:], price)
+    return facts
+
+
+def build_sell_orders(rows: List[RotationRow], positions: List[dict],
+                      bars: Dict[str, pd.DataFrame],
+                      prices: Dict[str, float],
+                      entry_map: Optional[Dict[str, str]] = None
+                      ) -> Tuple[List[RotationOrder], List[str]]:
+    """生成卫星卖出订单（v3_3_2 出场，只管 account=satellite 持仓）。
+
+    退出规则（出池持仓直评——池洞结构性消失，池只管买入侧）：
+    ① score ≤ 0 连续 SCORE_EXIT_CONFIRM 日（逐日重放，数据不足不评估）；
+    ② 限亏线：现价 ≤ 成本×0.92；浮盈曾达 +12% 后抬至 成本×1.01（保本损）。
+
+    Args:
+        rows: 当日截面（买入排序展示用，卖出不依赖——出池持仓照样判）；
+        positions: 卫星持仓（妙想同形 dict，须含 code/count/cost_price/
+            current_price/account）；
+        bars: {code: DataFrame(close)}，须覆盖全部卫星持仓（池内 + 出池），
+            qfq 收盘全历史（index=date_str 升序）；
+        prices: {code: 现价}（current_price 缺失时回退）；
+        entry_map: {code: 入场日 YYYY-MM-DD}；缺失时以 K 线首日近似
+            （单笔全仓建仓下等价；顶加仓情形未定义，本策略不产生）。
+    """
+    entry_map = entry_map or {}
     orders: List[RotationOrder] = []
     notes: List[str] = []
     for p in positions:
-        code = p.get("code", "")
-        r = row_map.get(code)
-        if r is None or r.rank <= r.exit_rank:
+        if p.get("account") != "satellite":
             continue
         count = int(p.get("count", 0) or 0)
         if count <= 0:
             continue
-        name = p.get("name", "") or r.name
-        price = float(p.get("current_price", 0) or 0) or r.price
-        reason = (f"评分跌出前{EXIT_RANK_PCT:.0%}"
-                  f"（第{r.rank}/{r.n}名，score={r.score:+.4f}）")
+        code = p.get("code", "")
+        name = p.get("name", "") or code
+        df = bars.get(code)
+        if df is None or df.empty:
+            notes.append(f"{name}({code}) 无K线数据，退出不评估（仍持有）")
+            continue
+        price = float(p.get("current_price", 0) or 0) or prices.get(code, 0.0)
+        avg_cost = float(p.get("cost_price", 0) or 0)
+        entry = entry_map.get(code) or str(df.index[0])
+        hist = df["close"][df.index >= entry]
+        facts = held_exit_facts(list(hist.values), price, avg_cost)
+        if not facts["evaluated"]:
+            notes.append(f"{name}({code}) 数据不足，退出不评估（仍持有）")
+            continue
+        if not (facts["below_stop"] or facts["neg_run"] >= SCORE_EXIT_CONFIRM):
+            continue
+        if facts["below_stop"]:
+            reason = "保本损" if facts["latched"] else "跌破成本-8%"
+        else:
+            reason = f"score转负x{facts['neg_run']}日"
         orders.append(RotationOrder(code=code, name=name, action="sell",
                                     shares=count, price=price,
                                     amount=count * price, reason=reason))
-        notes.append(f"{name}({code}) {reason}")
+        notes.append(f"{name}({code}) {reason}"
+                     f"（score={facts['score']:+.4f}，neg_run={facts['neg_run']}，"
+                     f"限亏线=成本×{facts['stop_ratio']:.2f}）")
     return orders, notes
 
 
@@ -370,19 +456,18 @@ def build_buy_orders(rows: List[RotationRow], held_codes: set, total_assets: flo
                      ) -> Tuple[List[RotationOrder], List[str]]:
     """生成卫星买入订单：准入过滤后按动量评分降序补足空槽等权。
 
-    - 准入 = score>0（负分=下降趋势/跳水清零，不买）且复合拥挤度 <90
-      （缺数据放行），已持有/截面外不重复买；
+    - 准入 = score>0（负分=下降趋势/跳水清零，不买）且量价热度 < CROWD_PCT_MAX
+      （闸常开=101，缺数据放行），已持有不重复买；
+    - 全部卫星持仓占槽（出池持仓受管，出池不释放槽位）；
     - 每只金额 = min(可用现金/空槽数, 卫星账户总值/TOPN)，卫星账户总值口径 =
       min(总资产 × 预算上限, 卫星市值 + 可用现金)；卫星市值已触及预算上限则不买；
-    - held_codes 只计池内持仓（池外旧持仓不占槽，由人工处置）；
     - 成交价口径 = 当日现价（实时报价，尾盘≈收盘）。
     """
     budget_cap = total_assets * SATELLITE_BUDGET_RATIO
     if satellite_mv >= budget_cap:
         return [], []
 
-    universe_codes = {r.code for r in rows}
-    held = held_codes & universe_codes
+    held = held_codes
     slots = max(0, TOPN - len(held))
     if slots == 0:
         return [], []
@@ -404,9 +489,9 @@ def build_buy_orders(rows: List[RotationRow], held_codes: set, total_assets: flo
         shares = round_lot(per / r.price)
         if shares <= 0:
             continue
-        crowd_txt = f"{r.crowd:.0f}%" if r.crowd is not None else "—"
+        heat_txt = f"{r.crowd:.0f} 分" if r.crowd is not None else "—"
         reason = (f"动量评分第{r.rank}/{r.n}名（score={r.score:+.4f}），"
-                  f"拥挤度{crowd_txt}")
+                  f"量价热度 {heat_txt}")
         orders.append(RotationOrder(code=r.code, name=r.name, action="buy",
                                     shares=shares, price=r.price,
                                     amount=shares * r.price, reason=reason))
@@ -519,6 +604,8 @@ def rotation_snapshot() -> Tuple[List[RotationRow], dict]:
     （宁可不判定也不静默空转）。
     """
     today = date.today()
+    # 数据锚点收敛到最后交易日：假日补跑时按自然日今天会把整池判成停牌（STALE_DAYS）。
+    as_of = latest_trading_day_on_or_before(today).isoformat()
     state = load_pool_state()
     diag: dict = {}
     if pool_needs_rebuild(state, today):
@@ -531,7 +618,7 @@ def rotation_snapshot() -> Tuple[List[RotationRow], dict]:
         else:
             cands = filter_by_name(etfs)
             bars_c = fetch_bars([e["code"] for e in cands])
-            members, stats = build_pool(cands, bars_c, as_of=today.isoformat())
+            members, stats = build_pool(cands, bars_c, as_of=as_of)
             stats["universe"] = len(etfs)
             save_pool_state(members, today.isoformat())
             diag["rebuild"] = stats
@@ -543,28 +630,44 @@ def rotation_snapshot() -> Tuple[List[RotationRow], dict]:
 
     bars = fetch_bars([m["code"] for m in members])
     prices = fetch_prices([m["code"] for m in members])
-    rows, rows_diag = build_rows(members, bars, prices)
+    rows, rows_diag = build_rows(members, bars, prices, as_of=as_of)
     diag.update(rows_diag)
+    missing = rows_diag["realtime_missing"]
+    if missing:
+        logger.warning(
+            "[行情降级] 行业动量截面 %s/%s 只 ETF 缺少可用实时价，"
+            "已回退到各自最新收盘价（非实时）；本轮评分与买入价格计算使用降级数据，"
+            "请检查行情源连接和代理配置",
+            missing, rows_diag["n"],
+        )
     return rows, diag
 
 
 def analyze_rotation(positions: List[dict], total_assets: float,
-                     avail_balance: float) -> dict:
+                     avail_balance: float,
+                     entry_map: Optional[Dict[str, str]] = None) -> dict:
     """卫星仓全流程：截面 → 卖出 → 买入。只出指令，执行归入口脚本。
 
-    买入侧资金口径按"先卖后买"整批计：可用现金与卫星市值均已计入卖出回款，
-    入口脚本的安全校验（卖出 ≤ 持仓、买入 ≤ 可用 + 回款、买入 ≤ 预算）兜底。
+    卫星持仓以 account 标签筛出（核心仓不参与本策略判定）；出池持仓直评，
+    其 K 线按持仓码补拉（池洞结构性消失）。买入侧资金口径按"先卖后买"整批
+    计：可用现金与卫星市值均已计入卖出回款，入口脚本的安全校验（卖出 ≤
+    持仓、买入 ≤ 可用 + 回款、买入 ≤ 预算）兜底。
     """
     rows, diag = rotation_snapshot()
 
-    universe_codes = {r.code for r in rows}
+    sat_positions = [p for p in positions
+                     if p.get("account") == "satellite"
+                     and int(p.get("count", 0) or 0) > 0]
+    held_codes = {p.get("code") for p in sat_positions}
     satellite_mv = sum(float(p.get("market_value", 0) or 0)
-                       for p in positions if p.get("code", "") in universe_codes)
-    held_codes = {p.get("code") for p in positions
-                  if p.get("code", "") in universe_codes
-                  and int(p.get("count", 0) or 0) > 0}
+                       for p in sat_positions)
 
-    sells, sell_notes = build_sell_orders(rows, positions)
+    # 出池直评的数据面：卫星持仓 K 线按码补拉（≤TOPN 只，代价可忽略）
+    held_bars = fetch_bars(sorted(held_codes))
+    held_prices = fetch_prices(sorted(held_codes))
+
+    sells, sell_notes = build_sell_orders(rows, sat_positions, held_bars,
+                                          held_prices, entry_map)
     sell_amount = sum(o.amount for o in sells)
     buys, buy_notes = build_buy_orders(rows, held_codes, total_assets,
                                        satellite_mv - sell_amount,

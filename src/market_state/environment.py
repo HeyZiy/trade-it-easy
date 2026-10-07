@@ -22,7 +22,7 @@ logger = logging.getLogger(__name__)
 
 ENVIRONMENT_FILE = Path(__file__).parent.parent.parent / "data" / "environment.json"
 
-SNAPSHOT_MAX_AGE_DAYS = 3   # 视图层默认过期阈值（自然日，覆盖周末顺延）；开仓语义归消费方 policy
+SNAPSHOT_MAX_AGE_TRADING_DAYS = 2   # 视图层默认过期阈值（交易日数，口径见 GateVerdictView.age_trading_days）；开仓语义归消费方 policy
 
 # gate 5 态的展示名（emoji+人话，视图自描述产出；消费方报告头条用）。
 # 与 market_gate.GATE_STATE_PATHS 键集合相等的断言见 tests。
@@ -51,16 +51,26 @@ class GateVerdictView:
     path: str = ""                   # 命中的判定路径文案
 
     @property
-    def age_days(self) -> Optional[int]:
+    def age_trading_days(self) -> Optional[int]:
+        """数据日期落后 as-of 交易日的**交易日**数（假期与周末不涨，周末顺延不误报）。
+
+        锚点取 ≤今天的最近交易日：日历上不存在更新的日线时，快照不算旧。
+        日历不可用回退自然日（宁可放行不误杀，同 industry_momentum.pool_needs_rebuild）。
+        """
         if not self.data_date:
             return None
         try:
-            return (date.today() - date.fromisoformat(str(self.data_date))).days
+            data_day = date.fromisoformat(str(self.data_date))
         except ValueError:
             return None
+        from src.trading_calendar import (latest_trading_day_on_or_before,
+                                          trading_days_lag)
+        anchor = latest_trading_day_on_or_before(date.today())
+        lag = trading_days_lag(data_day, anchor)
+        return (anchor - data_day).days if lag is None else lag
 
-    def is_stale(self, max_age: int = SNAPSHOT_MAX_AGE_DAYS) -> bool:
-        return self.age_days is None or self.age_days > max_age
+    def is_stale(self, max_age: int = SNAPSHOT_MAX_AGE_TRADING_DAYS) -> bool:
+        return self.age_trading_days is None or self.age_trading_days > max_age
 
     @property
     def state_label(self) -> str:
@@ -89,7 +99,8 @@ def gate_verdict_issue(view: Optional[GateVerdictView]) -> Optional[str]:
     if not view.available:
         return f"快照判定不可用（{view.note or '指数数据不足'}）"
     if view.is_stale():
-        return f"快照已 {view.age_days} 天未更新（阈值 {SNAPSHOT_MAX_AGE_DAYS} 天）"
+        return (f"快照已 {view.age_trading_days} 个交易日未更新"
+                f"（阈值 {SNAPSHOT_MAX_AGE_TRADING_DAYS} 个交易日）")
     return None
 
 

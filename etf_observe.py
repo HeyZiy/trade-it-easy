@@ -331,12 +331,13 @@ def _deploy_cash_section(ctx: WeekContext) -> str:
 
 # ── 自动调仓执行 ──
 
-def _execute_batch(alloc: dict, ledger_path=None) -> str:
+def _execute_batch(alloc: dict, ledger_path=None, dry_run: bool = False) -> str:
     """执行核心调仓批次：批次语义（收敛/安全校验/先卖后买/逐单记账）
     全权委托 trade_ledger.execute_batch，本函数只装配指令与渲染结果。
 
     只记名义台账（docs/trade_ledger.md），
     真实账户由用户按报告百分比手动执行。
+    dry_run=True 时同渲染指令、零台账写入。
     """
     from src.trade_ledger import BatchOrder, execute_batch
 
@@ -351,6 +352,14 @@ def _execute_batch(alloc: dict, ledger_path=None) -> str:
 
     if not orders:
         lines.append("无调仓指令，本次不执行。")
+        return "\n".join(lines)
+
+    if dry_run:
+        lines.append("**dry-run：以下指令未记账**")
+        lines.append("")
+        lines.extend(f"- [DRY] {o.action.upper()} {o.name}({o.code})"
+                     f" {o.qty}股 ≈ {o.amount:,.0f}元（{o.reason}）"
+                     for o in orders)
         return "\n".join(lines)
 
     price_map = {p.get("code", ""): float(p.get("current_price", 0) or 0)
@@ -384,8 +393,8 @@ def _execute_batch(alloc: dict, ledger_path=None) -> str:
 
 # ── 报告生成 ──
 
-def _generate_report() -> str:
-    """生成完整周报（orders 非空时自动执行调仓并附结果）
+def _generate_report(dry_run: bool = False) -> str:
+    """生成完整周报（orders 非空时自动执行调仓并附结果；dry_run 只渲染不记账）
 
     取数一次装配进 WeekContext，各节纯渲染。
     """
@@ -397,7 +406,7 @@ def _generate_report() -> str:
     sections = [
         f"# ETF 周度观察 — {datetime.now().strftime('%Y-%m-%d')}",
         "",
-        f"**生成时间**: {now}",
+        f"**生成时间**: {now}{'（dry-run，未记账）' if dry_run else ''}",
         "",
         _market_overview(ctx),
         _valuation_reference(),
@@ -407,7 +416,7 @@ def _generate_report() -> str:
 
     # 执行门保持现状："orders 非空即执行"；plan.should 为触发层结论，当前仅进报告。
     if alloc and alloc["plan"].orders:
-        sections.append(_execute_batch(alloc))
+        sections.append(_execute_batch(alloc, dry_run=dry_run))
 
     sections.extend([
         "---",
@@ -422,16 +431,24 @@ def main():
     parser = argparse.ArgumentParser(description='ETF 周度观察报告')
     parser.add_argument('--no-notify', action='store_true', help='不发送通知')
     parser.add_argument('--debug', action='store_true', help='调试模式')
-    parser.add_argument('--force', action='store_true', help='跳过交易日检查（手动调试用）')
+    parser.add_argument('--dry-run', action='store_true', help='只出报告不记账（调试用）')
+    parser.add_argument('--force', action='store_true',
+                        help='跳过交易日检查（手动调试用；非交易日一律只读不记账）')
     args = parser.parse_args()
 
     setup_logging(log_prefix="etf_observe", debug=args.debug)
 
     # 交易日检查：非交易日且未 --force 时直接跳过（节假日周一）
-    if not args.force and not is_trading_day():
+    trading = is_trading_day()
+    if not args.force and not trading:
         logger.info("今天不是 A 股交易日，跳过执行")
         print("今天不是 A 股交易日，跳过执行")
         return 0
+
+    # 非交易日不可能有真实成交，硬记账就是假日假账 → --force 试跑一律只读
+    dry_run = args.dry_run or not trading
+    if dry_run and not args.dry_run:
+        logger.info("非交易日 --force：本次只出报告，不写台账")
 
     logger.info("=" * 60)
     logger.info("ETF 周度观察报告（自动调仓）")
@@ -439,7 +456,7 @@ def main():
     logger.info("=" * 60)
 
     try:
-        report = _generate_report()
+        report = _generate_report(dry_run=dry_run)
     except Exception as e:
         logger.exception(f"生成报告失败: {e}")
         return 1

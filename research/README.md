@@ -9,13 +9,15 @@
 | [market\_regimes](tools/market_regimes/README.md) | 指数月/周趋势状态与收益区间归因    |
 | [single\_factor](tools/single_factor/README.md)   | 因子 IC、分组、时间对齐与中性化诊断 |
 
-single\_factor 暂时保留 ROE 专用适配器和平台单文件实验；通用工具与应用入口仍在同一目录，后续有实际复用需要时再拆。趋势研究中的 tools 依赖该研究的缓存与参数，仍跟随研究目录。
+single\_factor 只保留可复用的因子诊断引擎（`single_factor_test.py` 与代码生成器）；趋势研究中的 tools 依赖该研究的缓存与参数，仍跟随研究目录。
 
 ## 具体研究：studies
 
 | 目录                                                          | 研究对象                          | 当前说明                                            |
 | ----------------------------------------------------------- | ----------------------------- | ----------------------------------------------- |
 | [roe\_quality](studies/roe_quality/README.md)               | 质量类选股（ROE 轮动 + 质量轮动 + 质量池系统）  | 打分线已收线；质量池 A 过线并完成个人化容量实验（README\_pool.md）         |
+| [value_revenue](studies/value_revenue/README.md) | 价值因子EP × 营收同比加速 | 第一轮独立研究；EP有收益关联，营收加速增量偏弱，交互缺乏充分支持 |
+| [expectations](studies/expectations/README.md) | 低预期 × 已披露盈利维持 | 低预期＋历史盈利维持全期核查完成，未显示稳定增量；60日控制系数HAC t=−0.37 |
 | [trend](studies/trend/)                                     | 个股趋势策略                        | 保留原版本、辅助脚本及数据                                   |
 | [industry\_momentum](studies/industry_momentum/)            | 行业 ETF 动量轮动                   | 保留原版本；生产策略说明见 ../strategy/industry\_momentum.md |
 | [etf\_rotation\_reference](studies/etf_rotation_reference/) | 原 research/new\.py 的 ETF 策略参考 | 来源代码保留，尚未整理为明确研究问题                              |
@@ -27,10 +29,8 @@ single\_factor 暂时保留 ROE 专用适配器和平台单文件实验；通用
 新研究说明优先记录：
 
 1. 问题：想弄清什么？
-2. 猜想与理由：预期发生什么，为什么？
-3. 检验方法：采用什么对照，什么结果会削弱猜想？
-4. 证据与边界：观察到什么，还不能排除什么？
-5. 状态与积累：支持、削弱、证据不足或暂停；留下哪些工具、数据与判断？
+2. 实验：怎么做，改了什么？
+3. 结论：证实 / 证伪 / 证据不足，附关键数字（等有再补）。
 
 每次运行记录脚本版本、参数、资金、日期、数据口径及结果。聚宽实验继续保留可直接粘贴的完整单文件；
 

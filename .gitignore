@@ -75,3 +75,4 @@ CLAUDE.md
 # csv 文件
 *.csv
 *.pkl
+*.json

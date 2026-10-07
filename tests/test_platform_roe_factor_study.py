@@ -11,7 +11,7 @@ from test_platform_roe_rotation_revisions import AsOfJQStub
 
 
 ROOT = Path(__file__).resolve().parents[1]
-SCRIPT = ROOT / 'research/tools/single_factor/roe_factor_study_jq.py'
+SCRIPT = ROOT / 'research/studies/roe_quality/roe_factor_study_jq.py'
 
 
 def world(split=False, entry_paused=False):

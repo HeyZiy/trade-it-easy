@@ -1,6 +1,9 @@
 # -*- coding: utf-8 -*-
 """快照行情公共装配测试 — 假数据走 seam（缓存命中/重试/熔断/哨兵/行定位/分类器）。"""
 
+import json
+import logging
+
 import pandas as pd
 import pytest
 import requests
@@ -159,3 +162,52 @@ def test_classify_http_error(message, category):
 def test_classify_timeout_instance():
     assert classify_http_error(
         requests.exceptions.ConnectTimeout("timed out"))[0] == "timeout"
+
+
+@pytest.mark.parametrize("body,reason", [
+    ("", "空响应"),
+    ("   \n", "空响应"),
+    ("<!DOCTYPE html><html>blocked secret-value</html>", "HTML"),
+    ("upstream error secret-value", "无效 JSON"),
+])
+def test_invalid_json_explains_failure_and_fallback(caplog, body, reason):
+    cache = _FakeCache()
+    breaker = _FakeBreaker()
+
+    def fetch():
+        json.loads(body)
+
+    with caplog.at_level(logging.INFO):
+        assert _seam(cache, fetch, breaker) is None
+    records = [r for r in caplog.records
+               if r.name == "data_provider.fetchers._snapshot_quote"]
+    retries = [r for r in records if "attempt" in r.getMessage()]
+    assert len(retries) == 2
+    assert all(r.levelno == logging.INFO for r in retries)
+    assert all(reason in r.getMessage() for r in retries)
+    assert "将重试" in retries[0].getMessage()
+    assert "重试已耗尽" in retries[1].getMessage()
+    final = [r for r in records if "最终失败" in r.getMessage()]
+    assert len(final) == 1 and final[0].levelno == logging.WARNING
+    assert "该数据源本轮不可用" in final[0].getMessage()
+    assert "其他数据源" in final[0].getMessage()
+    assert "secret-value" not in caplog.text
+    assert breaker.successes == [] and len(breaker.failures) == 1
+
+
+def test_retry_recovery_does_not_warn(caplog):
+    cache = _FakeCache()
+    breaker = _FakeBreaker()
+    calls = []
+
+    def fetch():
+        calls.append(1)
+        if len(calls) == 1:
+            raise requests.exceptions.JSONDecodeError("Expecting value", "", 0)
+        return _df(["600001"])
+
+    with caplog.at_level(logging.INFO):
+        assert _seam(cache, fetch, breaker) is not None
+    assert len(calls) == 2
+    assert not [r for r in caplog.records if r.levelno >= logging.WARNING]
+    assert breaker.successes == ["test"] and breaker.failures == []

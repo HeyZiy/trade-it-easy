@@ -72,7 +72,6 @@ class Config:
     """
 
     # === 数据源 API Token ===
-    tushare_token: Optional[str] = None
     mx_apikey: Optional[str] = None
 
     # === 分析筛选 ===
@@ -115,11 +114,11 @@ class Config:
         """从环境变量 + .env 加载配置（仅保留项目实际消费的字段）。"""
         setup_env()
         return cls(
-            tushare_token=os.getenv('TUSHARE_TOKEN'),
             mx_apikey=(os.getenv('MX_APIKEY') or os.getenv('MX_API_KEY') or '').strip() or None,
             bias_threshold=max(1.0, float(os.getenv('BIAS_THRESHOLD', '5.0'))),
             enable_realtime_quote=os.getenv('ENABLE_REALTIME_QUOTE', 'true').lower() == 'true',
-            realtime_source_priority=cls._resolve_realtime_source_priority(),
+            realtime_source_priority=(os.getenv('REALTIME_SOURCE_PRIORITY')
+                                      or DEFAULT_REALTIME_PRIORITY),
             email_sender=os.getenv('EMAIL_SENDER'),
             email_sender_name=os.getenv('EMAIL_SENDER_NAME', 'daily_stock_analysis股票分析助手'),
             email_password=os.getenv('EMAIL_PASSWORD'),
@@ -154,36 +153,6 @@ class Config:
             if 'stocks' in g and 'emails' in g and g['stocks'] and g['emails']:
                 result.append((g['stocks'], g['emails']))
         return result
-
-    @classmethod
-    def _resolve_realtime_source_priority(cls) -> str:
-        """
-        Resolve realtime source priority with automatic tushare injection.
-
-        When TUSHARE_TOKEN is configured but REALTIME_SOURCE_PRIORITY is not
-        explicitly set, automatically prepend 'tushare' to the default priority
-        so that the paid data source is utilized for realtime quotes as well.
-        """
-        explicit = os.getenv('REALTIME_SOURCE_PRIORITY')
-        default_priority = DEFAULT_REALTIME_PRIORITY
-
-        if explicit:
-            # User explicitly set priority, respect it
-            return explicit
-
-        tushare_token = os.getenv('TUSHARE_TOKEN', '').strip()
-        if tushare_token:
-            # Token configured but no explicit priority override
-            # Prepend tushare so the paid source is tried first
-            import logging
-            logger = logging.getLogger(__name__)
-            resolved = f'tushare,{default_priority}'
-            logger.info(
-                f"TUSHARE_TOKEN detected, auto-injecting tushare into realtime priority: {resolved}"
-            )
-            return resolved
-
-        return default_priority
 
 # === 便捷的配置访问函数 ===
 def get_config() -> Config:

@@ -4,10 +4,11 @@
 规则单点（strategy/industry_momentum.md v3_1 口径）：
 - 池 = 动态规则池（513/词表/成熟/流动/相关去重），每 20 交易日重建；
 - 打分 = 25 根收盘 + 当日现价的对数加权回归（年化 × R²，跳水清零）；
-- 买 = score>0 且拥挤度 <90（缺数据放行）降序补空槽等权；
+- 买 = score>0 降序补空槽等权，量价热度阈值为 101 分，不限制正常评分；
 - 卖 = 评分排名跌出前 40%；无绝对收益止损、无市场门控。
 """
 from datetime import date
+import logging
 
 import pandas as pd
 import pytest
@@ -16,10 +17,34 @@ from src.etf import industry_momentum as im
 from src.etf.industry_momentum import (
     TOPN, RotationRow,
     build_buy_orders, build_pool, build_rows,
-    build_sell_orders, filter_by_name, momentum_score,
+    build_sell_orders, filter_by_name, held_exit_facts, momentum_score,
 )
 from data_provider.bars import adjust_series  # 复权单点已迁 bars
 from src.mx.executor import round_lot
+
+
+@pytest.mark.parametrize("prices,missing", [
+    ({}, 2),
+    ({"510001": 11.0}, 1),
+    ({"510001": 11.0, "510002": 11.0}, 0),
+])
+def test_snapshot_summarizes_actual_price_fallback(monkeypatch, caplog, prices, missing):
+    members = [{"code": c, "name": c} for c in ("510001", "510002")]
+    monkeypatch.setattr(im, "latest_trading_day_on_or_before", lambda today: date(2026, 9, 22))
+    monkeypatch.setattr(im, "load_pool_state", lambda: {"members": members})
+    monkeypatch.setattr(im, "pool_needs_rebuild", lambda state, today: False)
+    monkeypatch.setattr(im, "fetch_bars", lambda codes: {c: _mature_bars() for c in codes})
+    monkeypatch.setattr(im, "fetch_prices", lambda codes: prices)
+    with caplog.at_level(logging.WARNING):
+        rows, diag = im.rotation_snapshot()
+    assert len(rows) == 2 and diag["realtime_missing"] == missing
+    alerts = [r.getMessage() for r in caplog.records if "[行情降级]" in r.getMessage()]
+    if missing:
+        assert len(alerts) == 1
+        assert f"{missing}/2" in alerts[0]
+        assert "最新收盘价" in alerts[0] and "非实时" in alerts[0]
+    else:
+        assert alerts == []
 
 
 # ══════════════ 造数助手 ══════════════
@@ -141,6 +166,33 @@ class TestFilterByName:
                          ("159949", "创业板50ETF"), ("512880", "证券ETF"))
         assert kept == ["512880"]
 
+    def test_money_market_words(self):
+        # 2026-10-06 实盘建池测出的货币/短融漏网四只；'银行''金融'不受四词误杀
+        kept = self._run(("511360", "短融ETF海富通"), ("511880", "银华日利ETF"),
+                         ("511990", "华宝添益ETF"), ("159003", "招商快线ETF"),
+                         ("512800", "银行ETF华宝"), ("510230", "金融ETF国泰"))
+        assert kept == ["512800", "510230"]
+
+    def test_gold_code_segment_hard_excluded(self):
+        # 518 段全靠代码段剔：命名不含 '黄金'/'上海金' 的两只是实盘测出的漏网
+        kept = self._run(("518600", "金ETF广发"), ("518680", "金ETF富国"),
+                         ("518880", "黄金ETF华安"), ("516150", "稀土ETF嘉实"),
+                         ("561360", "石油ETF国泰"))
+        assert kept == ["516150", "561360"]
+
+    def test_a50_broad_base_excluded(self):
+        kept = self._run(("159595", "中证A50ETF大成"), ("512250", "A50ETF招商"),
+                         ("512550", "富时A50ETF嘉实"), ("588230", "科创200ETF"),
+                         ("159852", "软件ETF嘉实"))
+        # '200' 词（EXCLUDE_KW 逗号修复后生效）连带剔科创200（宽基，剔得正确）
+        assert kept == ["159852"]
+
+    def test_commodity_futures_kept_by_ruling(self):
+        # 2026-10-06 裁决：商品期货类 ETF 留在池内（能化/有色期货按行业暴露算）
+        kept = self._run(("159981", "能源化工ETF建信"), ("159980", "有色ETF大成"),
+                         ("512400", "有色金属ETF南方"))
+        assert kept == ["159981", "159980", "512400"]
+
     def test_code_zfilled(self):
         out = filter_by_name([{"code": 512880, "name": "证券ETF"}])
         assert out == [{"code": "512880", "name": "证券ETF"}]
@@ -184,7 +236,7 @@ class TestBuildPool:
         assert {m["code"] for m in members} == {"510001", "510002"}
 
 
-# ══════════════ build_rows：截面 + 拥挤度 ══════════════
+# ══════════════ build_rows：截面 + 量价热度 ══════════════
 
 class TestBuildRows:
     def test_rank_by_score_desc(self):
@@ -213,7 +265,7 @@ class TestBuildRows:
         assert diag["realtime_missing"] == 1
 
     def test_crowd_share_and_close_components(self):
-        """份额升 → 占比分位登顶；镜像对手份额降 → 拥挤度低。"""
+        """成交额占比升 → 占比分位登顶；镜像对手成交额占比降 → 量价热度低。"""
         n = 300
         amt_a = [10 ** 8 * (1 + k / n) for k in range(n)]
         amt_b = [10 ** 8 * (1 - k / n) for k in range(n)]
@@ -222,11 +274,11 @@ class TestBuildRows:
                 "510002": _bars(_up_closes(n), amounts=amt_b)}
         rows, _ = build_rows(pool, bars, {}, as_of=END)
         crowd = {r.code: r.crowd for r in rows}
-        assert crowd["510001"] > 99.0              # 份额+价格双双登顶
+        assert crowd["510001"] > 99.0              # 成交额占比+价格双双登顶
         assert crowd["510002"] < 50.0
 
     def test_crowd_none_passes_gate(self):
-        """份额分量缺观测（amount 全缺）→ 单分量 → crowd=None → 放行。"""
+        """成交额占比分量缺观测（amount 全缺）→ 单分量 → crowd=None → 放行。"""
         idx = pd.bdate_range(end=END, periods=300).strftime("%Y-%m-%d")
         bars = {"510001": pd.DataFrame({"close": _up_closes(300),
                                         "amount": [float("nan")] * 300}, index=idx)}
@@ -235,48 +287,142 @@ class TestBuildRows:
         assert rows[0].buy_allowed is True
 
 
-# ══════════════ build_sell_orders：唯一退出规则 ══════════════
+# ══════════════ held_exit_facts：退出事实无状态重算 ══════════════
+
+class TestHeldExitFacts:
+    def _facts(self, closes, price, cost):
+        return held_exit_facts(list(closes), price, cost)
+
+    def test_insufficient_history_not_evaluated(self):
+        f = self._facts(_up_closes(10), 10.0, 10.0)
+        assert f["evaluated"] is False
+
+    def test_latch_set_by_historical_high(self):
+        closes = _up_closes(30, step=1.005)        # 末值 ≈ 成本×1.128 → 置位
+        f = self._facts(closes, price=closes[-1] * 0.95, cost=10.0)
+        assert f["latched"] is True and f["stop_ratio"] == 1.01
+
+    def test_no_latch_keeps_cost_stop(self):
+        closes = _up_closes(30, step=1.001)        # 末值 ≈ 成本×1.03 → 未置位
+        f = self._facts(closes, price=closes[-1], cost=10.0)
+        assert f["latched"] is False and f["stop_ratio"] == 0.92
+
+    def test_latch_by_today_price(self):
+        closes = _up_closes(30, step=1.001)        # 历史未达 +12%
+        f = self._facts(closes, price=11.3, cost=10.0)   # 今日现价 +13%
+        assert f["latched"] is True
+
+    def test_below_stop_boundary_with_latch(self):
+        closes = _up_closes(30, step=1.005)
+        f = self._facts(closes, price=10.05, cost=10.0)  # 1.005 ≤ 1.01 → 触发
+        assert f["below_stop"] is True
+        f2 = self._facts(closes, price=10.20, cost=10.0)  # 1.02 > 1.01 → 未触发
+        assert f2["below_stop"] is False
+
+    def test_neg_run_counts_trailing_negative_scores(self):
+        # 30 根缓升 + 10 根逐日微跌（无单日 -5%，不触跳水；末 3 日 score≤0）
+        up = _up_closes(30, step=1.01)
+        down = [up[-1] * (1 - 0.03 * k) for k in range(1, 11)]
+        f = self._facts(up + down, price=down[-1], cost=10.0)
+        assert f["evaluated"] is True
+        assert f["neg_run"] >= 3
+
+    def test_neg_run_zero_on_uptrend(self):
+        f = self._facts(_up_closes(40, step=1.001), price=_up_closes(41)[-1],
+                        cost=10.0)
+        assert f["neg_run"] == 0
+
+    def test_bad_cost_not_evaluated(self):
+        f = self._facts(_up_closes(40), 10.0, 0.0)
+        assert f["evaluated"] is False
+
+
+# ══════════════ build_sell_orders：自身退出（score 确认 + 限亏 + 保本损） ══════════════
+
+def _sat(code="510001", name="测试ETF", count=1000, price=10.0, cost=None,
+         account="satellite"):
+    return {"code": code, "name": name, "count": count, "account": account,
+            "current_price": price, "cost_price": cost if cost is not None else price}
+
+
+def _hist(closes):
+    idx = pd.bdate_range(end=END, periods=len(closes)).strftime("%Y-%m-%d")
+    return pd.DataFrame({"close": list(closes),
+                         "amount": [60_000_000.0] * len(closes)}, index=idx)
+
 
 class TestSellOrders:
+    def _run(self, pos, bars, entry=None):
+        em = {pos["code"]: entry} if entry else None
+        return build_sell_orders([], [pos], bars, {}, em)
+
     def test_healthy_holding_no_exit(self):
-        rows = _rows(10)                       # 退出线 = ceil(0.4×10) = 4
-        orders, notes = build_sell_orders(rows, [_pos(rows[0].code)])
+        hist = _up_closes(40, step=1.001)
+        pos = _sat(price=hist[-1], cost=hist[0])
+        orders, notes = self._run(pos, {"510001": _hist(hist)})
         assert orders == [] and notes == []
 
-    def test_rank_out_of_top40_exits(self):
-        rows = _rows(10)
-        orders, notes = build_sell_orders(rows, [_pos(rows[4].code)])
+    def test_score_negative_3days_exits(self):
+        # 买在顶部后单边缓跌：score 逐日转负且 3 日确认满，价格未触限亏线
+        # （不置保本：全程未达 +12%；未破 -8%：现价 12.49 > 成本×0.92）
+        hist = [13.0 * (1 - 0.001 * k) for k in range(40)]
+        pos = _sat(price=hist[-1], cost=hist[0])
+        orders, _ = self._run(pos, {"510001": _hist(hist)})
         assert len(orders) == 1
-        assert orders[0].action == "sell" and orders[0].shares == 1000
-        assert "跌出前40%" in orders[0].reason
-        assert "第5/10名" in orders[0].reason
+        assert "score转负x3日" in orders[0].reason
+        assert orders[0].shares == 1000
 
-    def test_held_outside_cross_section_untouched(self):
-        """截面外持仓（停牌剔除/池重建后出池）没有排名就没有退出判定。"""
-        rows = _rows(10)
-        orders, _ = build_sell_orders(rows, [_pos("599999")])
+    def test_score_negative_2days_holds(self):
+        up = _up_closes(40, step=1.01)
+        hist = up + [up[-1] * 0.995, up[-1] * 0.99]
+        pos = _sat(price=hist[-1], cost=hist[0])
+        orders, _ = self._run(pos, {"510001": _hist(hist)})
         assert orders == []
+
+    def test_cost_stop_exits(self):
+        hist = _up_closes(40, step=1.001)          # 成本 10.0，历史未达 +12%
+        pos = _sat(price=9.0, cost=hist[0])        # 现价 9.0 ≤ 成本×0.92
+        orders, _ = self._run(pos, {"510001": _hist(hist)})
+        assert len(orders) == 1 and "跌破成本-8%" in orders[0].reason
+
+    def test_breakeven_exit(self):
+        up = _up_closes(25, step=1.005)            # 峰 ≈ +12.8% → 置位
+        down = [up[-1] * (1 - 0.023 * k) for k in range(1, 6)]   # 回到成本附近
+        hist = up + down
+        pos = _sat(price=hist[-1], cost=hist[0])   # ≈10.0 ∈ (9.2, 10.1]
+        orders, _ = self._run(pos, {"510001": _hist(hist)})
+        assert len(orders) == 1 and "保本损" in orders[0].reason
+
+    def test_core_account_ignored(self):
+        hist = _up_closes(40, step=1.001)
+        pos = _sat(price=9.0, cost=hist[0], account="core")   # 核心仓不参与
+        orders, notes = self._run(pos, {"510001": _hist(hist)})
+        assert orders == [] and notes == []
+
+    def test_missing_bars_notes_hold(self):
+        pos = _sat()
+        orders, notes = self._run(pos, {})
+        assert orders == [] and notes and "无K线" in notes[0]
+
+    def test_insufficient_history_holds(self):
+        pos = _sat(price=10.0, cost=10.0)
+        orders, notes = self._run(pos, {"510001": _hist(_up_closes(10))})
+        assert orders == [] and "数据不足" in notes[0]
+
+    def test_out_of_pool_direct_evaluation(self):
+        """出池持仓直评：rows 为空（不在截面）照样按自身规则退出——池洞结构性消失。"""
+        up = _up_closes(30, step=1.01)
+        down = [up[-1] * (1 - 0.03 * k) for k in range(1, 11)]
+        pos = _sat(code="599999", price=down[-1], cost=up[0])
+        orders, _ = self._run(pos, {"599999": _hist(up + down)})
+        assert len(orders) == 1
 
     def test_zero_count_skipped(self):
-        rows = _rows(10)
-        orders, _ = build_sell_orders(rows, [_pos(rows[4].code, count=0)])
+        up = _up_closes(30, step=1.01)
+        down = [up[-1] * (1 - 0.03 * k) for k in range(1, 11)]
+        pos = _sat(price=down[-1], cost=up[0], count=0)
+        orders, _ = self._run(pos, {"510001": _hist(up + down)})
         assert orders == []
-
-    def test_rank_only_no_absolute_stop(self):
-        """退出无绝对收益止损：score 为负但仍在退出线内 → 持有不卖。"""
-        rows = _rows(10)
-        held_row = rows[2]
-        held_row.score = -8.0
-        orders, _ = build_sell_orders(rows, [_pos(held_row.code)])
-        assert orders == []
-
-
-def test_exit_rank_uses_ceil():
-    """退出线 = ceil(0.4 × n)：n=5 → 2，第 3 名即跌出。"""
-    rows = _rows(5)
-    assert rows[0].exit_rank == 2
-    orders, _ = build_sell_orders(rows, [_pos(rows[2].code)])
-    assert len(orders) == 1
 
 
 # ══════════════ build_buy_orders：准入 + 前 3 等权 ══════════════
@@ -303,8 +449,14 @@ class TestBuyOrders:
         orders, _ = build_buy_orders(rows, set(), 1_000_000, 0.0, 200_000)
         assert len(orders) == TOPN and rows[0].code not in {o.code for o in orders}
 
-    def test_crowd_lock_excludes_buy(self):
-        rows = _rows(10, crowd=90.0)           # rank1 拥挤度 ≥90 → 禁买，顺延
+    def test_crowd_gate_open_at_90(self):
+        """v3_3_2：准入闸常开（CROWD_PCT_MAX=101），量价热度 90 不再禁买。"""
+        rows = _rows(10, crowd=90.0)
+        orders, _ = build_buy_orders(rows, set(), 1_000_000, 0.0, 200_000)
+        assert rows[0].code in {o.code for o in orders}
+
+    def test_crowd_extreme_excludes_buy(self):
+        rows = _rows(10, crowd=101.0)          # ≥101 才触发，正常评分范围内不可达
         orders, _ = build_buy_orders(rows, set(), 1_000_000, 0.0, 200_000)
         assert rows[0].code not in {o.code for o in orders}
         assert len(orders) == TOPN
@@ -326,11 +478,11 @@ class TestBuyOrders:
         orders, notes = build_buy_orders(rows, held, 1_000_000, 30_000, 200_000)
         assert orders == [] and notes == []
 
-    def test_held_outside_universe_no_slot(self):
-        """池外旧持仓不占槽（无排名无法退出，也不应挤占轮动名额）。"""
+    def test_held_outside_universe_occupies_slot(self):
+        """出池持仓受管 → 照样占槽（池洞消失的另一面：出池不释放名额）。"""
         rows = _rows(10)
         orders, _ = build_buy_orders(rows, {"599999"}, 1_000_000, 0.0, 200_000)
-        assert len(orders) == TOPN
+        assert len(orders) == TOPN - 1
 
     def test_budget_cap_no_buys(self):
         rows = _rows(10)
@@ -392,16 +544,25 @@ class TestPoolState:
 
 # ══════════════ 判定核与常量的口径锚 ══════════════
 
-def test_rules_match_v3_1_constants():
-    """与 research/studies/industry_momentum/lM_v3_1.py 定稿常量一一对应（漂移即测试红）。"""
+def test_rules_match_v3_3_2_constants():
+    """与 lM_v3_3_2 定稿常量一一对应（漂移即红）。
+
+    v3_3_2 = score 出场 3 日确认 + -8% 限亏 + 保本损抬升 + 量价热度闸常开 +
+    出池持仓直评（出场侧六次换血与本地反事实的收敛结果，2026-10-07 收线）。
+    """
     assert im.TOPN == 3
-    assert im.EXIT_RANK_PCT == 0.40
-    assert im.CROWD_PCT_MAX == 90.0
+    assert im.CROWD_PCT_MAX == 101.0
+    assert im.STOP_COST_PCT == 0.08
+    assert im.BREAKEVEN_TRIGGER == 0.12
+    assert im.BREAKEVEN_STOP == 0.01
+    assert im.SCORE_EXIT_CONFIRM == 3
     assert im.LIQ_AMT20_MIN == 50_000_000.0
     assert im.MATURE_DAYS == 365
     assert im.CORR_DEDUPE == 0.90
     assert im.REBUILD_EVERY == 20
     assert im.SCORE_DAYS == 25 and im.DIVE_RATIO == 0.95
-    assert im.CROSS_BORDER_PREFIX == "513"
-    assert im.EXCLUDE_KW[-2:] == ("债", "上海金")     # v3_1 单变量改动在位
+    assert im.EXCLUDE_CODE_PREFIXES == ("513", "518")   # 518 段 = v3_1 后补
+    # 词尾 v3_1 单变量改动在位；其后仅允许显式记录的实盘补词（当前 = 货币四词）
+    assert im.EXCLUDE_KW[-6:] == ("债", "上海金", "短融", "日利", "添益", "快线")
+    assert "A50" in im.EXCLUDE_KW                       # 宽基补词，不在词尾
     assert im.SATELLITE_BUDGET_RATIO == 0.10

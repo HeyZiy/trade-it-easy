@@ -18,16 +18,34 @@ akshare 与 efinance 的全量快照端点共用一个形状：
 重试耗尽记失败并存哨兵——TTL 内同端点不再反复请求。
 """
 
+import json
 import logging
 import time
 from typing import Callable, Optional, Tuple, Union
 
 import pandas as pd
+import requests
 
 from data_provider._crosscut import Throttle, TtlSnapshotCache, classify_http_error  # noqa: F401  (re-export)
 from data_provider.types import UnifiedRealtimeQuote, get_realtime_circuit_breaker
 
 logger = logging.getLogger(__name__)
+
+
+def _snapshot_failure_detail(exc: Exception) -> str:
+    """把 SDK 异常解释为取数失败原因，不输出可能包含敏感信息的响应正文。"""
+    if isinstance(exc, (json.JSONDecodeError, requests.exceptions.JSONDecodeError)):
+        body = exc.doc.lstrip()
+        if not body:
+            reason = "返回空响应，无法解析行情 JSON"
+        elif body.lower().startswith(("<!doctype html", "<html")):
+            reason = "返回 HTML，预期为行情 JSON（可能是错误页，具体原因未确认）"
+        else:
+            reason = "返回无效 JSON，无法解析行情（具体原因未确认）"
+        return (f"category=invalid_json_response, error_type={type(exc).__name__}, "
+                f"原因={reason}, 解析位置=line {exc.lineno} column {exc.colno}")
+    category, detail = classify_http_error(exc)
+    return f"category={category}, error_type={type(exc).__name__}, 原因={detail}"
 
 
 def snapshot_realtime_quote(
@@ -96,6 +114,7 @@ def _refresh_snapshot(cache: TtlSnapshotCache, cb, source_key: str,
     df: Optional[pd.DataFrame] = None
     last_error: Optional[Exception] = None
     for attempt in range(1, attempts + 1):
+        started = time.time()
         try:
             throttle.wait()
             started = time.time()
@@ -107,12 +126,20 @@ def _refresh_snapshot(cache: TtlSnapshotCache, cb, source_key: str,
             break
         except Exception as e:
             last_error = e
-            logger.warning(f"[API错误] {cache.label} 获取失败 "
-                           f"(attempt {attempt}/{attempts}): {e}")
+            action = "将重试" if attempt < attempts else "重试已耗尽，将降级"
+            logger.info(f"[API错误] {cache.label} 获取失败 "
+                        f"(attempt {attempt}/{attempts}), "
+                        f"耗时 {time.time() - started:.2f}s; "
+                        f"{_snapshot_failure_detail(e)}; {action}")
             time.sleep(backoff(attempt))
 
     if df is None:
-        logger.error(f"[API错误] {cache.label} 最终失败: {last_error}")
+        # 设计内降级（返回空表 → 多源合并/调用方回退收盘，diag 计数），
+        # 单源失败只进日志；是否影响策略由调用方汇总实际缺失行情后告警。
+        logger.warning(f"[API错误] {cache.label} 最终失败（共 {attempts} 次尝试）; "
+                       f"{_snapshot_failure_detail(last_error)}; "
+                       "该数据源本轮不可用，返回空快照，由调用方尝试其他数据源；"
+                       "最终行情是否缺失以调用方汇总为准")
         cb.record_failure(source_key, str(last_error))
         df = pd.DataFrame()
     cache.store(df, now)

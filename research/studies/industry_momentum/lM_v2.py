@@ -19,13 +19,13 @@
 #   builtins.sum 是同类坑旁证）。修复：改列表推导式（探针平台实证写法）。
 #   本版改动：rebuild_pool 内嵌自报 + any→hits 列表推导，其余引擎一字未改。
 #
-# 设计：只跑 V2 一个口径、全部真实 order()，平台收益曲线/仓位/交易明细即策略
+# 实验：只跑 V2 一个口径、全部真实 order()，平台收益曲线/仓位/交易明细即策略
 #   本身。V0 基线无需另写：同窗口再跑一遍 l2_etfself.py，两份平台报表直接
 #   对照，差异全部归因池规则。
 # 池规则（V2）：每 20 交易日重建——全体行业/主题 ETF（名称剔除宽基/债券/商品/
 #   跨境/货币/风格），上市 ≥365 自然日、近 20 日均额 ≥5000 万（时点值）、
 #   250 日收益两两相关 ≥0.90 去重（贪心留流动性最高者）。
-# 引擎与 l2_etfself 逐条一致：20 日收益（含当日）从强到弱、拥挤度代理 <90 放行
+# 引擎与 l2_etfself 逐条一致：20 日收益（含当日）从强到弱、量价热度代理 <90 放行
 #   None、前 3 等权、跌出前 40% 卖、停牌持有、万一单边、无滑点、整手 100。
 # 唯一配套差异：入截面需 ≥250 根（v1 为 ≥61 根，配合 V2 成熟度门槛）。
 # 运行：聚宽回测 2024-01-01 ~ 2026-06-01（2024 窗，同 v2_1/v3/v3_1 线、10 万），
@@ -255,7 +255,7 @@ def run_rotation(context):
             order_target(sec, 0)
             log.info("卖出 %s %s rank %d/%d" % (sec, get_security_name(sec), r, n))
 
-    # 后买：拥挤度<90（None 放行）的前空槽数等权
+    # 后买：量价热度<90（None 放行）的前空槽数等权
     held = {s for s, p in context.portfolio.positions.items() if p.total_amount > 0}
     slots = TOPN - len(held)
     if slots > 0:
@@ -275,7 +275,7 @@ def run_rotation(context):
             if amount < 100:
                 continue
             order(code, amount)
-            log.info("买入 %s %s %d份 @%.3f ret20=%.2f crowd=%s rank %d/%d"
+            log.info("买入 %s %s %d份 @%.3f ret20=%.2f 量价热度=%s分 rank %d/%d"
                      % (code, r['name'], amount, px, r['ret20'],
                         r['crowd'], rank[code], n))
             bought += 1

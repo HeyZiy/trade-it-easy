@@ -8,7 +8,7 @@
 
 1. 读名义成交台账推导持仓与资金（docs/trade_ledger.md：持仓事实来源，
    derive 供料与妙想持仓 dict 同形，判定核零改动）
-2. industry_momentum.analyze_rotation：截面排名 → 卖出（跌出前 40%）
+2. industry_momentum.analyze_rotation：自身退出（score 转负 3 日确认/限亏/保本损）
    → 买入（准入过滤后前 3 等权补足空槽）
 3. 卖出优先于买入，命中指令经 execute_batch 记入名义台账（影子成交，
    信号当日收盘价成交形态；真实账户按报告手动执行）
@@ -86,7 +86,8 @@ def run(dry_run: bool = False) -> str:
     total_assets = snap.total_assets
     avail_balance = snap.cash
 
-    plan = analyze_rotation(positions, total_assets, avail_balance)
+    plan = analyze_rotation(positions, total_assets, avail_balance,
+                            entry_map=snap.entry_map)
     rows = plan["rows"]
     sells, buys = plan["sells"], plan["buy_orders"]
 
@@ -107,9 +108,9 @@ def run(dry_run: bool = False) -> str:
     lines += ["## 一、截面前列（动量评分）", ""]
     for r in rows[:8]:
         mark = " 📌持有" if r.code in plan["held_codes"] else ""
-        crowd = f"{r.crowd:.0f}%" if r.crowd is not None else "—"
+        heat = f"{r.crowd:.0f} 分" if r.crowd is not None else "—"
         lines.append(f"- {r.rank}. {r.name}({r.code}) score {r.score:+.4f}"
-                     f" | 拥挤度 {crowd}{mark}")
+                     f" | 量价热度 {heat}{mark}")
     lines.append("")
 
     # 策略自有前置校验（卫星槽位预算上限，policy 归本入口）；
@@ -169,7 +170,8 @@ def parse_arguments() -> argparse.Namespace:
     parser.add_argument('--debug', action='store_true', help='启用调试模式')
     parser.add_argument('--no-notify', action='store_true', help='不发送推送通知')
     parser.add_argument('--dry-run', action='store_true', help='只检测不记账（调试用）')
-    parser.add_argument('--force', action='store_true', help='跳过交易日检查（手动调试用）')
+    parser.add_argument('--force', action='store_true',
+                        help='跳过交易日检查（手动调试用；非交易日一律只读不记账）')
     return parser.parse_args()
 
 
@@ -182,12 +184,18 @@ def main() -> int:
     logger.info(f"运行时间: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
     logger.info("=" * 60)
 
-    if not args.force and not is_trading_day():
+    trading = is_trading_day()
+    if not args.force and not trading:
         logger.info("今天不是 A 股交易日，跳过执行")
         return 0
 
+    # 非交易日不可能有真实成交，硬记账就是假日假账 → --force 试跑一律只读
+    dry_run = args.dry_run or not trading
+    if dry_run and not args.dry_run:
+        logger.info("非交易日 --force：本次只检测，不写台账")
+
     try:
-        report = run(dry_run=args.dry_run)
+        report = run(dry_run=dry_run)
     except Exception as e:
         logger.exception(f"运行失败: {e}")
         return 1
