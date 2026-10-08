@@ -40,17 +40,17 @@ QUARTERS = [
 def _patch_frames(monkeypatch, income=None, balance=None, structure=None,
                   kline=None, factors=None):
     if income is not None:
-        monkeypatch.setattr(feeds, "_raw_income", lambda codes: {"600001": income})
+        monkeypatch.setattr(feeds, "_raw_income", lambda codes, b, e: {"600001": income})
     if balance is not None:
         monkeypatch.setattr(feeds, "_raw_balance_sheets",
-                            lambda codes: {"600001": balance})
+                            lambda codes, b, e: {"600001": balance})
     if structure is not None:
         monkeypatch.setattr(feeds, "_raw_equity_structure",
-                            lambda codes: {"600001": structure})
+                            lambda codes, b, e: {"600001": structure})
     if kline is not None:
         monkeypatch.setattr(feeds, "_raw_kline", lambda codes, b, e: kline)
     if factors is not None:
-        monkeypatch.setattr(feeds, "_raw_adj_factors", lambda codes: factors)
+        monkeypatch.setattr(feeds, "_raw_adj_factors", lambda codes, b, e: factors)
 
 
 def _balance():
@@ -132,6 +132,44 @@ def test_missing_balance_sheet_excluded(monkeypatch):
                   balance=_balance_rows([]), structure=_structure())
     frame = feeds.fetch_fundamentals(["600001"], ASOF, raw_closes={"600001": 20.0})
     assert frame.empty
+
+
+def test_missing_ttm_quarter_cannot_make_incomplete_pe(monkeypatch):
+    rows = [r for r in QUARTERS if r[0] != "20250930"]
+    _patch_frames(monkeypatch, income=_income_rows(rows),
+                  balance=_balance(), structure=_structure())
+    frame = feeds.fetch_fundamentals(["600001"], ASOF, raw_closes={"600001": 20.0})
+    assert frame.empty
+
+
+def test_fundamentals_batches_release_raw_frames_and_preserve_old_shares(monkeypatch):
+    import weakref
+    codes = [f"{600001 + i}" for i in range(70)]
+    refs = []
+    calls = []
+
+    def income(batch, begin, end):
+        # 上一批函数已返回；全市场累积原表的写法会使此断言失败。
+        assert all(ref() is None for ref in refs)
+        assert begin == "2024-07-01" and end == ASOF
+        calls.append(batch)
+        frames = {c: _income_rows(QUARTERS) for c in batch}
+        refs.extend(weakref.ref(df) for df in frames.values())
+        return frames
+
+    def structure(batch, begin, end):
+        assert begin == "1990-01-01" and end == ASOF
+        return {c: _structure() for c in batch}  # 2020 年股本仍有效
+
+    monkeypatch.setattr(feeds, "_raw_income", income)
+    monkeypatch.setattr(feeds, "_raw_balance_sheets",
+                        lambda batch, b, e: {c: _balance() for c in batch})
+    monkeypatch.setattr(feeds, "_raw_equity_structure", structure)
+    frame = feeds.fetch_fundamentals(codes, ASOF, raw_closes={c: 20.0 for c in codes})
+    assert list(frame.index) == codes
+    assert [len(batch) for batch in calls] == [32, 32, 6]
+    assert all(ref() is None for ref in refs)
+    assert frame.loc["600001", "pb"] == pytest.approx(2e9 / 20_000.0)
 
 
 # ── 前复权收盘 ──

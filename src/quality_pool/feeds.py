@@ -36,6 +36,11 @@ logger = logging.getLogger(__name__)
 # K 线自然日窗口：121 根交易日 ≈ 180 自然日，留节假日与停牌余量
 CLOSES_WINDOW_DAYS = 260
 UNLOCK_EVENT_DAYS = 90
+FUNDAMENTAL_BATCH_SIZE = 32
+# 查最近八个季度至 asof，覆盖正常披露滞后、最新单季、同比与四季 TTM。
+FINANCIAL_LOOKBACK_QUARTERS = 8
+# 股本按变动日期查询，需要包含多年未变动的最后一条记录。
+EQUITY_HISTORY_BEGIN = "1990-01-01"
 
 
 # ── 原始取数（测试 monkeypatch 点：替换为本模块内的同名函数） ──
@@ -50,19 +55,19 @@ def _raw_status(codes: List[str], date: str) -> pd.DataFrame:
     return fetch_status(codes, date)
 
 
-def _raw_income(codes: List[str]) -> Dict[str, pd.DataFrame]:
+def _raw_income(codes: List[str], begin: str, end: str) -> Dict[str, pd.DataFrame]:
     from data_provider.fetchers.amazingdata_info import fetch_income
-    return fetch_income(codes)
+    return fetch_income(codes, begin, end)
 
 
-def _raw_balance_sheets(codes: List[str]) -> Dict[str, pd.DataFrame]:
+def _raw_balance_sheets(codes: List[str], begin: str, end: str) -> Dict[str, pd.DataFrame]:
     from data_provider.fetchers.amazingdata_info import fetch_balance_sheets
-    return fetch_balance_sheets(codes)
+    return fetch_balance_sheets(codes, begin, end)
 
 
-def _raw_equity_structure(codes: List[str]) -> Dict[str, pd.DataFrame]:
+def _raw_equity_structure(codes: List[str], begin: str, end: str) -> Dict[str, pd.DataFrame]:
     from data_provider.fetchers.amazingdata_info import fetch_equity_structure
-    return fetch_equity_structure(codes)
+    return fetch_equity_structure(codes, begin, end)
 
 
 def _raw_restricted(codes: List[str], begin: str, end: str) -> pd.DataFrame:
@@ -70,9 +75,9 @@ def _raw_restricted(codes: List[str], begin: str, end: str) -> pd.DataFrame:
     return fetch_restricted(codes, begin, end)
 
 
-def _raw_adj_factors(codes: List[str]) -> pd.DataFrame:
+def _raw_adj_factors(codes: List[str], begin: str, end: str) -> pd.DataFrame:
     from data_provider.fetchers.amazingdata_info import fetch_adj_factors
-    return fetch_adj_factors(codes)
+    return fetch_adj_factors(codes, begin, end)
 
 
 def _raw_kline(codes: List[str], begin: str, end: str) -> Dict[str, pd.DataFrame]:
@@ -106,7 +111,7 @@ def fetch_closes(codes: List[str], asof: str,
     end = pd.Timestamp(asof)
     begin = end - pd.Timedelta(days=CLOSES_WINDOW_DAYS)
     kline = _raw_kline(codes, begin.strftime("%Y-%m-%d"), asof)
-    factors = _raw_adj_factors(codes)
+    factors = _raw_adj_factors(codes, begin.strftime("%Y-%m-%d"), asof)
 
     series_by_code: Dict[str, pd.Series] = {}
     for code, df in kline.items():
@@ -186,11 +191,27 @@ def fetch_unlock_codes(codes: List[str], signal_date: str) -> Set[str]:
 def fetch_fundamentals(codes: List[str], asof: str,
                        raw_closes: Optional[Dict[str, float]] = None) -> pd.DataFrame:
     """截止 asof 的财务/估值快照 → index=code：
-    roe_single_pct / np_yoy_pct / pe_ttm / pb（任一不可计算的整股剔除）。"""
+    roe_single_pct / np_yoy_pct / pe_ttm / pb（任一不可计算的整股剔除）。
+
+    每批算完只留下四个比率，不把全市场三类原表同时装入内存。
+    """
+    rows: Dict[str, dict] = {}
+    for start in range(0, len(codes), FUNDAMENTAL_BATCH_SIZE):
+        batch = codes[start:start + FUNDAMENTAL_BATCH_SIZE]
+        rows.update(_fundamental_batch(batch, asof, raw_closes))
+        logger.info("[quality_pool] 财务快照 %s/%s，累计有效 %s",
+                    start + len(batch), len(codes), len(rows))
+    frame = pd.DataFrame.from_dict(rows, orient="index")
+    return frame.replace([np.inf, -np.inf], np.nan).dropna()
+
+
+def _fundamental_batch(codes: List[str], asof: str,
+                       raw_closes: Optional[Dict[str, float]]) -> Dict[str, dict]:
     asof_ts = pd.Timestamp(asof)
-    income = _raw_income(codes)
-    balances = _raw_balance_sheets(codes)
-    structures = _raw_equity_structure(codes)
+    begin = (asof_ts.to_period("Q") - FINANCIAL_LOOKBACK_QUARTERS).start_time
+    income = _raw_income(codes, begin.strftime("%Y-%m-%d"), asof)
+    balances = _raw_balance_sheets(codes, begin.strftime("%Y-%m-%d"), asof)
+    structures = _raw_equity_structure(codes, EQUITY_HISTORY_BEGIN, asof)
 
     rows: Dict[str, dict] = {}
     for code in codes:
@@ -210,6 +231,8 @@ def fetch_fundamentals(codes: List[str], asof: str,
             continue
         total_mv = shares * 1e4 * close_raw     # TOT_SHARE 单位万股
         np_ttm = _ttm_np(np_quarters)
+        if np_ttm is None:
+            continue
         row = {
             "roe_single_pct": np_latest / equity * 100.0,
             "np_yoy_pct": (np_latest / np_prev_year - 1.0) * 100.0,
@@ -217,9 +240,7 @@ def fetch_fundamentals(codes: List[str], asof: str,
             "pb": total_mv / equity,
         }
         rows[code] = row
-    frame = pd.DataFrame.from_dict(rows, orient="index")
-    frame = frame.replace([np.inf, -np.inf], np.nan).dropna()
-    return frame
+    return rows
 
 
 def _parse_period(value) -> pd.Timestamp:
@@ -282,11 +303,12 @@ def _same_quarter_last_year(np_quarters: pd.Series,
 
 def _ttm_np(np_quarters: pd.Series) -> Optional[float]:
     last4 = np_quarters.iloc[-4:]
-    # 窗口跨季缺失（相邻报告期间隔异常）时 TTM 口径失真，返回 NaN 由上层剔除
-    if len(last4) == 4:
-        gaps = pd.Series(last4.index).sort_values().diff().dropna()
-        if (gaps.dt.days > 200).any():
-            return None
+    # 必须四个连续报告季，窗口或服务端缺季不能冒充完整 TTM。
+    if len(last4) != 4:
+        return None
+    quarters = pd.DatetimeIndex(last4.index).to_period("Q").asi8
+    if not (np.diff(quarters) == 1).all():
+        return None
     return float(last4.sum())
 
 

@@ -124,6 +124,67 @@ def test_signal_first_run_writes_plan_and_advances(env):
     assert "目标 2" in report
 
 
+def test_signal_interruption_cannot_replay_round_next_day(env):
+    def interrupted(day):
+        raise SystemExit("simulated SDK crash")
+
+    env.setattr(qp.feeds, "fetch_universe", interrupted)
+    with pytest.raises(SystemExit, match="simulated SDK crash"):
+        qp.run_signal(dt.date(2026, 10, 1))
+    st = pool_state.load_state(qp.STATE_PATH)
+    assert st["next_signal_date"] == "2026-10-29"
+    assert st["pending_plan"] is None
+    assert "非调仓日" in qp.run_signal(dt.date(2026, 10, 2))
+
+
+def test_signal_logging_failure_cannot_prevent_schedule_persistence(env):
+    _patch_signal_data(env, fail=True)
+
+    def disk_full(*args, **kwargs):
+        raise OSError("logging disk full")
+
+    env.setattr(qp.logger, "exception", disk_full)
+    with pytest.raises(OSError, match="logging disk full"):
+        qp.run_signal(dt.date(2026, 10, 1))
+    st = pool_state.load_state(qp.STATE_PATH)
+    assert st["next_signal_date"] == "2026-10-29"
+    assert st["pending_plan"] is None
+
+
+def test_signal_unwritable_state_stops_before_data_fetch(env):
+    fetched = []
+    env.setattr(qp.feeds, "fetch_universe", lambda d: fetched.append(d))
+
+    def disk_full(*args, **kwargs):
+        raise OSError("state disk full")
+
+    env.setattr(pool_state, "save_state", disk_full)
+    with pytest.raises(OSError, match="state disk full"):
+        qp.run_signal(dt.date(2026, 10, 1))
+    assert fetched == []
+
+
+def test_signal_retry_after_recovery_creates_plan(env):
+    _patch_signal_data(env, fail=True)
+    qp.run_signal(dt.date(2026, 10, 1))
+    _patch_signal_data(env)
+    assert "非调仓日" in qp.run_signal(dt.date(2026, 10, 2))
+    assert "目标 2" in qp.run_signal(dt.date(2026, 10, 2), retry=True)
+    st = pool_state.load_state(qp.STATE_PATH)
+    assert st["pending_plan"]["signal_day"] == "2026-10-02"
+    assert st["next_signal_date"] == "2026-10-30"
+
+
+def test_signal_dry_run_does_not_checkpoint_state(env):
+    from pathlib import Path
+    _patch_signal_data(env)
+    st = pool_state.load_state(qp.STATE_PATH)
+    pool_state.save_state(st, qp.STATE_PATH)
+    before = Path(qp.STATE_PATH).read_bytes()
+    qp.run_signal(dt.date(2026, 10, 1), dry_run=True)
+    assert Path(qp.STATE_PATH).read_bytes() == before
+
+
 def test_signal_data_pause_keeps_holding_and_advances(env):
     _patch_signal_data(env, fail=True)
     today = dt.date(2026, 10, 1)

@@ -100,6 +100,39 @@ def adjust_series(close: pd.Series) -> pd.Series:
     return out
 
 
+def get_etf_research_daily(code: str, end_date: str) -> pd.DataFrame:
+    """研究日线：东财原始 OHLC + 供应商后复权 OHLC，禁止价格跳变猜复权。
+
+    价格两条线来自同一供应商；成交额为元，成交量由手转换为份。
+    返回失败时抛错，让构建方保留旧缓存并记录失败，不能回退到猜测复权。
+    """
+    import akshare as ak
+
+    if not is_etf_code(code):
+        raise ValueError(f"{code} 不是受支持的 ETF 代码")
+    symbol = _etf_sym(code)[2:]
+    rename = {"日期": "date", "开盘": "open", "最高": "high", "最低": "low",
+              "收盘": "close", "成交量": "volume", "成交额": "amount"}
+    tables = []
+    for adjustment in ("", "hfq"):
+        df = ak.fund_etf_hist_em(symbol=symbol, period="daily", start_date="19900101",
+                                 end_date=end_date.replace("-", ""), adjust=adjustment)
+        if df is None or df.empty:
+            raise ValueError(f"{code} 东财 {adjustment or 'raw'} 行情为空")
+        df = df.rename(columns=rename)
+        df["date"] = pd.to_datetime(df["date"], errors="raise").dt.strftime("%Y-%m-%d")
+        if df["date"].duplicated().any():
+            raise ValueError(f"{code} 东财行情日期重复")
+        if adjustment:
+            df = df[["date", "open", "high", "low", "close"]].rename(
+                columns={f: f"hfq_{f}" for f in ("open", "high", "low", "close")})
+        else:
+            df = df[["date", "open", "high", "low", "close", "volume", "amount"]].copy()
+            df["volume"] = pd.to_numeric(df["volume"], errors="coerce") * 100
+        tables.append(df)
+    return tables[0].merge(tables[1], on="date", how="left", validate="one_to_one").sort_values("date")
+
+
 def get_etf_daily(code: str, *, adjust: Optional[str] = None) -> Optional[pd.DataFrame]:
     """ETF 日线全历史（新浪 fund_etf_hist_sina 单源，带 amount 成交额）。
 

@@ -73,18 +73,25 @@ def _next_rebalance_day(day: date) -> date:
 
 # ── signal ──
 
-def run_signal(today: date, dry_run: bool = False) -> str:
+def run_signal(today: date, dry_run: bool = False, retry: bool = False) -> str:
     """调仓日盘后生成名单；其余情形只推进日程并说明。"""
     today_str = today.isoformat()
     st = pool_state.load_state(STATE_PATH)
     next_day = st.get("next_signal_date")
     is_round_day = next_day is None or today_str >= next_day
-    if not is_round_day:
+    if not is_round_day and not retry:
         return _finish_report(
             f"# 质量池信号（{today_str}）\n\n- 非调仓日：下一调仓信号日 {next_day}\n")
 
     asof = _prev_trading_day(today).isoformat()
     lines: List[str] = [f"# 质量池信号（{today_str}）", f"- 财务/估值/波动/强弱截至 T−1：{asof}"]
+    nxt = _next_rebalance_day(today).isoformat()
+    # 先持久化本轮暂停的安全状态。磁盘不足导致保存失败时不开始取数；
+    # SDK 崩溃/OOM/进程中断也不会使下一日 cron 自动重放整轮。
+    st["next_signal_date"] = nxt
+    pool_state.put_plan(st, None)
+    if not dry_run:
+        pool_state.save_state(st, STATE_PATH)
     try:
         universe = feeds.fetch_universe(today_str)
         codes = sorted(universe)
@@ -107,12 +114,8 @@ def run_signal(today: date, dry_run: bool = False) -> str:
         selected, kept = screener.select_targets(ranked, held)
     except Exception as exc:
         # 整轮暂停：维持持仓，日程照常推进（规格「运行与记录」的数据异常提醒）
+        # 安全状态已经落盘，不依赖失败后的日志/报告写入来推进日程。
         logger.exception("调仓名单生成失败")
-        nxt = _next_rebalance_day(today).isoformat()
-        st["next_signal_date"] = nxt
-        pool_state.put_plan(st, None)
-        if not dry_run:
-            pool_state.save_state(st, STATE_PATH)
         return _finish_report("\n".join(lines + [
             f"- ⚠️ 数据异常，本轮暂停（持仓不动，日程推进至 {nxt}）：{exc}"]))
 
@@ -133,8 +136,6 @@ def run_signal(today: date, dry_run: bool = False) -> str:
     plan = {"signal_day": today_str, "asof": asof, "selected": selected,
             "kept": kept, "exit_reasons": exit_reasons, "decisions": decisions}
 
-    nxt = _next_rebalance_day(today).isoformat()
-    st["next_signal_date"] = nxt
     pool_state.put_plan(st, plan)
     if not dry_run:
         pool_state.save_state(st, STATE_PATH)
@@ -173,7 +174,11 @@ def main() -> int:
                         help="只出报告与计划，不写状态/台账")
     parser.add_argument("--force", action="store_true",
                         help="跳过交易日检查（手动调试用；非交易日一律只读不记账）")
+    parser.add_argument("--retry-signal", action="store_true",
+                        help="修复数据故障后手动重跑信号，跳过调仓日检查并重设本轮日程")
     args = parser.parse_args()
+    if args.retry_signal and args.command != "signal":
+        parser.error("--retry-signal 仅适用于 signal")
     setup_logging()
 
     today = date.today()
@@ -188,7 +193,10 @@ def main() -> int:
         logger.info("非交易日 --force：本次只读，不写状态/台账")
 
     if args.command == "signal":
-        run_signal(today, dry_run=dry_run)
+        if args.retry_signal:
+            run_signal(today, dry_run=dry_run, retry=True)
+        else:
+            run_signal(today, dry_run=dry_run)
     else:
         run_execute(today, dry_run=dry_run)
     return 0
