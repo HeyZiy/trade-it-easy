@@ -143,13 +143,28 @@ def run_signal(today: date, dry_run: bool = False, retry: bool = False) -> str:
     lines.append(f"- 质量池 {len(pool)} 只 | 可排名 {len(ranked)} 只 | "
                  f"留存 {len(kept)} | 目标 {len(selected)} | 计划退出 {len(exit_reasons)}")
     lines.append(f"- 下一调仓信号日 {nxt}；明日 09:31 先卖后买")
+    names = _decision_names(decisions)
     for d in decisions:
         mark = {"keep": "🟢", "entry": "🛒", "exit": "🔴"}.get(d["action"], "·")
-        lines.append(f"  - {mark} {d['code']} #{d['rank']} "
+        name = names.get(d["code"], "")
+        lines.append(f"  - {mark} {d['code']}"
+                     + (f" {name}" if name else "")
+                     + f" #{d['rank']} "
                      f"score={d['score'] if d['score'] is None else round(d['score'], 4)} "
                      f"{d['exit_reason'] or d['action']}"
                      + (f"（{d['pool_reason']}）" if d["pool_reason"] else ""))
     return _finish_report("\n".join(lines))
+
+
+def _decision_names(decisions: List[dict]) -> Dict[str, str]:
+    """决策码的简称（实时行情，fail-soft；取不到就只显代码）。"""
+    try:
+        _, names = feeds.fetch_realtime_quotes(
+            sorted({d["code"] for d in decisions}))
+    except Exception:
+        logger.exception("信号报告简称抓取失败，降级为只显代码")
+        return {}
+    return names
 
 
 # ── execute ──
