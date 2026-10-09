@@ -122,6 +122,39 @@ def test_failure_message_format():
     assert "symbol=sh600519" in message and "elapsed=1.50s" in message
 
 
+def test_fetcher_legs_build_real_urls(monkeypatch):
+    """回归：端点腿 URL 必须用常量内插。曾因 f-string 漏 {} 把
+    'TENCENT_REALTIME_ENDPOINT=sz000776' 整串当主机名，DNS 解析失败。
+    """
+    from data_provider.fetchers.akshare_fetcher import AkshareFetcher
+    fetcher = AkshareFetcher(0, 0)
+
+    captured = {}
+
+    def fake_get(url, headers=None, timeout=None):
+        captured["url"] = url
+        return _FakeResponse(200, payload)
+
+    payload = _sina_payload()
+    monkeypatch.setattr(requests, "get", fake_get)
+    quote = fetcher._get_stock_realtime_quote_sina("000776")
+    assert quote is not None and quote.name == "贵州茅台"
+    assert captured["url"] == "http://hq.sinajs.cn/list=sz000776"
+
+    f = ["x"] * 47
+    f[1] = "广发证券"
+    f[3] = "16.66"
+    f[4] = "16.60"
+    f[5] = "16.62"
+    f[6] = "123456"
+    f[44] = "100.0"
+    f[45] = "120.0"
+    payload = 'v_sz000776="' + "~".join(f) + '";'
+    quote = fetcher._get_stock_realtime_quote_tencent("000776")
+    assert quote is not None and quote.name == "广发证券"
+    assert captured["url"] == "http://qt.gtimg.cn/q=sz000776"
+
+
 def test_tencent_delimiter_shape(breaker, monkeypatch):
     """腾讯 ~ 分隔 45 字段载荷走同一装配（分隔符是端点数据）。"""
     f = ["x"] * 45

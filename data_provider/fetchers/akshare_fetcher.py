@@ -133,6 +133,8 @@ def _parse_tencent_fields(fields: List[str], stock_code: str) -> UnifiedRealtime
 
     1:名称 3:最新价 4:昨收 5:今开 6:成交量(手→股) 31:涨跌额 32:涨跌幅
     33:最高 34:最低 38:换手率 39:市盈率 43:振幅 44/45:市值(亿→元) 46:市净率 49:量比。
+    注意：44/45 是 safe_float 后直接乘 1e8，载荷出现非数值会 TypeError
+    （真实载荷约 88 字段且为数值；短载荷异常由 _direct_quote 外层 fail-soft 兜底）。
     """
     quote = UnifiedRealtimeQuote(
         code=stock_code,
@@ -616,7 +618,7 @@ class AkshareFetcher(BaseFetcher):
         return direct_realtime_quote(
             stock_code, source_key="akshare_sina", source_name="新浪",
             endpoint=SINA_REALTIME_ENDPOINT, symbol=symbol,
-            url=f"http://SINA_REALTIME_ENDPOINT={symbol}",
+            url=f"http://{SINA_REALTIME_ENDPOINT}={symbol}",
             headers=_direct_headers("http://finance.sina.com.cn"),
             delimiter=",", min_fields=32,
             parse=_parse_sina_fields,
@@ -631,7 +633,7 @@ class AkshareFetcher(BaseFetcher):
         return direct_realtime_quote(
             stock_code, source_key="akshare_tencent", source_name="腾讯",
             endpoint=TENCENT_REALTIME_ENDPOINT, symbol=symbol,
-            url=f"http://TENCENT_REALTIME_ENDPOINT={symbol}",
+            url=f"http://{TENCENT_REALTIME_ENDPOINT}={symbol}",
             headers=_direct_headers("http://finance.qq.com"),
             delimiter="~", min_fields=45,
             parse=_parse_tencent_fields,

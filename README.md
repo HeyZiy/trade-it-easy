@@ -4,15 +4,15 @@
 
 ## 策略地图
 
-| 策略          | 入口                                               |
-| ----------- | ------------------------------------------------ |
-| ETF 长期配置    | `etf_observe.py`（周一尾盘自动调仓批次）                     |
-| 行业动量轮动      | `industry_momentum.py`                           |
+| 策略          | 入口                                                   |
+| ----------- | ---------------------------------------------------- |
+| ETF 长期配置    | `etf_observe.py`（周一尾盘自动调仓批次）                         |
+| 行业动量轮动      | `industry_momentum.py`                               |
 | 质量池轮动       | `quality_pool.py signal` / `quality_pool.py execute` |
-| 价格循环（Cycle） | —                                                |
+| 价格循环（Cycle） | —                                                    |
 
 趋势回踩（pullback）已退役，入口脚本不再存在；环境快照随之休眠（唯一消费方
-消失），模块与 `data/environment.json` 结构保留，见 strategy/overview.md。
+消失），模块与 `data/environment.json` 结构保留，见 strategy/overview\.md。
 
 各策略的定位、假设与不可混用边界见 [strategy/overview.md](strategy/overview.md)。
 
@@ -29,8 +29,8 @@
 
 ## 文档
 
-- [strategy/](strategy/) — 各策略规格、证据与铁律
-- [docs/trade\_ledger.md](docs/trade_ledger.md) — 名义成交台账口径（持仓/资金唯一事实来源）
+- [strategy/](strategy/) — 策略，不记录实验等
+- [docs/trade\_ledger.md](docs/trade_ledger.md) — 模拟测试口径
 
 ## 测试
 
