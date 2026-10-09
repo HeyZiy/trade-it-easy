@@ -8,6 +8,7 @@
 | ------------------------------------------------- | ------------------- |
 | [market\_regimes](tools/market_regimes/README.md) | 指数月/周趋势状态与收益区间归因    |
 | [single\_factor](tools/single_factor/README.md)   | 因子 IC、分组、时间对齐与中性化诊断 |
+| [etf\_data](tools/etf_data/README.md) | ETF 本地行情缓存、复权信号价与数据质量检查 |
 
 single\_factor 只保留可复用的因子诊断引擎（`single_factor_test.py` 与代码生成器）；趋势研究中的 tools 依赖该研究的缓存与参数，仍跟随研究目录。
 
