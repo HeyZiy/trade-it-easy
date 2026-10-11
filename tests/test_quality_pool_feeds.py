@@ -10,6 +10,49 @@ from src.quality_pool import feeds
 ASOF = "2026-09-30"
 
 
+def test_industries_use_provider_and_preserve_asof_membership(monkeypatch, tmp_path):
+    from pathlib import Path
+    from data_provider.fetchers import amazingdata_info as provider
+
+    paths, queried = [], []
+    frames = {
+        'A': pd.DataFrame({'CON_CODE': ['600001.SH', '600002.SH', '600003.SH'],
+                           'INDATE': ['2020-01-01'] * 3,
+                           'OUTDATE': ['2026-10-01', None, None]}),
+        'B': pd.DataFrame({'CON_CODE': ['600001.SH', '600003.SH'],
+                           'INDATE': ['2026-10-01', '2020-01-01'],
+                           'OUTDATE': [None, None]}),
+    }
+
+    def write_cache(local_path):
+        cache = Path(local_path)
+        paths.append(cache)
+        (cache / 'sdk.h5').write_bytes(b'cache')
+
+    class SDK:
+        def get_industry_base_info(self, local_path, is_local):
+            assert is_local is False
+            write_cache(local_path)
+            return pd.DataFrame({'INDEX_CODE': ['A', 'B', 'C'], 'LEVEL_TYPE': [1, 1, 2]})
+
+        def get_industry_constituent(self, indices, local_path, is_local):
+            assert is_local is False
+            assert len(indices) == 1
+            index = indices[0]
+            queried.append(index)
+            write_cache(local_path)
+            # Real SDK constituent responses may be dictionaries of frames.
+            return {index: frames[index]}
+
+    monkeypatch.setenv('AMAZING_DATA_DIR', str(tmp_path))
+    monkeypatch.setattr(provider, '_info', lambda: SDK())
+    assert feeds.fetch_industries(['600001', '600002', '600003'], ASOF) == {
+        '600001': 'A', '600002': 'A'}
+    assert queried == ['A', 'B']
+    assert len(set(paths)) == 3 and all(not path.exists() for path in paths)
+    assert list(tmp_path.iterdir()) == []
+
+
 def _income_rows(rows) -> pd.DataFrame:
     """rows: (reporting_period, ann_date, actual_ann, stmt_type, net_profit)。"""
     frame = pd.DataFrame(rows, columns=[

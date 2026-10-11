@@ -2,6 +2,7 @@
 
 import pytest
 import pandas as pd
+import os
 from pathlib import Path
 
 from data_provider.fetchers import amazingdata_info as info
@@ -23,7 +24,7 @@ def test_signal_universe_uses_exact_date_and_cleans_sdk_cache(monkeypatch, tmp_p
             pytest.fail('Historical signal must not query the current universe')
 
     monkeypatch.setattr(info.AmazingDataFetcher, 'get_base_data', lambda: SDK())
-    monkeypatch.setattr(info, 'AMAZINGDATA_CACHE_DIR', str(tmp_path))
+    monkeypatch.setenv('AMAZING_DATA_DIR', str(tmp_path))
     from src.quality_pool import feeds
     assert feeds.fetch_universe('2026-10-09') == {'600519', '000001'}
     assert paths and all(not p.exists() for p in paths)
@@ -31,12 +32,10 @@ def test_signal_universe_uses_exact_date_and_cleans_sdk_cache(monkeypatch, tmp_p
 
 
 @pytest.mark.parametrize('method,args,fetch', [
-    ('get_industry_base_info', (), '_raw_industry_base'),
-    ('get_industry_constituent', ('801010.SI',), '_raw_industry_members'),
+    ('get_industry_base_info', (), 'fetch_industry_base'),
+    ('get_industry_constituent', ('801010.SI',), 'fetch_industry_members'),
 ])
 def test_industry_sdk_cache_is_temporary(monkeypatch, tmp_path, method, args, fetch):
-    from src.quality_pool import feeds
-    from data_provider.fetchers import amazingdata_fetcher
     request_paths = []
     expected = pd.DataFrame({'INDEX_CODE': ['801010.SI']})
 
@@ -46,6 +45,8 @@ def test_industry_sdk_cache_is_temporary(monkeypatch, tmp_path, method, args, fe
 
             def request(*codes, local_path, is_local):
                 assert not is_local
+                assert codes == ((['801010.SI'],) if args else ())
+                assert local_path.endswith(os.sep)
                 cache = Path(local_path)
                 assert cache.resolve() != tmp_path.resolve()
                 request_paths.append(cache)
@@ -56,11 +57,121 @@ def test_industry_sdk_cache_is_temporary(monkeypatch, tmp_path, method, args, fe
             return request
 
     monkeypatch.setattr(info, '_info', lambda: SDK())
-    monkeypatch.setattr(amazingdata_fetcher, '_resolve_cache_dir', lambda: str(tmp_path))
-    result = getattr(feeds, fetch)(*args)
+    monkeypatch.setenv('AMAZING_DATA_DIR', str(tmp_path))
+    result = getattr(info, fetch)(*args)
     pd.testing.assert_frame_equal(result, expected)
     assert request_paths and all(not p.exists() for p in request_paths)
     assert list(tmp_path.iterdir()) == []
+
+
+@pytest.mark.parametrize('fetch,args,method', [
+    (info.fetch_industry_base, (), 'get_industry_base_info'),
+    (info.fetch_industry_members, ('801010.SI',), 'get_industry_constituent'),
+    (info.fetch_code_list, ('EXTRA_STOCK_A_SH_SZ', '2026-10-09'), 'get_hist_code_list'),
+])
+def test_sdk_write_failure_cleans_cache_and_retry_uses_new_directory(
+        monkeypatch, tmp_path, fetch, args, method):
+    cache_root = tmp_path / 'sdk-cache'
+    permanent = cache_root / 'infodata' / 'existing.h5'
+    permanent.parent.mkdir(parents=True)
+    permanent.write_bytes(b'permanent data')
+    paths = []
+    failure = OSError('SDK write failed')
+
+    class SDK:
+        def __getattr__(self, name):
+            assert name == method
+
+            def request(*codes, local_path, **kwargs):
+                assert local_path.endswith(os.sep)
+                if method == 'get_hist_code_list':
+                    assert kwargs == {'start_date': 20261009, 'end_date': 20261009}
+                else:
+                    assert kwargs == {'is_local': False}
+                cache = Path(local_path)
+                assert cache.parent == cache_root
+                paths.append(cache)
+                (cache / 'partial.h5').write_bytes(b'partial download')
+                if len(paths) == 1:
+                    raise failure
+                return ['600519.SH'] if method == 'get_hist_code_list' else pd.DataFrame()
+            return request
+
+    sdk = SDK()
+    monkeypatch.setenv('AMAZING_DATA_DIR', str(cache_root))
+    monkeypatch.setattr(info, '_info', lambda: sdk)
+    monkeypatch.setattr(info.AmazingDataFetcher, 'get_base_data', lambda: sdk)
+    with pytest.raises(info.DataFetchError, match='SDK write failed') as error:
+        fetch(*args)
+    assert error.value.__cause__ is failure
+    assert not paths[0].exists()
+    result = fetch(*args)
+    if method == 'get_hist_code_list':
+        assert result == ['600519']
+    assert len(set(paths)) == 2
+    assert all(not cache.exists() for cache in paths)
+    assert permanent.read_bytes() == b'permanent data'
+    assert list(cache_root.iterdir()) == [permanent.parent]
+
+
+def test_nested_sdk_requests_cannot_delete_each_others_cache(monkeypatch, tmp_path):
+    paths = []
+    expected = pd.DataFrame({'INDEX_CODE': ['801010.SI']})
+
+    class SDK:
+        def get_industry_base_info(self, local_path, is_local):
+            outer = Path(local_path)
+            paths.append(outer)
+            assert outer.exists()
+            pd.testing.assert_frame_equal(info.fetch_industry_members('801010.SI'), expected)
+            assert outer.exists()
+            assert not paths[1].exists()
+            return expected
+
+        def get_industry_constituent(self, codes, local_path, is_local):
+            inner = Path(local_path)
+            paths.append(inner)
+            assert inner != paths[0]
+            assert inner.exists() and paths[0].exists()
+            return expected
+
+    monkeypatch.setenv('AMAZING_DATA_DIR', str(tmp_path))
+    monkeypatch.setattr(info, '_info', lambda: SDK())
+    pd.testing.assert_frame_equal(info.fetch_industry_base(), expected)
+    assert len(paths) == 2 and all(not path.exists() for path in paths)
+    assert list(tmp_path.iterdir()) == []
+
+
+def test_temporary_cache_uses_current_config_and_creates_missing_root(monkeypatch, tmp_path):
+    paths = []
+
+    class SDK:
+        def get_industry_base_info(self, local_path, is_local):
+            paths.append(Path(local_path))
+            assert paths[-1].exists()
+            return pd.DataFrame()
+
+    monkeypatch.setattr(info, '_info', lambda: SDK())
+    for name in ('first', 'second'):
+        root = tmp_path / name
+        monkeypatch.setenv('AMAZING_DATA_DIR', str(root))
+        info.fetch_industry_base()
+        assert paths[-1].parent == root
+        assert list(root.iterdir()) == []
+
+
+def test_current_code_list_does_not_create_sdk_cache(monkeypatch, tmp_path):
+    root = tmp_path / 'unused'
+
+    class SDK:
+        def get_code_list(self, security_type):
+            assert security_type == 'EXTRA_STOCK_A_SH_SZ'
+            return ['600519.SH', '000001.SZ']
+
+    monkeypatch.setenv('AMAZING_DATA_DIR', str(root))
+    monkeypatch.setattr(info.AmazingDataFetcher, 'get_base_data', lambda: SDK())
+    assert info.fetch_code_list() == ['600519', '000001']
+    assert not root.exists()
 
 
 @pytest.mark.parametrize("fetch,args", [

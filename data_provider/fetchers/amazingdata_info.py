@@ -4,12 +4,13 @@
 AmazingData 批量 InfoData/BaseData 包装 — 质量池数据层专用
 ===================================
 
-InfoData 只使用 begin_date/end_date 查询，不启用全历史 HDF5 缓存。
+财务、状态与解禁 InfoData 使用 begin_date/end_date 查询，不启用全历史 HDF5 缓存。
 SDK 不支持服务端字段投影：每批返回后立即复制所需列，释放宽表。
 登录态复用 amazingdata_fetcher；入参为 6 位代码，内部转 TGW 格式。
 单次复权因子没有日期查询接口，仍使用 SDK 缓存，但只返回所需窗口。
+行业与历史代码表强制落盘的 SDK 缓存由本模块逐次创建、隔离并清理。
 
-接口清单（返回均已做基础规整）：
+接口清单（行业查询保留 SDK 表形态，其余返回已做基础规整）：
 - fetch_stock_basics(code_list)          → DataFrame（get_stock_basic，无本地缓存）
 - fetch_status(code_list, date)          → DataFrame（get_history_stock_status，按日）
 - fetch_income(code_list, begin, end)    → dict[code, DataFrame]（get_income）
@@ -18,19 +19,23 @@ SDK 不支持服务端字段投影：每批返回后立即复制所需列，释�
 - fetch_restricted(code_list, begin, end)→ DataFrame（get_equity_restricted）
 - fetch_adj_factors(code_list, b, e)     → DataFrame（get_adj_factor，日期×代码）
 - fetch_kline(code_list, begin, end)     → dict[code, DataFrame]（query_kline，分块）
+- fetch_industry_base()                 → SDK 行业基础表
+- fetch_industry_members(index_code)    → SDK 行业成员及纳入/剔除日期
 """
 
 from __future__ import annotations
 
 import logging
 import os
+import tempfile
+from contextlib import contextmanager
 from typing import Dict, Iterable, List, Optional
 
 import pandas as pd
 
 from data_provider.fetchers.amazingdata_fetcher import (
     AMAZINGDATA_CACHE_DIR, AmazingDataFetcher, DataFetchError,
-    _code_to_tgw_format,
+    _code_to_tgw_format, _resolve_cache_dir,
 )
 
 logger = logging.getLogger(__name__)
@@ -68,6 +73,27 @@ def _chunks(seq: List[str], size: int):
 
 def _info():
     return AmazingDataFetcher.get_info_data()
+
+
+@contextmanager
+def _temporary_sdk_cache():
+    """强制落盘的在线请求独占临时目录，成功或异常均清理。
+
+    请求时解析配置；尾部分隔符用于 SDK 按字符串前缀拼接文件路径。
+    不读写共享持久缓存，只删除本次创建的子目录。
+    """
+    cache_root = _resolve_cache_dir()
+    os.makedirs(cache_root, exist_ok=True)
+    with tempfile.TemporaryDirectory(prefix='amazingdata_sdk_', dir=cache_root) as cache:
+        yield cache + os.sep
+
+
+def _industry_call(method_name: str, *args):
+    try:
+        with _temporary_sdk_cache() as cache:
+            return getattr(_info(), method_name)(*args, local_path=cache, is_local=False)
+    except Exception as e:
+        raise DataFetchError(f"AmazingData {method_name} 失败: {e}") from e
 
 
 def _info_call(method_name: str, codes: List[str], begin_date: str,
@@ -136,6 +162,16 @@ def _normalize_map(raw, batch: List[str]) -> Dict[str, pd.DataFrame]:
 
 
 # ── 对外接口 ──
+
+def fetch_industry_base():
+    """在线行业基础表；返回已载入内存的 SDK 表，临时缓存不留存。"""
+    return _industry_call('get_industry_base_info')
+
+
+def fetch_industry_members(index_code: str):
+    """在线行业成员表（含纳入/剔除日期）；时点归属由调用方装配。"""
+    return _industry_call('get_industry_constituent', [index_code])
+
 
 def fetch_stock_basics(codes: List[str]) -> pd.DataFrame:
     """get_stock_basic：代码/简称/上市板/上市日/退市日（无本地缓存，走服务端）。"""
@@ -248,13 +284,10 @@ def fetch_code_list(security_type: str = "EXTRA_STOCK_A_SH_SZ",
         if asof is None:
             raw = base.get_code_list(security_type)
         else:
-            import tempfile
             day = int(pd.Timestamp(asof).strftime('%Y%m%d'))
-            os.makedirs(AMAZINGDATA_CACHE_DIR, exist_ok=True)
-            with tempfile.TemporaryDirectory(
-                    prefix='quality_pool_universe_', dir=AMAZINGDATA_CACHE_DIR) as cache:
+            with _temporary_sdk_cache() as cache:
                 raw = base.get_hist_code_list(
-                    security_type, start_date=day, end_date=day, local_path=cache + os.sep)
+                    security_type, start_date=day, end_date=day, local_path=cache)
     except Exception as e:
         raise DataFetchError(f"AmazingData get_code_list 失败: {e}") from e
     codes: List[str] = []

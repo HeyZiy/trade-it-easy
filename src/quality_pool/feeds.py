@@ -101,24 +101,14 @@ def fetch_universe(signal_date: str) -> Set[str]:
     return universe
 
 
-def _industry_request(method, *args):
-    """行业 SDK 在线接口仍强制写 HDF5；每次使用并清理独立临时缓存。"""
-    import os
-    import tempfile
-    from data_provider.fetchers.amazingdata_info import _info
-    from data_provider.fetchers.amazingdata_fetcher import _resolve_cache_dir
-    cache_root = _resolve_cache_dir()
-    os.makedirs(cache_root, exist_ok=True)
-    with tempfile.TemporaryDirectory(prefix='quality_pool_industry_', dir=cache_root) as cache:
-        return getattr(_info(), method)(*args, local_path=cache + os.sep, is_local=False)
-
-
 def _raw_industry_base():
-    return _industry_request('get_industry_base_info')
+    from data_provider.fetchers.amazingdata_info import fetch_industry_base
+    return fetch_industry_base()
 
 
 def _raw_industry_members(index_code):
-    return _industry_request('get_industry_constituent', [index_code])
+    from data_provider.fetchers.amazingdata_info import fetch_industry_members
+    return fetch_industry_members(index_code)
 
 
 def _industry_frame(raw):
