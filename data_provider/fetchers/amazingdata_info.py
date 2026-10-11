@@ -164,7 +164,8 @@ def fetch_status(codes: List[str], date: str) -> pd.DataFrame:
 def fetch_income(codes: List[str], begin_date: str,
                  end_date: str) -> Dict[str, pd.DataFrame]:
     return _info_call("get_income", codes, begin_date, end_date,
-                      _FINANCIAL_COLUMNS + ("NET_PRO_EXCL_MIN_INT_INC",))
+                      _FINANCIAL_COLUMNS + ("NET_PRO_EXCL_MIN_INT_INC",
+                                            "NET_PRO_INCL_MIN_INT_INC"))
 
 
 def fetch_balance_sheets(codes: List[str], begin_date: str,
@@ -239,11 +240,21 @@ def fetch_kline(codes: List[str], begin_date: str, end_date: str) -> Dict[str, p
                     result[_plain_code(tgw)] = df
     return result
 
-def fetch_code_list(security_type: str = "EXTRA_STOCK_A_SH_SZ") -> List[str]:
-    """BaseData.get_code_list：沪深 A 股全集（6 位代码列表，兼容带后缀返回）。"""
+def fetch_code_list(security_type: str = "EXTRA_STOCK_A_SH_SZ",
+                    asof: Optional[str] = None) -> List[str]:
+    """沪深 A 股全集；指定日期时查询该日历史代码表，不依赖实时代码表缓存。"""
     base = AmazingDataFetcher.get_base_data()
     try:
-        raw = base.get_code_list(security_type)
+        if asof is None:
+            raw = base.get_code_list(security_type)
+        else:
+            import tempfile
+            day = int(pd.Timestamp(asof).strftime('%Y%m%d'))
+            os.makedirs(AMAZINGDATA_CACHE_DIR, exist_ok=True)
+            with tempfile.TemporaryDirectory(
+                    prefix='quality_pool_universe_', dir=AMAZINGDATA_CACHE_DIR) as cache:
+                raw = base.get_hist_code_list(
+                    security_type, start_date=day, end_date=day, local_path=cache + os.sep)
     except Exception as e:
         raise DataFetchError(f"AmazingData get_code_list 失败: {e}") from e
     codes: List[str] = []

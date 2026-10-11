@@ -20,7 +20,7 @@ from typing import Dict, List, Optional, Tuple
 
 from src.mx.executor import floor_lot  # 整手收敛单点（勿在他处重写）
 from src.quality_pool.config import (
-    LIMIT_PAD, MIN_COMMISSION, FEE_COMMISSION, SLIPPAGE_SPREAD, TOP_N,
+    INDUSTRY_CAP, LIMIT_PAD, MIN_COMMISSION, FEE_COMMISSION, SLIPPAGE_SPREAD, TOP_N,
 )
 
 SELL_TAX_NOTE = ""  # 台账不记费用；滑点/佣金只用于资金可行性检查（规格三节）
@@ -39,6 +39,7 @@ class ExecSnapshot:
     suspended: Dict[str, bool]      # code → 执行日当时停牌
     st: Dict[str, bool]             # code → 执行日当时 ST
     limits: Dict[str, Tuple[float, float]]   # code → (涨停价, 跌停价)
+    unavailable: set = field(default_factory=set)  # 官方状态/涨跌停价缺失，不推造规则
 
 
 @dataclass
@@ -75,6 +76,8 @@ def affordable_shares(cash: float, price: float) -> int:
 
 
 def _sell_block(code: str, snap: ExecSnapshot) -> Optional[str]:
+    if code in snap.unavailable:
+        return 'status/limits_unknown'
     if snap.suspended.get(code, False):
         return "paused"
     if snap.prices.get(code) is None:
@@ -86,6 +89,8 @@ def _sell_block(code: str, snap: ExecSnapshot) -> Optional[str]:
 
 
 def _buy_block(code: str, snap: ExecSnapshot) -> Optional[str]:
+    if code in snap.unavailable:
+        return 'status/limits_unknown'
     if snap.suspended.get(code, False):
         return "paused"
     if snap.st.get(code, False):
@@ -100,6 +105,17 @@ def _buy_block(code: str, snap: ExecSnapshot) -> Optional[str]:
 
 def _sellable_qty(code: str, snap: ExecSnapshot) -> int:
     return floor_lot(min(snap.counts.get(code, 0), snap.avail.get(code, 0)))
+
+
+def industry_buy_block(code: str, held, industries: Optional[dict]) -> Optional[str]:
+    if industries is None or code in held:
+        return None
+    key = industries.get(code)
+    if not key or any(not industries.get(c) for c in held):
+        return 'industry_unknown'
+    if sum(industries[c] == key for c in held) >= INDUSTRY_CAP:
+        return 'industry_cap'
+    return None
 
 
 def plan_exit_retry(exit_queue: Dict[str, str], snap: ExecSnapshot) -> ExecPlan:
@@ -133,15 +149,18 @@ def plan_exit_retry(exit_queue: Dict[str, str], snap: ExecSnapshot) -> ExecPlan:
 
 
 def plan_round(selected: List[str], exit_reasons: Dict[str, str],
-               per_budget: float, snap: ExecSnapshot) -> ExecPlan:
+               per_budget: float, snap: ExecSnapshot, deferred=(), industries=None) -> ExecPlan:
     """调仓日整轮计划：先退出 → 减超额留存 → 补不足。
 
     selected          目标名单（旧仓排新仓前，即执行序）
-    exit_reasons      待退出 code → out_of_pool | rank_below_buffer
-    per_budget        本轮冻结的单只目标市值（总权益/20，编排层冻结）
+    exit_reasons      确认出池/尚未完成的既有退出
+    per_budget        本轮冻结的单只目标市值（总权益/6，编排层冻结）
+    deferred          数据未知旧仓，保留原数量，不参与再平衡
+    industries        本轮行业映射；退出受阻仍按实际持仓占用行业额度
     """
     result = ExecPlan()
     counts = dict(snap.counts)
+    deferred = set(deferred)
     cash = snap.cash
     queue = {code: reason for code, reason in exit_reasons.items()
              if counts.get(code, 0) > 0}
@@ -169,7 +188,7 @@ def plan_round(selected: List[str], exit_reasons: Dict[str, str],
     # ── 2. 超额留存仓差额减持（高于预算减到预算，不为费用微差强卖整手） ──
     for code in selected:
         current = counts.get(code, 0)
-        if current <= 0 or code in queue:
+        if current <= 0 or code in queue or code in deferred:
             continue
         px = snap.prices.get(code)
         if px is None:
@@ -193,7 +212,7 @@ def plan_round(selected: List[str], exit_reasons: Dict[str, str],
     # ── 3. 按目标名单顺序补不足；在途退出占用的名额不让给新股票 ──
     reserved = {c for c, n in counts.items() if n > 0}
     for code in selected:
-        if code in queue:
+        if code in queue or code in deferred:
             continue
         current = counts.get(code, 0)
         px = snap.prices.get(code)
@@ -207,6 +226,10 @@ def plan_round(selected: List[str], exit_reasons: Dict[str, str],
             continue
         if current == 0 and code not in reserved and len(reserved) >= TOP_N:
             result.blocked.append(BlockedEvent(code, "buy", "equal_weight", "slot"))
+            continue
+        blocked = industry_buy_block(code, reserved, industries)
+        if blocked:
+            result.blocked.append(BlockedEvent(code, 'buy', 'equal_weight', blocked))
             continue
         qty = floor_lot(min(delta, affordable_shares(cash, px)))
         if qty < 100:

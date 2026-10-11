@@ -22,6 +22,7 @@
 """
 
 import logging
+import pandas as pd
 from dataclasses import replace
 from datetime import date, timedelta
 from typing import List
@@ -59,19 +60,24 @@ def build_snapshot(exec_date: str, selected: List[str]) -> execution.ExecSnapsho
 
     suspended: dict = {}
     st: dict = {}
+    unavailable = set()
     for code in codes:
-        if code in status.index:
+        if (code in status.index and all(col in status.columns
+                and pd.notna(status.at[code, col]) for col in ('is_st', 'is_suspended'))):
             suspended[code] = bool(status.at[code, "is_suspended"])
             st[code] = bool(status.at[code, "is_st"])
         else:
+            unavailable.add(code)
             suspended[code] = True
             st[code] = True
             logger.warning(f"[quality_pool] 状态表缺 {code}，按停牌/ST 处置")
+        if code not in limits:
+            unavailable.add(code)
 
     return execution.ExecSnapshot(
         trade_date=exec_date, counts=counts, avail=avail, cash=snap0.cash,
         equity=snap0.total_assets, prices=prices, names=names,
-        suspended=suspended, st=st, limits=limits)
+        suspended=suspended, st=st, limits=limits, unavailable=unavailable)
 
 
 def _record_trades(trades: List[execution.TradeIntent], exec_date: str) -> BatchResult:
@@ -91,7 +97,7 @@ def _result_lines(result: BatchResult) -> List[str]:
     return [oc.outcome_line for oc in result.outcomes]
 
 
-def _settle_trades(plan: execution.ExecPlan, exec_date: str) -> List[str]:
+def _settle_trades(plan: execution.ExecPlan, exec_date: str, industries=None) -> List[str]:
     """先记账卖单，按实际现金与名额缩减原买单，禁止使用预计回款。"""
     sells = [t for t in plan.trades if t.side == "sell"]
     result = _record_trades(sells, exec_date)
@@ -108,6 +114,10 @@ def _settle_trades(plan: execution.ExecPlan, exec_date: str) -> List[str]:
             continue
         if t.code not in reserved and len(reserved) >= config.TOP_N:
             lines.append(f"- ⛔ BUY {t.code} 受阻（{t.reason}）：slot")
+            continue
+        blocked = execution.industry_buy_block(t.code, reserved, industries)
+        if blocked:
+            lines.append(f'- ⛔ BUY {t.code} 受阻（{t.reason}）：{blocked}')
             continue
         qty = min(t.qty, execution.affordable_shares(cash, t.price))
         if qty < 100:
@@ -129,9 +139,10 @@ def run_execution(exec_date: str, dry_run: bool = False) -> str:
             date.fromisoformat(exec_date) - timedelta(days=1))
         if prev is None:
             raise RuntimeError(f"交易日历无 {exec_date} 之前的数据")
-        if signal.get("signal_day") != prev.isoformat():
-            logger.warning("STALE_SIGNAL：计划信号日 %s 非昨日 %s，丢弃",
-                           signal.get("signal_day"), prev)
+        if (signal.get('strategy_version') != config.STRATEGY_VERSION
+                or signal.get('execute_day') != exec_date
+                or signal.get('asof') != prev.isoformat()):
+            logger.warning("STALE_SIGNAL：计划版本/执行日/数据截止日不匹配，丢弃")
             signal = None
 
     selected = list((signal or {}).get("selected", []))
@@ -141,7 +152,9 @@ def run_execution(exec_date: str, dry_run: bool = False) -> str:
         exits = {c: r for c, r in exits.items() if c not in set(selected)}
     snapshot = build_snapshot(exec_date, selected)
     per = snapshot.equity / config.TOP_N if signal is not None else None
-    plan = (execution.plan_round(selected, exits, per, snapshot)
+    plan = (execution.plan_round(selected, exits, per, snapshot,
+                                 deferred=signal.get('deferred', ()),
+                                 industries=signal.get('industries', {}))
             if signal is not None else execution.plan_exit_retry(exits, snapshot))
 
     lines = [f"# 质量池执行（{exec_date}）"]
@@ -156,7 +169,8 @@ def run_execution(exec_date: str, dry_run: bool = False) -> str:
         held = derive(load_trades(config.POOL_LEDGER_PATH), as_of=exec_date).held_counts()
         st["exit_queue"] = {c: r for c, r in exits.items() if held.get(c, 0) > 0}
         pool_state.save_state(st, config.STATE_PATH)
-        lines += _settle_trades(plan, exec_date) or ["- 无成台交易"]
+        lines += _settle_trades(plan, exec_date,
+                               industries=(signal or {}).get('industries')) or ["- 无成台交易"]
         held = derive(load_trades(config.POOL_LEDGER_PATH), as_of=exec_date).held_counts()
         st["exit_queue"] = {c: r for c, r in exits.items() if held.get(c, 0) > 0}
         pool_state.save_state(st, config.STATE_PATH)

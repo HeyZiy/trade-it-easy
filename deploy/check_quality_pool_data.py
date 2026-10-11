@@ -67,15 +67,15 @@ def main() -> int:
     raw_closes = feeds.raw_closes_at(codes, asof_str)
     fundamentals = feeds.fetch_fundamentals(codes, asof_str, raw_closes)
     status = feeds.fetch_status(codes, signal_str)
-    unlocks = feeds.fetch_unlock_codes(codes, signal_str)
-    pool = screener.build_pool(set(codes), fundamentals, status, closes, unlocks)
+    industries = feeds.fetch_industries(codes, asof_str)
+    pool = screener.build_pool(set(codes), fundamentals, status, closes)
     ranked, _ = screener.rank_pool(pool, closes)
     after = _cache_bytes(info_cache)
     print(json.dumps({
         "codes": len(codes), "asof": asof_str, "signal_day": signal_str,
         "close_shape": list(closes.shape), "raw_closes": len(raw_closes),
         "fundamentals": len(fundamentals), "status": len(status),
-        "unlocks": len(unlocks), "pool": len(pool), "ranked": len(ranked),
+        "industries": len(industries), "pool": len(pool), "ranked": len(ranked),
         "infodata_bytes_before": before, "infodata_bytes_after": after,
         "infodata_growth_bytes": after - before,
         "elapsed_seconds": round(time.monotonic() - started, 1),

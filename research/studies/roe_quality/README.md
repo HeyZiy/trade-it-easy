@@ -1,7 +1,9 @@
 # ROE 质量轮动：研究问题、证据与边界
 
 质量池新方向及交易候选见 [README_pool.md](README_pool.md)；
-完整交易规则见 [质量池轮动 v1](../../../strategy/roe_quality_pool.md)。
+完整交易规则见 [质量池轮动 v3a](../../../strategy/roe_quality_pool.md)。
+集中6只的质量动量 v4 已独立到 [quality_momentum](../quality_momentum/README.md)，
+新版本规则与实验记录从该目录阅读。
 本页后续记录此前ROE排序线，暂停状态针对该历史研究线。
 
 本目录从 `../../../strategy/roe_quality_backtest.md` 的策略复刻开始，研究的问题是：

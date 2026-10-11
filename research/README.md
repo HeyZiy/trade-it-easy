@@ -16,7 +16,8 @@ single\_factor 只保留可复用的因子诊断引擎（`single_factor_test.py`
 
 | 目录                                                          | 研究对象                          | 当前说明                                            |
 | ----------------------------------------------------------- | ----------------------------- | ----------------------------------------------- |
-| [roe\_quality](studies/roe_quality/README.md)               | 质量类选股（ROE 轮动 + 质量轮动 + 质量池系统）  | 打分线已收线；质量池 A 过线并完成个人化容量实验（README\_pool.md）         |
+| [roe\_quality](studies/roe_quality/README.md)               | ROE / 质量池历史研究与 v1～v3 对照 | 打分线已收线；保留池质量、容量及执行诊断证据 |
+| [quality\_momentum](studies/quality_momentum/README.md) | 质量池 + 12-2 动量集中轮动 | v5规则定稿；盘前模式结果摘要已记录 |
 | [value_revenue](studies/value_revenue/README.md) | 价值因子EP × 营收同比加速 | 第一轮独立研究；EP有收益关联，营收加速增量偏弱，交互缺乏充分支持 |
 | [expectations](studies/expectations/README.md) | 低预期 × 已披露盈利维持 | 低预期＋历史盈利维持全期核查完成，未显示稳定增量；60日控制系数HAC t=−0.37 |
 | [trend](studies/trend/)                                     | 个股趋势策略                        | 保留原版本、辅助脚本及数据                                   |

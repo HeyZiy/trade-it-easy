@@ -2,8 +2,65 @@
 
 import pytest
 import pandas as pd
+from pathlib import Path
 
 from data_provider.fetchers import amazingdata_info as info
+
+
+def test_signal_universe_uses_exact_date_and_cleans_sdk_cache(monkeypatch, tmp_path):
+    paths = []
+
+    class SDK:
+        def get_hist_code_list(self, security_type, start_date, end_date, local_path):
+            assert security_type == 'EXTRA_STOCK_A_SH_SZ'
+            assert start_date == end_date == 20261009
+            cache = Path(local_path)
+            paths.append(cache)
+            (cache / 'history.pkl').write_bytes(b'sdk cache')
+            return ['600519.SH', '000001.SZ', '300001.SZ', '688001.SH']
+
+        def get_code_list(self, *args):
+            pytest.fail('Historical signal must not query the current universe')
+
+    monkeypatch.setattr(info.AmazingDataFetcher, 'get_base_data', lambda: SDK())
+    monkeypatch.setattr(info, 'AMAZINGDATA_CACHE_DIR', str(tmp_path))
+    from src.quality_pool import feeds
+    assert feeds.fetch_universe('2026-10-09') == {'600519', '000001'}
+    assert paths and all(not p.exists() for p in paths)
+    assert list(tmp_path.iterdir()) == []
+
+
+@pytest.mark.parametrize('method,args,fetch', [
+    ('get_industry_base_info', (), '_raw_industry_base'),
+    ('get_industry_constituent', ('801010.SI',), '_raw_industry_members'),
+])
+def test_industry_sdk_cache_is_temporary(monkeypatch, tmp_path, method, args, fetch):
+    from src.quality_pool import feeds
+    from data_provider.fetchers import amazingdata_fetcher
+    request_paths = []
+    expected = pd.DataFrame({'INDEX_CODE': ['801010.SI']})
+
+    class SDK:
+        def __getattr__(self, name):
+            assert name == method
+
+            def request(*codes, local_path, is_local):
+                assert not is_local
+                cache = Path(local_path)
+                assert cache.resolve() != tmp_path.resolve()
+                request_paths.append(cache)
+                target = cache / 'infodata' / 'industry_constituent'
+                target.mkdir(parents=True)
+                (target / '801010.SI.h5').write_bytes(b'sdk cache')
+                return expected.copy()
+            return request
+
+    monkeypatch.setattr(info, '_info', lambda: SDK())
+    monkeypatch.setattr(amazingdata_fetcher, '_resolve_cache_dir', lambda: str(tmp_path))
+    result = getattr(feeds, fetch)(*args)
+    pd.testing.assert_frame_equal(result, expected)
+    assert request_paths and all(not p.exists() for p in request_paths)
+    assert list(tmp_path.iterdir()) == []
 
 
 @pytest.mark.parametrize("fetch,args", [
@@ -55,6 +112,7 @@ def test_date_requests_normalize_sdk_shapes_and_trim_columns(monkeypatch, as_dic
 def test_income_copies_only_needed_fields(monkeypatch):
     wide = pd.DataFrame({"REPORTING_PERIOD": ["20260630"],
                          "NET_PRO_EXCL_MIN_INT_INC": [100.0],
+                         "NET_PRO_INCL_MIN_INT_INC": [120.0],
                          "UNUSED": [999.0]})
 
     class SDK:
@@ -64,9 +122,11 @@ def test_income_copies_only_needed_fields(monkeypatch):
     monkeypatch.setattr(info, "_info", lambda: SDK())
     result = info.fetch_income(["600001"], "2024-07-01", "2026-09-30")
     assert set(result["600001"].columns) == {
-        "MARKET_CODE", "REPORTING_PERIOD", "NET_PRO_EXCL_MIN_INT_INC"}
+        "MARKET_CODE", "REPORTING_PERIOD", "NET_PRO_EXCL_MIN_INT_INC",
+        "NET_PRO_INCL_MIN_INT_INC"}
     wide.loc[0, "NET_PRO_EXCL_MIN_INT_INC"] = 0
     assert result["600001"].loc[0, "NET_PRO_EXCL_MIN_INT_INC"] == 100
+    assert result["600001"].loc[0, "NET_PRO_INCL_MIN_INT_INC"] == 120
 
 
 def test_restricted_dict_is_not_silently_dropped(monkeypatch):

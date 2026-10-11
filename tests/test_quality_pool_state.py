@@ -47,15 +47,14 @@ def _patch_signal_data(monkeypatch, universe={"600001", "600002"},
             raise RuntimeError("data down")
         monkeypatch.setattr(feeds, "fetch_universe", boom)
         return
-    n = 130
-    idx = pd.date_range(end="2026-09-30", periods=n, freq="B")
-    closes = pd.DataFrame({c: 10.0 for c in universe}, index=idx)
     monkeypatch.setattr(feeds, "fetch_universe", lambda d: universe)
-    monkeypatch.setattr(feeds, "fetch_closes", lambda codes, asof, rows=121: closes)
+    monkeypatch.setattr(feeds, "fetch_closes", lambda codes, asof, rows=253:
+                        pd.DataFrame({c: 10.0 for c in codes},
+                                     index=pd.bdate_range(end=asof, periods=rows)))
     monkeypatch.setattr(feeds, "raw_closes_at", lambda codes, asof: {c: 10.0 for c in codes})
     monkeypatch.setattr(feeds, "fetch_fundamentals",
                         lambda codes, asof, raw_closes=None: pd.DataFrame.from_dict(
-                            {c: dict(roe_single_pct=4.0, np_yoy_pct=20.0,
+                            {c: dict(roe_ttm_pct=16.0, np_yoy_pct=20.0,
                                      pe_ttm=15.0, pb=2.0) for c in codes},
                             orient="index"))
     monkeypatch.setattr(feeds, "fetch_status",
@@ -63,6 +62,8 @@ def _patch_signal_data(monkeypatch, universe={"600001", "600002"},
                             {"is_st": False, "is_suspended": False},
                             index=pd.Index(list(codes), name="code")))
     monkeypatch.setattr(feeds, "fetch_unlock_codes", lambda codes, d: set())
+    monkeypatch.setattr(feeds, "fetch_industries", lambda codes, asof: {c: c for c in codes})
+    monkeypatch.setattr(feeds, 'fetch_realtime_quotes', lambda codes: ({}, {c: c for c in codes}))
 
 
 def _patch_execute_data(monkeypatch, prices, names=None,
@@ -102,13 +103,14 @@ def test_state_roundtrip_and_defaults(tmp_path):
 
 # ── signal ──
 
-def test_signal_non_round_day_noop(env):
+@pytest.mark.parametrize('retry', [False, True])
+def test_signal_non_round_day_noop(env, retry):
     today = dt.date(2026, 10, 5)
     st = pool_state.load_state(qp.STATE_PATH)
     st["next_signal_date"] = "2026-10-20"
     pool_state.save_state(st, qp.STATE_PATH)
     _patch_signal_data(env)
-    report = qp.run_signal(today)
+    report = qp.run_signal(today, retry=retry)
     assert "非调仓日" in report
     assert pool_state.load_state(qp.STATE_PATH)["pending_plan"] is None
 
@@ -124,7 +126,7 @@ def test_signal_first_run_writes_plan_and_advances(env):
     assert "目标 2" in report
 
 
-def test_signal_interruption_cannot_replay_round_next_day(env):
+def test_signal_interruption_retries_failed_signal_without_replaying_completed_round(env):
     def interrupted(day):
         raise SystemExit("simulated SDK crash")
 
@@ -134,7 +136,9 @@ def test_signal_interruption_cannot_replay_round_next_day(env):
     st = pool_state.load_state(qp.STATE_PATH)
     assert st["next_signal_date"] == "2026-10-29"
     assert st["pending_plan"] is None
-    assert "非调仓日" in qp.run_signal(dt.date(2026, 10, 2))
+    assert st['signal_retry'] is True
+    _patch_signal_data(env)
+    assert '目标 2' in qp.run_signal(dt.date(2026, 10, 2))
 
 
 def test_signal_logging_failure_cannot_prevent_schedule_persistence(env):
@@ -168,11 +172,11 @@ def test_signal_retry_after_recovery_creates_plan(env):
     _patch_signal_data(env, fail=True)
     qp.run_signal(dt.date(2026, 10, 1))
     _patch_signal_data(env)
-    assert "非调仓日" in qp.run_signal(dt.date(2026, 10, 2))
-    assert "目标 2" in qp.run_signal(dt.date(2026, 10, 2), retry=True)
+    assert "目标 2" in qp.run_signal(dt.date(2026, 10, 2))
+    assert '不重复' in qp.run_signal(dt.date(2026, 10, 2), retry=True)
     st = pool_state.load_state(qp.STATE_PATH)
     assert st["pending_plan"]["signal_day"] == "2026-10-02"
-    assert st["next_signal_date"] == "2026-10-30"
+    assert st["next_signal_date"] == "2026-10-29"
 
 
 def test_signal_dry_run_does_not_checkpoint_state(env):
@@ -202,14 +206,14 @@ def test_execute_round_buys_and_records(env):
     qp.run_signal(dt.date(2026, 10, 1))
 
     _patch_execute_data(env, {"600001": 10.0, "600002": 20.0})
-    qp.run_execute(dt.date(2026, 10, 2))
+    qp.run_execute(dt.date(2026, 10, 1))
 
     from src.trade_ledger import load_trades
     trades = load_trades(qp.POOL_LEDGER_PATH)
     assert {t.code for t in trades} == {"600001", "600002"}
     buys = {t.code: t.qty for t in trades if t.side == "buy"}
-    assert buys["600001"] == 5000          # 100万/2/10 → 5000 股
-    assert buys["600002"] == 2500          # 100万/2/20 → 2500 股
+    assert buys["600001"] == 16600
+    assert buys["600002"] == 8300
     st = pool_state.load_state(qp.STATE_PATH)
     assert st["pending_plan"] is None and st["exit_queue"] == {}
 
@@ -219,7 +223,7 @@ def test_execute_retry_exit_queue_daily(env):
     _patch_signal_data(env)
     qp.run_signal(dt.date(2026, 10, 1))
     _patch_execute_data(env, {"600001": 10.0, "600002": 20.0})
-    qp.run_execute(dt.date(2026, 10, 2))
+    qp.run_execute(dt.date(2026, 10, 1))
 
     st = pool_state.load_state(qp.STATE_PATH)
     st["exit_queue"] = {"600001": "out_of_pool"}
@@ -238,7 +242,7 @@ def test_execute_retry_exit_queue_daily(env):
     from src.trade_ledger import load_trades
     sells = [t for t in load_trades(qp.POOL_LEDGER_PATH)
              if t.side == "sell" and t.code == "600001"]
-    assert len(sells) == 1 and sells[0].qty == 5000
+    assert len(sells) == 1 and sells[0].qty == 16600
 
 
 def test_execute_stale_plan_discarded(env):
@@ -263,8 +267,11 @@ def _seed_positions(positions):
 
 def _pending(selected, exits, queue=None):
     pool_state.save_state({
-        "pending_plan": {"signal_day": "2026-10-01", "selected": selected,
-                         "exit_reasons": exits},
+        "pending_plan": {'strategy_version': 2, 'execute_day': '2026-10-02',
+                         'asof': '2026-10-01', "signal_day": "2026-10-02", "selected": selected,
+                         "exit_reasons": exits,
+                         'industries': {c: c for c in set(selected) | set(exits)
+                                        | set(_ledger_snapshot().held_counts())}},
         "exit_queue": queue or {}, "next_signal_date": "2026-10-29",
     }, qp.STATE_PATH)
 
@@ -319,7 +326,7 @@ def test_failed_sale_cannot_fund_original_buy_quantity(env):
 
 
 def test_failed_exit_does_not_release_holding_slot(env):
-    codes = [f"{600001 + i}" for i in range(20)]
+    codes = [f"{600001 + i}" for i in range(pool_config.TOP_N)]
     _seed_positions([(c, 100, 1.0) for c in codes])
     _pending(codes[1:] + ["600099"], {codes[0]: "out_of_pool"})
     _patch_execute_data(env, {c: 1.0 for c in codes + ["600099"]})
@@ -349,16 +356,16 @@ def test_failed_buy_is_consumed_and_not_retried_next_day(env):
 
 
 def test_failed_equal_weight_reduction_is_not_retried_daily(env):
-    _seed_positions([("600001", 10000, 10.0)])
+    _seed_positions([("600001", 20000, 10.0)])
     _pending(["600001"], {})
     _patch_execute_data(env, {"600001": 10.0})
     with env.context() as faults:
         _fail_sell(faults, "600001")
         qp.run_execute(dt.date(2026, 10, 2))
-    assert _ledger_snapshot().held_counts() == {"600001": 10000}
+    assert _ledger_snapshot().held_counts() == {"600001": 20000}
     assert pool_state.load_state(qp.STATE_PATH)["exit_queue"] == {}
     qp.run_execute(dt.date(2026, 10, 5))
-    assert _ledger_snapshot("2026-10-05").held_counts() == {"600001": 10000}
+    assert _ledger_snapshot("2026-10-05").held_counts() == {"600001": 20000}
 
 
 def test_new_selection_cancels_existing_exit(env):
@@ -366,7 +373,7 @@ def test_new_selection_cancels_existing_exit(env):
     _pending(["600001"], {}, queue={"600001": "out_of_pool"})
     _patch_execute_data(env, {"600001": 10.0})
     qp.run_execute(dt.date(2026, 10, 2))
-    assert _ledger_snapshot().held_counts() == {"600001": 5000}
+    assert _ledger_snapshot().held_counts() == {"600001": 16600}
     assert pool_state.load_state(qp.STATE_PATH)["exit_queue"] == {}
 
 

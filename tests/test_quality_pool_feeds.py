@@ -12,9 +12,11 @@ ASOF = "2026-09-30"
 
 def _income_rows(rows) -> pd.DataFrame:
     """rows: (reporting_period, ann_date, actual_ann, stmt_type, net_profit)。"""
-    return pd.DataFrame(rows, columns=[
+    frame = pd.DataFrame(rows, columns=[
         "REPORTING_PERIOD", "ANN_DATE", "ACTUAL_ANN_DATE",
         "STATEMENT_TYPE", "NET_PRO_EXCL_MIN_INT_INC"])
+    frame['NET_PRO_INCL_MIN_INT_INC'] = frame['NET_PRO_EXCL_MIN_INT_INC']
+    return frame
 
 
 def _balance_rows(rows) -> pd.DataFrame:
@@ -39,6 +41,7 @@ QUARTERS = [
 
 def _patch_frames(monkeypatch, income=None, balance=None, structure=None,
                   kline=None, factors=None):
+    monkeypatch.setattr(feeds, '_calendar_dates', lambda begin, end: pd.bdate_range(begin, end))
     if income is not None:
         monkeypatch.setattr(feeds, "_raw_income", lambda codes, b, e: {"600001": income})
     if balance is not None:
@@ -70,7 +73,7 @@ def test_fundamentals_core_ratios(monkeypatch):
     frame = feeds.fetch_fundamentals(
         ["600001"], ASOF, raw_closes={"600001": 20.0})
     row = frame.loc["600001"]
-    assert row["roe_single_pct"] == pytest.approx(130.0 / 20_000.0 * 100)
+    assert row["roe_ttm_pct"] == pytest.approx(450.0 / 20_000.0 * 100)
     assert row["np_yoy_pct"] == pytest.approx(130.0 / 80.0 * 100 - 100)
     # TTM = 110+120+130+90 = 450；总市值 = 10_000万股×1e4×20元 = 2e9
     assert row["pe_ttm"] == pytest.approx(2e9 / 450.0)
@@ -83,7 +86,7 @@ def test_unpublished_quarter_invisible(monkeypatch):
     _patch_frames(monkeypatch, income=_income_rows(rows),
                   balance=_balance(), structure=_structure())
     frame = feeds.fetch_fundamentals(["600001"], ASOF, raw_closes={"600001": 20.0})
-    assert frame.empty   # 2026Q2 未披露 → 最新单季为 2026Q1，去年同季缺失 → 不可比
+    assert frame.isna().any(axis=1).all()   # 2026Q2 未披露 → 最新单季为 2026Q1，去年同季缺失 → 不可比
 
 
 def test_correction_keeps_latest_disclosure(monkeypatch):
@@ -92,8 +95,8 @@ def test_correction_keeps_latest_disclosure(monkeypatch):
     _patch_frames(monkeypatch, income=_income_rows(rows),
                   balance=_balance(), structure=_structure())
     frame = feeds.fetch_fundamentals(["600001"], ASOF, raw_closes={"600001": 20.0})
-    assert frame.loc["600001"]["roe_single_pct"] == pytest.approx(
-        140.0 / 20_000.0 * 100)
+    assert frame.loc["600001"]["roe_ttm_pct"] == pytest.approx(
+        460.0 / 20_000.0 * 100)
 
 
 def test_cumulative_statement_type_ignored(monkeypatch):
@@ -102,16 +105,50 @@ def test_cumulative_statement_type_ignored(monkeypatch):
     _patch_frames(monkeypatch, income=_income_rows(rows),
                   balance=_balance(), structure=_structure())
     frame = feeds.fetch_fundamentals(["600001"], ASOF, raw_closes={"600001": 20.0})
-    assert frame.loc["600001"]["roe_single_pct"] == pytest.approx(
-        130.0 / 20_000.0 * 100)
+    assert frame.loc["600001"]["roe_ttm_pct"] == pytest.approx(
+        450.0 / 20_000.0 * 100)
 
 
-def test_negative_prior_year_quarter_incomparable(monkeypatch):
+def test_negative_prior_year_growth_uses_absolute_base(monkeypatch):
     rows = [("20250630", "2025-08-20", None, 2, -90.0)] + list(QUARTERS[1:])
     _patch_frames(monkeypatch, income=_income_rows(rows),
                   balance=_balance(), structure=_structure())
     frame = feeds.fetch_fundamentals(["600001"], ASOF, raw_closes={"600001": 20.0})
-    assert frame.empty   # 去年同季为负 → 同比不可比 → 不进池
+    assert frame.loc['600001', 'np_yoy_pct'] == pytest.approx((130. + 90.) / 90. * 100.)
+
+
+def test_growth_uses_consolidated_profit_independently_of_parent_profit(monkeypatch):
+    income = _income_rows(QUARTERS)
+    income.loc[0, 'NET_PRO_INCL_MIN_INT_INC'] = 200.
+    income.loc[4, 'NET_PRO_INCL_MIN_INT_INC'] = 300.
+    _patch_frames(monkeypatch, income=income, balance=_balance(), structure=_structure())
+    row = feeds.fetch_fundamentals(['600001'], ASOF, raw_closes={'600001': 20.}).loc['600001']
+    assert row['np_yoy_pct'] == pytest.approx(50.)
+    assert row['roe_ttm_pct'] == pytest.approx(450. / 20_000. * 100.)
+
+
+@pytest.mark.parametrize('case', ['field_missing', 'latest_missing', 'zero_base'])
+def test_growth_missing_data_does_not_fall_back_to_parent_or_older_quarter(monkeypatch, case):
+    income = _income_rows(QUARTERS)
+    if case == 'field_missing':
+        income = income.drop(columns='NET_PRO_INCL_MIN_INT_INC')
+    elif case == 'latest_missing':
+        income.loc[4, 'NET_PRO_INCL_MIN_INT_INC'] = np.nan
+    else:
+        income.loc[0, 'NET_PRO_INCL_MIN_INT_INC'] = 0.
+    _patch_frames(monkeypatch, income=income, balance=_balance(), structure=_structure())
+    row = feeds.fetch_fundamentals(['600001'], ASOF, raw_closes={'600001': 20.}).loc['600001']
+    assert pd.isna(row['np_yoy_pct'])
+    assert pd.notna(row['roe_ttm_pct'])
+
+
+def test_missing_latest_parent_profit_does_not_use_older_ttm(monkeypatch):
+    income = _income_rows(QUARTERS)
+    income.loc[4, 'NET_PRO_EXCL_MIN_INT_INC'] = np.nan
+    _patch_frames(monkeypatch, income=income, balance=_balance(), structure=_structure())
+    row = feeds.fetch_fundamentals(['600001'], ASOF, raw_closes={'600001': 20.}).loc['600001']
+    assert pd.isna(row['roe_ttm_pct']) and pd.isna(row['pe_ttm'])
+    assert row['np_yoy_pct'] == pytest.approx(62.5)
 
 
 def test_negative_ttm_yields_negative_pe_passing_upper_bound(monkeypatch):
@@ -131,7 +168,7 @@ def test_missing_balance_sheet_excluded(monkeypatch):
     _patch_frames(monkeypatch, income=_income_rows(QUARTERS),
                   balance=_balance_rows([]), structure=_structure())
     frame = feeds.fetch_fundamentals(["600001"], ASOF, raw_closes={"600001": 20.0})
-    assert frame.empty
+    assert frame.isna().any(axis=1).all()
 
 
 def test_missing_ttm_quarter_cannot_make_incomplete_pe(monkeypatch):
@@ -139,7 +176,7 @@ def test_missing_ttm_quarter_cannot_make_incomplete_pe(monkeypatch):
     _patch_frames(monkeypatch, income=_income_rows(rows),
                   balance=_balance(), structure=_structure())
     frame = feeds.fetch_fundamentals(["600001"], ASOF, raw_closes={"600001": 20.0})
-    assert frame.empty
+    assert frame.isna().any(axis=1).all()
 
 
 def test_fundamentals_batches_release_raw_frames_and_preserve_old_shares(monkeypatch):
@@ -236,7 +273,7 @@ def test_unlock_codes_collected(monkeypatch):
     assert unlocks == {"600001", "600003"}
 
 
-def test_day_limits_fallback_to_prectimes_ten_percent(monkeypatch):
+def test_day_limits_missing_official_values_do_not_invent_ten_percent(monkeypatch):
     monkeypatch.setattr(feeds, "_raw_status", lambda codes, date: pd.DataFrame())
     limits = feeds.day_limits(["600001"], "2026-10-01", {"600001": 10.0})
-    assert limits["600001"] == (11.0, 9.0)
+    assert limits == {}

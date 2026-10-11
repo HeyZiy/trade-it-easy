@@ -27,7 +27,7 @@ def _closes(spec: dict, rows: int = SCORE_CLOSES, end: str = "2026-09-30") -> pd
 
 
 def _fundamentals(spec: dict) -> pd.DataFrame:
-    """spec: code → dict(roe_single_pct, np_yoy_pct, pe_ttm, pb)。"""
+    """spec: code → dict(roe_ttm_pct, np_yoy_pct, pe_ttm, pb)。"""
     return pd.DataFrame.from_dict(spec, orient="index")
 
 
@@ -39,7 +39,7 @@ def _status(spec: dict) -> pd.DataFrame:
          for col in ("is_st", "is_suspended")})
 
 
-PASS_FUND = dict(roe_single_pct=4.0, np_yoy_pct=20.0, pe_ttm=15.0, pb=2.0)
+PASS_FUND = dict(roe_ttm_pct=16.0, np_yoy_pct=20.0, pe_ttm=15.0, pb=2.0)
 
 
 # ── 一、股票池 ──
@@ -53,7 +53,7 @@ def test_qualifying_stock_passes():
 
 
 def test_roe_threshold_strictly_greater():
-    fund = dict(PASS_FUND, roe_single_pct=3.0)   # ×4 = 12%，规格要求 > 12%
+    fund = dict(PASS_FUND, roe_ttm_pct=12.0)   # ×4 = 12%，规格要求 > 12%
     audit = {}
     pool = screener.build_pool({"600001"}, _fundamentals({"600001": fund}),
                                _status({"600001": {}}),
@@ -65,7 +65,7 @@ def test_roe_threshold_strictly_greater():
 
 def test_growth_threshold_and_combined_reason():
     audit = {}
-    fund = dict(PASS_FUND, roe_single_pct=2.0, np_yoy_pct=10.0)
+    fund = dict(PASS_FUND, roe_ttm_pct=2.0, np_yoy_pct=10.0)
     screener.build_pool({"600001"}, _fundamentals({"600001": fund}),
                         _status({}), _closes({"600001": [10.0]}), set(), audit=audit)
     assert audit["600001"]["pool_reason"] == "roe_low|profit_growth_low"
@@ -78,7 +78,8 @@ def test_financial_missing_reason():
                                _closes({"600001": [10.0]}),
                                set(), audit=audit)
     assert pool == []
-    assert audit["600001"]["pool_reason"] == "financial_missing"
+    assert audit["600001"]["pool_state"] == 'unknown'
+    assert 'financial_missing' in audit["600001"]["pool_reason"]
 
 
 def test_status_filters_st_and_suspended():
@@ -91,9 +92,9 @@ def test_status_filters_st_and_suspended():
     pool = screener.build_pool({"600001", "600002", "600003"}, fund, st,
                                _closes({c: [10.0] for c in fund.index}), set(),
                                audit=audit)
-    assert pool == ["600001"]
+    assert pool == ["600001", "600003"]
     assert audit["600002"]["pool_reason"] == "st"
-    assert audit["600003"]["pool_reason"] == "paused"
+    assert audit["600003"]["pool_state"] == "passed"
 
 
 def test_status_missing_fail_closed():
@@ -114,7 +115,8 @@ def test_valuation_upper_bounds_only():
                                _status({c: {} for c in fund.index}),
                                _closes({c: [10.0] for c in fund.index}),
                                set(), audit=audit)
-    assert pool == ["600001"]
+    assert pool == []
+    assert audit["600001"]["pool_reason"] == "pe_nonpos"
     assert audit["600002"]["pool_reason"] == "pe_high"
     assert audit["600003"]["pool_reason"] == "pb_high"
     assert audit["600004"]["pool_reason"] == "valuation_invalid"
@@ -128,7 +130,7 @@ def test_vol60_annualized_std_and_history():
     # 窗口内 61 根收盘不可得（次新股：前 61 根无数据）
     audit = {}
     short = _closes({"600002": [10.0] * (SCORE_CLOSES - 61)}, rows=SCORE_CLOSES)
-    short.iloc[:61, 0] = np.nan
+    short.iloc[-61:, 0] = np.nan
     pool = screener.build_pool({"600002"}, _fundamentals({"600002": PASS_FUND}),
                                _status({"600002": {}}), short, set(), audit=audit)
     assert pool == []
@@ -150,19 +152,19 @@ def test_vol60_high_excluded():
 
 def test_unlock_window_excludes():
     pool = screener.build_pool({"600001"}, _fundamentals({"600001": PASS_FUND}),
-                               _status({}), _closes({"600001": [10.0]}),
+                               _status({"600001": {}}), _closes({"600001": [10.0]}),
                                {"600001"})
-    assert pool == []
+    assert pool == ["600001"]
 
 
 def test_filter_chain_order_first_failure_recorded():
     """同时挂多关时 pool_reason 记录过滤链上的首个未通过环节。"""
     audit = {}
-    fund = dict(PASS_FUND, roe_single_pct=1.0, pe_ttm=99.0)
+    fund = dict(PASS_FUND, roe_ttm_pct=1.0, pe_ttm=99.0)
     screener.build_pool({"600001"}, _fundamentals({"600001": fund}),
                         _status({"600001": dict(is_st=True, is_suspended=False)}),
                         _closes({"600001": [10.0]}), {"600001"}, audit=audit)
-    assert audit["600001"]["pool_reason"] == "roe_low"
+    assert 'roe_low' in audit["600001"]["pool_reason"]
 
 
 # ── 二、怎么选 ──
@@ -208,32 +210,36 @@ def test_rank_nan_in_window_unranked():
     assert ranked == []
 
 
-def test_select_keeps_buffer_and_fills_from_top():
-    ranked = [f"{600000 + i}" for i in range(50)]      # 600000..600049
-    held = {ranked[5], ranked[25], ranked[35], ranked[48]}
-    selected, kept = screener.select_targets(ranked, held)
-    # 排名 5、25（≤30）留存；35、48 出；前 20 名中未持有的补足至 20
-    assert kept == [ranked[5], ranked[25]]
-    expected_added = [c for c in ranked[:20] if c not in kept][:20 - len(kept)]
-    assert selected == kept + expected_added
-    assert len(selected) == 20
+def test_select_keeps_quality_holdings_without_rank_exit():
+    ranked = [f'{600000 + i}' for i in range(50)]
+    held = {ranked[25], ranked[35]}
+    selected, kept = screener.select_targets(ranked, held, set(ranked), {c: c for c in ranked})
+    assert kept == [ranked[25], ranked[35]]
+    assert selected == kept + ranked[:4]
 
 
-def test_select_held_missing_rank_exits():
-    ranked = ["600001", "600002"]
-    selected, kept = screener.select_targets(ranked, {"600009"})
-    assert kept == [] and selected == ["600001", "600002"]
+def test_select_keeps_pool_holding_missing_rank():
+    ranked = ['600001', '600002']
+    selected, kept = screener.select_targets(ranked, {'600009'}, set(ranked + ['600009']),
+                                           {c: c for c in ranked + ['600009']})
+    assert kept == ['600009'] and selected == kept + ranked
 
 
-def test_select_kept_are_ranked_first_in_target_order():
-    ranked = [f"{600000 + i}" for i in range(30)]
-    held = {ranked[3], ranked[10], ranked[20]}
-    selected, kept = screener.select_targets(ranked, held)
-    assert kept == [ranked[3], ranked[10], ranked[20]]
-    assert selected[:3] == kept                    # 旧仓排新仓前
-    assert selected[3] == ranked[0]                # 补入从第 1 名开始
+def test_select_industry_cap_does_not_extend_beyond_top_six():
+    ranked = [f'{600000 + i}' for i in range(8)]
+    selected, _ = screener.select_targets(ranked, set(), set(ranked),
+                                         {c: ('A' if i < 6 else 'B') for i, c in enumerate(ranked)})
+    assert selected == ranked[:2]
+
+
+def test_select_unknown_industry_does_not_bypass_cap():
+    selected, _ = screener.select_targets(['600001'], set(), {'600001'}, {})
+    assert selected == []
+    selected, kept = screener.select_targets(['600001'], {'600009'}, {'600001', '600009'},
+                                            {'600001': 'A'})
+    assert selected == kept == ['600009']
 
 
 def test_select_rejects_duplicate_ranked():
     with pytest.raises(ValueError):
-        screener.select_targets(["600001", "600001"], set())
+        screener.select_targets(['600001', '600001'], set(), {'600001'}, {'600001': 'A'})
