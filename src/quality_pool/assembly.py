@@ -30,6 +30,7 @@ from typing import List
 from src.quality_pool import config, execution, feeds, state as pool_state
 from src.trade_ledger.batch import BatchOrder, BatchResult, execute_batch
 from src.trade_ledger.ledger import derive, load_trades
+from src.trade_ledger.performance import execution_summary
 import src.trading_calendar as trading_calendar
 
 logger = logging.getLogger(__name__)
@@ -132,6 +133,7 @@ def _settle_trades(plan: execution.ExecPlan, exec_date: str, industries=None) ->
 
 def run_execution(exec_date: str, dry_run: bool = False) -> str:
     """消费有效名单，执行并按台账核对退出；返回报告，零通知副作用。"""
+    before = load_trades(config.POOL_LEDGER_PATH)
     st = pool_state.load_state(config.STATE_PATH)
     signal = pool_state.pop_plan(st)
     if signal is not None:
@@ -176,4 +178,7 @@ def run_execution(exec_date: str, dry_run: bool = False) -> str:
         pool_state.save_state(st, config.STATE_PATH)
     for b in plan.blocked:
         lines.append(f"- ⛔ {b.action.upper()} {b.code} 受阻（{b.reason}）：{b.blocked_by}")
+    lines.insert(1, "\n" + execution_summary(
+        before, load_trades(config.POOL_LEDGER_PATH), dry_run=dry_run,
+        planned=len(plan.trades) + len(plan.blocked), blocked=len(plan.blocked)) + "\n")
     return "\n".join(lines)

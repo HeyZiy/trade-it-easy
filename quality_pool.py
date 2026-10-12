@@ -39,24 +39,34 @@ setup_env()
 from src.quality_pool import assembly, signal as pool_signal  # noqa: E402
 from src.quality_pool.config import REPORT_PREFIX  # noqa: E402
 from src.task_io import notify, save_report       # noqa: E402
+from src.trade_ledger.performance import render_summary  # noqa: E402
 
 logger = logging.getLogger(__name__)
 
 
 def run_signal(today: date, dry_run: bool = False, retry: bool = False) -> str:
     """信号周期与恢复由质量池 module 负责，入口只保存和推送报告。"""
-    return _finish_report(pool_signal.run_signal(today, dry_run=dry_run, retry=retry))
+    return _finish_report(pool_signal.run_signal(today, dry_run=dry_run, retry=retry),
+                          "signal", today, dry_run)
 
 
 # ── execute ──
 
 def run_execute(today: date, dry_run: bool = False) -> str:
     """09:31 执行闭环由质量池 module 负责，入口只保存和推送报告。"""
-    return _finish_report(assembly.run_execution(today.isoformat(), dry_run=dry_run))
+    return _finish_report(assembly.run_execution(today.isoformat(), dry_run=dry_run),
+                          "execute", today, dry_run)
 
 
-def _finish_report(report: str) -> str:
-    path = save_report(report, REPORT_PREFIX)
+def _finish_report(report: str, stage: str, today: date, dry_run: bool) -> str:
+    from src.quality_pool.config import POOL_LEDGER_PATH
+    title, _, body = report.partition("\n")
+    status = "**试运行：未写状态或交易台账。**\n\n" if dry_run else ""
+    report = (title + "\n\n" + status
+              + render_summary(POOL_LEDGER_PATH, today=today, label="质量池轮动")
+              + "\n\n" + body)
+    prefix = f"{REPORT_PREFIX}_{stage}" + ("_dry_run" if dry_run else "")
+    path = save_report(report, prefix, report_date=today.isoformat())
     notify(report)
     logger.info(f"报告已保存并推送: {path}")
     return report

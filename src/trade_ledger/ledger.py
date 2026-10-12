@@ -166,6 +166,8 @@ def derive(trades: List[TradeRecord], as_of: str,
     state: Dict[str, dict] = {}
     cash = NOMINAL_EQUITY
     for t in sorted(trades, key=lambda x: x.date):
+        if t.date > as_of:
+            continue
         s = state.setdefault(t.code, _empty(t.code, t.name))
         if t.name:
             s["name"] = t.name

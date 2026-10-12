@@ -32,6 +32,23 @@
 - [strategy/](strategy/) — 策略，不记录实验等
 - [docs/trade\_ledger.md](docs/trade_ledger.md) — 模拟测试口径
 
+## 模拟成绩
+
+日报顶部展示最近完整收盘的累计收益、同期基准、超额收益、运行天数与仓位现金。
+ETF核心配置和行业动量共用组合成绩，质量池独立统计。缺价时保留最近完整日期，
+未开始记账的账户不显示虚构收益。当前未计手续费、分红和份额变更。
+
+`deploy/crontab.server` 增加15:30收盘采集；更新服务器代码后需重新安装该定时任务表。
+收盘任务不交易、不发送通知，成绩与台账保存在服务器，本地不会自动同步。
+
+```bash
+python portfolio_report.py                  # 采集最近已收盘交易日
+python portfolio_report.py --dry-run        # 只展示，不保存
+python portfolio_report.py --date 2026-10-09 # 重试或补采指定已收盘交易日
+```
+
+基准规则和存储口径见 [台账规格第七节](docs/trade_ledger.md#七模拟报告与收盘成绩第一版)。
+
 ## 测试
 
 ```bash

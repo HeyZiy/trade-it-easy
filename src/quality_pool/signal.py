@@ -72,7 +72,7 @@ def run_signal(today: date, dry_run: bool = False, retry: bool = False) -> str:
     if not dry_run:
         pool_state.save_state(st, config.STATE_PATH)
     try:
-        universe = feeds.fetch_universe(today_str)
+        universe = feeds.fetch_universe(asof)
         codes = sorted(universe)
         closes = feeds.fetch_closes(codes, asof, rows=config.SCORE_CLOSES)
         if (closes.empty or len(closes) < config.SCORE_CLOSES
@@ -156,7 +156,7 @@ def _review_deferred(today: date, st: dict, dry_run: bool) -> str:
     audit = {c: {} for c in codes}
     if codes:
         try:
-            universe = feeds.fetch_universe(today_str)
+            universe = feeds.fetch_universe(asof)
             closes = feeds.fetch_closes(codes, asof, rows=config.SCORE_CLOSES)
             if closes.empty or pd.Timestamp(closes.index[-1]).normalize() != pd.Timestamp(asof):
                 raise RuntimeError('补判行情未更新至截止日')

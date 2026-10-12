@@ -22,10 +22,11 @@ from typing import Optional
 logger = logging.getLogger(__name__)
 
 
-def save_report(report: str, prefix: str, reports_dir: str = "reports") -> str:
+def save_report(report: str, prefix: str, reports_dir: str = "reports", *, report_date=None) -> str:
     """保存报告到 reports/ 并返回路径。"""
     os.makedirs(reports_dir, exist_ok=True)
-    today_str = datetime.now().strftime('%Y%m%d')
+    today_str = (datetime.strptime(str(report_date), '%Y-%m-%d').strftime('%Y%m%d')
+                 if report_date is not None else datetime.now().strftime('%Y%m%d'))
     report_path = os.path.join(reports_dir, f"{prefix}_{today_str}.md")
     with open(report_path, 'w', encoding='utf-8') as f:
         f.write(report)

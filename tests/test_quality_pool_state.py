@@ -19,7 +19,7 @@ def env(tmp_path, monkeypatch):
     # 信号与执行都经 config 运行时读取路径，单点替换。
     monkeypatch.setattr(pool_config, "POOL_LEDGER_PATH", str(ledger_path))
     monkeypatch.setattr(pool_config, "STATE_PATH", str(state_path))
-    monkeypatch.setattr(qp, "save_report", lambda report, prefix: str(tmp_path / "r.md"))
+    monkeypatch.setattr(qp, "save_report", lambda report, prefix, **kw: str(tmp_path / "r.md"))
     monkeypatch.setattr(qp, "notify", lambda report: True)
 
     cal = [dt.date(2026, 9, 1) + dt.timedelta(days=i) for i in range(150)]

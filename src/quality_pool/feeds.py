@@ -89,7 +89,8 @@ def _raw_kline(codes: List[str], begin: str, end: str) -> Dict[str, pd.DataFrame
 def fetch_universe(signal_date: str) -> Set[str]:
     """信号日主板在市 A 股：60/00 开头（白名单同时排除科创/创业/北交所/B股）。
 
-    全集来自 BaseData.get_hist_code_list 的信号日快照。
+    全集来自 BaseData.get_hist_code_list 的 signal_date 快照；调用方传 T-1
+    截止日而非信号日当天——当日代码表服务端盘前未必已发布。
     """
     universe: Set[str] = set()
     for raw in _raw_code_list(signal_date):

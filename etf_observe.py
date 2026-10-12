@@ -20,7 +20,7 @@ derive 供料与妙想持仓 dict 同形，rebalancer 决策核零改动。
 见 strategy/industry_momentum.md），本脚本只负责核心再平衡。
 
 估值口径分两层，不互相兜底：市场级 = 全市场 PE/ERP 分位（第一、三节）；
-标的级 = 跟踪指数自身 PE/股息率（第二节，无锚或取数失败即显示"无估值锚"）。
+标的级 = 跟踪指数自身 PE/股息率（估值参考节，无锚或取数失败即显示"无估值锚"）。
 任何估值都不进自动决策——核心仓目标恒等于中性基准。
 """
 
@@ -45,6 +45,7 @@ from src.etf.amazing_factors import (
     etf_valuation_rows,
 )
 from src.task_io import notify, save_report
+from src.trade_ledger.performance import render_summary
 
 logger = logging.getLogger(__name__)
 
@@ -81,8 +82,8 @@ def _build_week_context() -> WeekContext:
 # ── 市场概览 ──
 
 def _market_overview(ctx: WeekContext) -> str:
-    """市场估值概览（纯渲染 ctx，不给操作建议；整体配比观点归基准，新钱参考见第三节）"""
-    lines = ["## 一、市场估值概览", ""]
+    """市场估值概览（纯渲染 ctx，不给操作建议；整体配比观点归基准）。"""
+    lines = ["## 市场估值概览", ""]
 
     market_pe = ctx.market_pe
     if market_pe:
@@ -116,7 +117,7 @@ def _market_overview(ctx: WeekContext) -> str:
 
 def _valuation_reference() -> str:
     """各标的估值参考（锚=跟踪指数自身 PE/股息率；跨标的不可比，仅展示）"""
-    lines = ["## 二、各标的估值参考（锚对准跟踪指数，PE 跨标的不可比）", ""]
+    lines = ["## 各标的估值参考（锚对准跟踪指数，PE 跨标的不可比）", ""]
 
     # 收集所有核心仓权益 ETF（去重）
     equity_etfs = {}
@@ -222,7 +223,7 @@ def _compute_allocation():
 
 def _holding_overview(ctx: WeekContext) -> str:
     """持仓 vs 目标对照 + 调仓建议（纯渲染 ctx.alloc；只出建议，不自动执行）"""
-    lines = ["## 四、持仓对照与调仓建议", ""]
+    lines = ["## 执行前持仓对照与调仓依据", ""]
 
     alloc = ctx.alloc
     if alloc is None:
@@ -312,10 +313,10 @@ def _deploy_cash_section(ctx: WeekContext) -> str:
     """新钱投放参考（每周固定输出）：只报告一个全市场估值分位，并入快慢人工把握。
 
     缺口补入不在本节：新钱入金后各资产自然欠配，按基准目标权重自行计算缺口买入即可
-    （目标权重见第二节表）；名义台账口径的缺口由旧钱再平衡（第四节）处理。
+    （目标权重见持仓对照表）；名义台账口径的缺口由旧钱再平衡处理。
     新钱为真实资金、独立于名义台账，到账后人工在真实账户操作。
     """
-    lines = ["## 三、新钱投放参考（估值分位，仅数据）", ""]
+    lines = ["## 新钱投放参考（估值分位，仅数据）", ""]
     market_pe = ctx.market_pe
     if market_pe:
         level = pe_level(market_pe["pe_pct"])
@@ -324,7 +325,7 @@ def _deploy_cash_section(ctx: WeekContext) -> str:
     else:
         lines.append("全市场估值数据不可用。")
     lines.append("")
-    lines.append("> 入金后按基准目标权重补入：缺口 = 目标权重 x 总资产 - 实际市值；名义台账的缺口见第四节再平衡对照。")
+    lines.append("> 入金后按基准目标权重补入：缺口 = 目标权重 x 总资产 - 实际市值；名义台账的缺口见执行前持仓对照。")
     lines.append("> 到账后在真实账户人工操作（再平衡批次只记名义台账，与新钱无关），不自动执行。")
     lines.append("")
     return "\n".join(lines)
@@ -343,19 +344,18 @@ def _execute_batch(alloc: dict, ledger_path=None, dry_run: bool = False) -> str:
     from src.trade_ledger import BatchOrder, execute_batch
 
     plan = alloc["plan"]
-    total_assets = alloc["total_assets"]
-    avail_balance = alloc["cash"]
 
     # 新钱投放只出建议（台账无法感知实际入金，不进自动记账批次，人工照建议操作）
     orders = [o for o in plan.orders if o.action in ("sell", "buy")]
 
-    lines = ["## 五、自动调仓执行结果", ""]
+    lines = ["## 本次执行", ""]
 
     if not orders:
         lines.append("无调仓指令，本次不执行。")
         return "\n".join(lines)
 
     if dry_run:
+        lines.append(f"**本次执行**：试运行，计划 {len(orders)} 笔，未记账。")
         lines.append("**dry-run：以下指令未记账**")
         lines.append("")
         lines.extend(f"- [DRY] {o.action.upper()} {o.name}({o.code})"
@@ -371,7 +371,6 @@ def _execute_batch(alloc: dict, ledger_path=None, dry_run: bool = False) -> str:
                      or (o.amount / o.qty if o.qty else 0), 4),
         reason=o.reason) for o in orders]
 
-    n_sell = sum(1 for o in orders if o.action == "sell")
     res = execute_batch(batch_orders, account="core",
                         path=ledger_path)
     if res.abort:
@@ -381,11 +380,8 @@ def _execute_batch(alloc: dict, ledger_path=None, dry_run: bool = False) -> str:
     results = [oc.outcome_line for oc in res.outcomes]
     ok_count = sum(1 for oc in res.outcomes if oc.status == "ok")
 
-    n_exec = len(res.outcomes) - sum(1 for c in res.outcomes
-                                     if c.status == "skipped")
-    lines.append(f"**总资产(名义)**: {total_assets:,.0f} 元 | **可用资金(名义)**: {avail_balance:,.0f} 元")
-    lines.append(f"本次记账 {ok_count}/{n_exec} 笔"
-                 f"（卖出 {n_sell}，买入 {len(orders) - n_sell}）")
+    lines.append(f"**本次执行**：成功记账 {ok_count}/{len(res.outcomes)} 笔；"
+                 f"未完成 {len(res.outcomes) - ok_count} 笔。")
     lines.append("")
     lines.extend(f"- {r}" for r in results)
     lines.append("")
@@ -409,15 +405,17 @@ def _generate_report(dry_run: bool = False) -> str:
         "",
         f"**生成时间**: {now}{'（dry-run，未记账）' if dry_run else ''}",
         "",
-        _market_overview(ctx),
-        _valuation_reference(),
-        _deploy_cash_section(ctx),
-        _holding_overview(ctx),
+        render_summary(label="ETF共享组合（核心配置＋行业动量）"),
     ]
 
     # 执行门保持现状："orders 非空即执行"；plan.should 为触发层结论，当前仅进报告。
     if alloc and alloc["plan"].orders:
         sections.append(_execute_batch(alloc, dry_run=dry_run))
+    else:
+        sections.append("## 本次执行\n\n" + ("持仓数据不可用，本次未执行。" if alloc is None
+                        else "无调仓指令，保持当前持仓。"))
+    sections.extend([_holding_overview(ctx), _market_overview(ctx),
+                     _valuation_reference(), _deploy_cash_section(ctx)])
 
     sections.extend([
         "---",

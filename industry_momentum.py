@@ -43,6 +43,7 @@ from src.task_io import notify, save_report       # noqa: E402
 from src.trade_ledger import (                    # noqa: E402
     derive, load_trades, resolve_prices,
 )
+from src.trade_ledger.performance import render_summary, execution_summary  # noqa: E402
 
 logger = logging.getLogger(__name__)
 
@@ -98,15 +99,24 @@ def run(dry_run: bool = False) -> str:
         f"**生成时间**: {datetime.now().strftime('%Y-%m-%d %H:%M')}"
         f"{'（dry-run，未记账）' if dry_run else ''}",
         "",
-        f"**总资产(名义)**: {total_assets:,.0f} 元 | **可用资金(名义)**: {avail_balance:,.0f} 元"
-        f" | **卫星持仓**: {plan['satellite_mv']:,.0f} 元"
-        f"（预算上限 {total_assets * SATELLITE_BUDGET_RATIO:,.0f} 元）",
+        render_summary(label="ETF共享组合（核心配置＋行业动量）"),
+        "",
+        f"**执行前卫星仓位**: {plan['satellite_mv'] / total_assets * 100:.1f}%"
+        f"（预算上限 {SATELLITE_BUDGET_RATIO * 100:.0f}%）" if total_assets > 0
+        else "**执行前卫星仓位**：估值不可用",
         _pool_line(plan["diag"]),
         "",
     ]
+    action_index = len(lines)
+
+    def finish():
+        summary = execution_summary(trades, load_trades(), dry_run=dry_run,
+                                    planned=len(sells) + len(buys))
+        lines.insert(action_index, summary + "\n")
+        return "\n".join(lines)
 
     # 截面前列（观察用）
-    lines += ["## 一、截面前列（动量评分）", ""]
+    lines += ["## 截面前列（动量评分）", ""]
     for r in rows[:8]:
         mark = " 📌持有" if r.code in plan["held_codes"] else ""
         heat = f"{r.crowd:.0f} 分" if r.crowd is not None else "—"
@@ -126,12 +136,12 @@ def run(dry_run: bool = False) -> str:
             abort = (f"卫星仓位 {after_sell_mv + buy_amount:,.0f} 元将超预算上限 {budget:,.0f} 元")
     if abort:
         lines += ["## ⛔ 安全校验未通过，本次不执行", "", f"- {abort}", ""]
-        return "\n".join(lines)
+        return finish()
 
-    lines += ["## 二、执行结果", ""]
+    lines += ["## 执行明细", ""]
     if not sells and not buys:
         lines += ["无调仓指令，保持当前持仓。", ""]
-        return "\n".join(lines)
+        return finish()
 
     orders = sells + buys
     if dry_run:
@@ -143,7 +153,7 @@ def run(dry_run: bool = False) -> str:
         abort, exec_lines = _execute(orders, trade_date)
         if abort:
             lines += [f"⛔ 安全校验未通过，本次不执行：{abort}", ""]
-            return "\n".join(lines)
+            return finish()
         lines += exec_lines
     lines.append("")
 
@@ -154,14 +164,14 @@ def run(dry_run: bool = False) -> str:
     else:
         fresh = positions
     if fresh:
-        lines += ["**执行后持仓**：", ""]
+        lines += ["**当前持仓（试运行未变更）**：" if dry_run else "**执行后持仓**：", ""]
         for p in fresh:
             mv = float(p.get("market_value", 0) or 0)
             pct = mv / total_assets * 100 if total_assets > 0 else 0
             lines.append(f"- {p.get('name', '')}({p.get('code', '')})"
                          f" {p.get('count', 0)}股 ≈ {mv:,.0f}元（{pct:.1f}%）")
         lines.append("")
-    return "\n".join(lines)
+    return finish()
 
 
 def parse_arguments() -> argparse.Namespace:
