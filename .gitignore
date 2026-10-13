@@ -78,3 +78,5 @@ CLAUDE.md
 *.csv
 *.pkl
 *.json
+=== AmazingData SDK 测试脚本残留路径 ===
+D:/
