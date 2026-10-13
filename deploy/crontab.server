@@ -27,7 +27,7 @@
 #   - 日志由脚本自行写入 logs/<prefix>.log（含 _debug.log），cron 不重复重定向；
 #     stdout 丢弃，仅 stderr（启动失败/未捕获异常）追加到 logs/cron_error.log
 #   - flock 防止任务重入（节假日/周末任务重叠等）
-#   - 质量池分两次：quality_pool.py signal 08:00 盘前（昨收数据）、
+#   - 质量池分两次：quality_pool.py signal 09:00 盘前（昨收数据）、
 #     execute 09:31 开盘（当日名单，先卖后买 + 退出重试）。两者共用锁，避免状态互覆盖；
 #     脚本内部有交易日与调仓日判断，cron 用 1-5 限定即可
 #   - env_report 已摘除：环境快照唯一消费方（趋势双任务）退役后无消费点，
@@ -43,8 +43,8 @@
 # ── 行业动量轮动（卫星仓）：每交易日 14:50 尾盘（截面排名→卖出/买入→推送）──
 50 14 * * 1-5 cd /root/trade-it-easy && flock -n /tmp/industry_momentum.lock /root/miniconda/envs/rt/bin/python industry_momentum.py > /dev/null 2>> logs/cron_error.log
 
-# ── 质量池：08:00 盘前（昨收快照；故障自动恢复；09:31才冻结预算）──
-0 8 * * 1-5 cd /root/trade-it-easy && flock -n /tmp/quality-pool.lock /root/miniconda/envs/rt/bin/python quality_pool.py signal > /dev/null 2>> logs/cron_error.log
+# ── 质量池：09:00 盘前（昨收快照；故障自动恢复；09:31才冻结预算）──
+0 9 * * 1-5 cd /root/trade-it-easy && flock -n /tmp/quality-pool.lock /root/miniconda/envs/rt/bin/python quality_pool.py signal > /dev/null 2>> logs/cron_error.log
 
 # ── 收盘成绩：15:30 采集ETF共享组合与质量池，缺价保留最近完整成绩；不交易、不推送 ──
 30 15 * * 1-5 cd /root/trade-it-easy && flock -n /tmp/portfolio-report.lock /root/miniconda/envs/rt/bin/python portfolio_report.py > /dev/null 2>> logs/cron_error.log

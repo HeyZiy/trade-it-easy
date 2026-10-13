@@ -169,7 +169,7 @@ def test_simulator_and_final_backtest_select_same_positions(world, case):
                             ('FEE_COMMISSION', 'FEE_COMMISSION'), ('MIN_COMMISSION', 'MIN_COMMISSION'),
                             ('SLIPPAGE_SPREAD', 'SLIPPAGE_SPREAD')]:
         assert getattr(config, local) == getattr(mod, platform)
-    assert config.SIGNAL_CLOCK == '08:00' and config.EXEC_CLOCK == '09:31'
+    assert config.SIGNAL_CLOCK == '09:00' and config.EXEC_CLOCK == '09:31'
     held = {codes[-1]}
     fin = pd.DataFrame({'roe_ttm_pct': 16., 'np_yoy_pct': 20.,
                         'pe_ttm': 20., 'pb': 3.}, index=codes)
