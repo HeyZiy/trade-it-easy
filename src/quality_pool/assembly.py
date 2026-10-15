@@ -6,9 +6,9 @@
 
 根入口（编排）与判定核（execution / screener）之间的合并点：
 
-- build_snapshot：台账派生 + 实时行情 + 当日状态。台账一次派生、状态表
-  一次拉取（停牌/ST/涨跌停三个消费共享）；ST 与停牌一律以状态表官方
-  标志为准（与筛分侧同口径，不用名称子串推断）；状态表缺该码的行按
+- build_snapshot：台账派生 + 实时行情 + 当日状态。台账一次派生，当天
+  证券信息和行情快照组合后供停牌/ST/涨跌停三个消费共享；停牌以沪深
+  交易阶段为准，ST 使用当天风险警示标志，不用名称子串推断；状态缺行按
   suspended=True / st=True 处置——确认不了可交易就不动（fail-closed，
   规格数据暂停精神）。总权益直接取台账快照 total_assets（现金 + 持仓
   按现价市值），不在本层重算。
@@ -37,7 +37,7 @@ logger = logging.getLogger(__name__)
 
 
 def build_snapshot(exec_date: str, selected: List[str]) -> execution.ExecSnapshot:
-    """09:31 执行时点快照：台账派生 + 实时价 + 当日状态（状态表单次、口径权威）。
+    """09:31 执行时点快照：台账派生 + 实时价 + 当天证券信息/行情交易阶段。
 
     状态表缺行 → 该码按停牌/ST 处置（fail-closed，缺数据的品种不参与成交判定）。
     """
@@ -56,7 +56,7 @@ def build_snapshot(exec_date: str, selected: List[str]) -> execution.ExecSnapsho
     if prev_day is None:
         raise RuntimeError(f"交易日历无 {exec_date} 之前的数据")
     prev_close = feeds.raw_closes_at(codes, prev_day.isoformat())
-    status = feeds.fetch_status(codes, exec_date)
+    status = feeds.fetch_execution_status(codes, exec_date)
     limits = feeds.day_limits(codes, exec_date, prev_close, status=status)
 
     suspended: dict = {}

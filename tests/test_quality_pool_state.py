@@ -77,7 +77,7 @@ def _patch_execute_data(monkeypatch, prices, names=None,
                                     {c: names.get(c, f"股{c}") for c in cs}))
     monkeypatch.setattr(feeds, "raw_closes_at",
                         lambda cs, asof: {c: prices.get(c, 10.0) for c in cs})
-    monkeypatch.setattr(feeds, "fetch_status",
+    monkeypatch.setattr(feeds, "fetch_execution_status",
                         lambda cs, d: status.loc[[c for c in cs if c in status.index]])
 
 

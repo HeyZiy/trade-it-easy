@@ -43,7 +43,7 @@ def env(tmp_path, monkeypatch):
             index=pd.Index(list(codes), name="code"))
 
     import src.quality_pool.feeds as feeds
-    monkeypatch.setattr(feeds, "fetch_status", _count_status)
+    monkeypatch.setattr(feeds, "fetch_execution_status", _count_status)
     monkeypatch.setattr(feeds, "fetch_realtime_quotes",
                         lambda cs: ({c: 12.0 for c in cs},
                                     {c: f"股{c}" for c in cs}))
@@ -84,7 +84,7 @@ def test_snapshot_merges_ledger_quotes_status_once(env):
 def test_snapshot_missing_status_row_fail_closed(env):
     """状态表缺行 → 按停牌/ST 处置，不当作可交易。"""
     import src.quality_pool.feeds as feeds
-    env.setattr(feeds, "fetch_status",
+    env.setattr(feeds, "fetch_execution_status",
                 lambda codes, date: pd.DataFrame(
                     {"is_st": [False], "is_suspended": [False],
                      "high_limit": [13.2], "low_limit": [10.8]},

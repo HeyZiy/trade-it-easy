@@ -229,6 +229,116 @@ def fetch_status(codes: List[str], date: str) -> pd.DataFrame:
     return df
 
 
+def _execution_now() -> pd.Timestamp:
+    return pd.Timestamp.now(tz='Asia/Shanghai').tz_localize(None)
+
+
+def _raw_execution_data(codes, begin, end):
+    from data_provider.fetchers.amazingdata_info import fetch_execution_data
+    return fetch_execution_data(codes, begin, end)
+
+
+def _risk_warning(value):
+    """产品状态标志 4 为风险警示；未知编码不猜成正常。"""
+    import re
+    if isinstance(value, (list, tuple, set, np.ndarray)):
+        values = list(value)
+    elif value is None or pd.isna(value):
+        return pd.NA
+    else:
+        values = re.split(r'[,;\s]+', str(value).strip())
+    flags = set()
+    for flag in values:
+        if str(flag) == '':
+            continue
+        try:
+            number = float(flag)
+        except (TypeError, ValueError):
+            return pd.NA
+        if not math.isfinite(number) or not number.is_integer() or not 0 <= number <= 13:
+            return pd.NA
+        flags.add(int(number))
+    return 4 in flags if flags else pd.NA
+
+
+def _snapshot_suspended(code: str, phase):
+    """沪深编码不同；仅确认连续交易且接受交易时放行。"""
+    from data_provider.codes import market_suffix
+    if not isinstance(phase, str):
+        return pd.NA
+    market = market_suffix(code)
+    if market == 'SH':
+        if phase.startswith('P'):
+            return True
+        if len(phase) >= 4 and phase[0] == 'T' and phase[1:4] == '111':
+            return False
+    elif market == 'SZ':
+        if phase.startswith('H') or (len(phase) >= 2 and phase[1] == '1'):
+            return True
+        if phase.startswith('T0'):
+            return False
+    return pd.NA
+
+
+def fetch_execution_status(codes: List[str], exec_date: str) -> pd.DataFrame:
+    """当天风险警示 + 最近120秒的官方交易阶段和涨跌停价。
+
+    只支持当天执行；缺行、过期或失败由装配层按 unavailable 阻断。
+    """
+    columns = ['is_st', 'is_suspended', 'high_limit', 'low_limit']
+    now = _execution_now()
+    if not codes or now.date().isoformat() != exec_date or now.hour < 9:
+        return pd.DataFrame(columns=columns)
+    begin = now - pd.Timedelta(seconds=120)
+    try:
+        info, snapshots = _raw_execution_data(codes, begin, now)
+    except Exception:
+        logger.exception('[quality_pool] 当天执行状态不可用，阻止成交')
+        return pd.DataFrame(columns=columns)
+    # 请求本身可能耗时；新鲜度按返回后的时刻检查。
+    now = _execution_now()
+    if now.date().isoformat() != exec_date:
+        return pd.DataFrame(columns=columns)
+    begin = now - pd.Timedelta(seconds=120)
+    if info is None or info.empty or 'security_status' not in info:
+        return pd.DataFrame(columns=columns)
+    info = info.copy()
+    info.index = info.index.astype(str).str.split('.').str[0]
+    if info.index.has_duplicates:
+        raise RuntimeError('当天证券信息同一股票出现重复记录')
+    rows = {}
+    for code in codes:
+        raw = snapshots.get(code)
+        if code not in info.index or raw is None or raw.empty:
+            continue
+        stamps = pd.to_datetime(raw['trade_time'] if 'trade_time' in raw
+                                else raw.index, errors='coerce')
+        stamps = pd.DatetimeIndex(stamps)
+        if stamps.tz is not None:
+            stamps = stamps.tz_convert('Asia/Shanghai').tz_localize(None)
+        valid = np.flatnonzero(~stamps.isna())
+        if not len(valid):
+            continue
+        # 先取最新记录；不让早先的正常状态掩盖最新的未知状态。
+        pos = valid[stamps[valid].argmax()]
+        if not begin <= stamps[pos] <= now:
+            continue
+        row = raw.iloc[pos]
+        rows[code] = {
+            'is_st': _risk_warning(info.at[code, 'security_status']),
+            'is_suspended': _snapshot_suspended(code, row.get('trading_phase_code')),
+            'high_limit': pd.to_numeric(row.get('high_limited'), errors='coerce'),
+            'low_limit': pd.to_numeric(row.get('low_limited'), errors='coerce'),
+        }
+        if pd.isna(rows[code]['is_st']):
+            logger.warning('[quality_pool] %s 当天风险警示编码未知：%r',
+                           code, info.at[code, 'security_status'])
+    frame = pd.DataFrame.from_dict(rows, orient='index', columns=columns)
+    for col in ('is_st', 'is_suspended'):
+        frame[col] = frame[col].astype('boolean')
+    return frame
+
+
 def fetch_unlock_codes(codes: List[str], signal_date: str) -> Set[str]:
     """[信号日, +90 自然日] 内存在任意已知解禁事件的代码集合。"""
     begin = pd.Timestamp(signal_date)
@@ -445,13 +555,13 @@ def raw_closes_at(codes: List[str], asof: str) -> Dict[str, float]:
 def day_limits(codes: List[str], exec_date: str,
                prev_close: Dict[str, float],
                status: Optional[pd.DataFrame] = None) -> Dict[str, Tuple[float, float]]:
-    """执行日涨跌停价只接受官方有效值；缺失不推造10%限制。
+    """执行日涨跌停价只接受当天官方有效值；缺失不推造10%限制。
 
     status 可传已拉取的状态表（装配层与停牌/ST 共享单次调用）；缺省时自行拉取。
     """
     limits: Dict[str, Tuple[float, float]] = {}
     if status is None:
-        status = fetch_status(codes, exec_date)
+        status = fetch_execution_status(codes, exec_date)
     for code in codes:
         if code in status.index and {'high_limit', 'low_limit'} <= set(status.columns):
             high = status.at[code, "high_limit"]

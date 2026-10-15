@@ -1,7 +1,7 @@
 """在线验收质量池取数：不写策略状态/台账、不生成报告、不推送消息。
 
 默认两只股票，--all 查询完整主板宇宙。仅复权因子仍写 SDK 缓存。
-服务器可配 /usr/bin/time -v 测量整轮峰值内存，见 quality_pool_recovery.md。
+服务器可配 /usr/bin/time -v 测量整轮峰值内存。
 """
 
 from __future__ import annotations
@@ -56,7 +56,7 @@ def main() -> int:
         parser.error("--asof 必须早于 --signal-date")
     asof_str = asof.strftime("%Y-%m-%d")
     signal_str = signal_day.strftime("%Y-%m-%d")
-    codes = sorted(feeds.fetch_universe(signal_str)) if args.all else args.codes
+    codes = sorted(feeds.fetch_universe(asof_str)) if args.all else args.codes
     if any(len(c) != 6 or not c.isdigit() or c[:2] not in ("60", "00") for c in codes):
         parser.error("--codes 仅支持 60/00 开头的六位主板代码")
     info_cache = Path(AMAZINGDATA_CACHE_DIR) / "infodata"
@@ -66,7 +66,7 @@ def main() -> int:
     closes = feeds.fetch_closes(codes, asof_str)
     raw_closes = feeds.raw_closes_at(codes, asof_str)
     fundamentals = feeds.fetch_fundamentals(codes, asof_str, raw_closes)
-    status = feeds.fetch_status(codes, signal_str)
+    status = feeds.fetch_status(codes, asof_str)
     industries = feeds.fetch_industries(codes, asof_str)
     pool = screener.build_pool(set(codes), fundamentals, status, closes)
     ranked, _ = screener.rank_pool(pool, closes)

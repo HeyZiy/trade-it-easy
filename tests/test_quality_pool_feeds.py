@@ -317,6 +317,6 @@ def test_unlock_codes_collected(monkeypatch):
 
 
 def test_day_limits_missing_official_values_do_not_invent_ten_percent(monkeypatch):
-    monkeypatch.setattr(feeds, "_raw_status", lambda codes, date: pd.DataFrame())
+    monkeypatch.setattr(feeds, "fetch_execution_status", lambda codes, date: pd.DataFrame())
     limits = feeds.day_limits(["600001"], "2026-10-01", {"600001": 10.0})
     assert limits == {}

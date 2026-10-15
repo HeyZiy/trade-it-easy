@@ -8,6 +8,29 @@ from pathlib import Path
 from data_provider.fetchers import amazingdata_info as info
 
 
+def test_execution_data_uses_daily_info_and_bounded_market_query(monkeypatch):
+    expected = pd.DataFrame({'security_status': ['0']}, index=['600001.SH'])
+
+    class SDK:
+        def get_code_info(self, security_type):
+            assert security_type == 'EXTRA_STOCK_A_SH_SZ'
+            return expected
+
+        def query_snapshot(self, codes, **kwargs):
+            assert codes == ['600001.SH']
+            assert kwargs == dict(begin_date=20261015, end_date=20261015,
+                                  begin_time=92900000, end_time=93100000)
+            return {'600001.SH': pd.DataFrame({'last': [10.]})}
+
+    monkeypatch.setattr(info.AmazingDataFetcher, 'get_base_data', lambda: SDK())
+    monkeypatch.setattr(info.AmazingDataFetcher, '_market_data', SDK())
+    monkeypatch.setattr(info, '_info', lambda: pytest.fail('不得查历史信息表'))
+    daily, snapshots = info.fetch_execution_data(
+        ['600001'], pd.Timestamp('2026-10-15 09:29'), pd.Timestamp('2026-10-15 09:31'))
+    pd.testing.assert_frame_equal(daily, expected)
+    assert snapshots['600001'].iloc[0]['last'] == 10.
+
+
 def test_signal_universe_uses_exact_date_and_cleans_sdk_cache(monkeypatch, tmp_path):
     paths = []
 

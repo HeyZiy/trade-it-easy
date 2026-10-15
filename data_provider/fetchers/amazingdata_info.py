@@ -163,6 +163,29 @@ def _normalize_map(raw, batch: List[str]) -> Dict[str, pd.DataFrame]:
 
 # ── 对外接口 ──
 
+def fetch_execution_data(codes: List[str], begin: pd.Timestamp, end: pd.Timestamp):
+    """当天证券信息和短窗口行情；不查次日才发布的历史信息表。"""
+    if not codes:
+        return pd.DataFrame(), {}
+    try:
+        base = AmazingDataFetcher.get_base_data()
+        info = base.get_code_info(security_type='EXTRA_STOCK_A_SH_SZ')
+        day = int(end.strftime('%Y%m%d'))
+
+        def clock_value(stamp):
+            return int(stamp.strftime('%H%M%S')) * 1000 + stamp.microsecond // 1000
+
+        frames = {}
+        for batch in _chunks(_tgw_codes(codes), _INFO_CHUNK):
+            raw = AmazingDataFetcher._market_data.query_snapshot(
+                batch, begin_date=day, end_date=day,
+                begin_time=clock_value(begin), end_time=clock_value(end))
+            frames.update(_normalize_map(raw, batch))
+        return info, frames
+    except Exception as exc:
+        raise DataFetchError(f'AmazingData 当天执行状态查询失败: {exc}') from exc
+
+
 def fetch_industry_base():
     """在线行业基础表；返回已载入内存的 SDK 表，临时缓存不留存。"""
     return _industry_call('get_industry_base_info')
