@@ -50,7 +50,7 @@ CORE_BASELINE: List[AssetAllocation] = [
     # ── 海外 ──
     AssetAllocation("513100", "纳指ETF",                AssetType.EQUITY, 0.05, 9),
     AssetAllocation("513500", "标普500ETF",              AssetType.EQUITY, 0.05, 9),
-    AssetAllocation("513380", "恒生科技ETF",            AssetType.EQUITY, 0.10, 5),
+    AssetAllocation("513180", "恒生科技ETF华夏",        AssetType.EQUITY, 0.10, 5),
     # ── 行业/主题 ──
     AssetAllocation("159938", "医药ETF",                AssetType.EQUITY, 0.04, 4),
     AssetAllocation("516560", "养老ETF",                AssetType.EQUITY, 0.02, 7),
@@ -66,7 +66,7 @@ NEUTRAL_BASELINE = CORE_BASELINE
 
 # ── 核心仓 ETF 跟踪指数（估值锚对准买入标的本身） ──
 # 口径 = 中证指数官网估值（PE/股息率，见 amazing_factors.get_csindex_valuation），
-# 指数代码已逐只经官网实测核对（2026-09）。海外 ETF（513100/513500/513380）无 csindex
+# 指数代码已逐只经官网实测核对（2026-09）。海外 ETF（513100/513500/513180）无 csindex
 # 数据；黄金为无现金流资产，不适用估值锚。红利类估值以股息率为主锚（股息是现金流本体）。
 # 这是标的级估值的唯一口径：不做兜底——未配锚或官网未取到时报告显示"无估值锚"，
 # 不用不可比的市场/行业分位冒充标的自身估值（历史兜底链会产出假优先级与假警示，已删）。

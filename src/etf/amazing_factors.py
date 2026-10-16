@@ -398,7 +398,7 @@ def get_csindex_valuation(index_code: str) -> Optional[dict]:
 # ── ETF 估值参考 ──
 
 # 海外 ETF（无 csindex 数据，标"海外"）
-_OVERSEAS_CODES = frozenset({"513100", "513500", "513380"})
+_OVERSEAS_CODES = frozenset({"513100", "513500", "513180"})
 
 
 def _etf_pe_info(etf_code: str) -> Optional[dict]:

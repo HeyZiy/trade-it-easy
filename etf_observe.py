@@ -16,9 +16,6 @@ derive 供料与妙想持仓 dict 同形，rebalancer 决策核零改动。
   3. 新钱投放参考（全市场估值分位一个数，节奏人工决策，真实账户人工执行）
   4. 持仓对照与调仓建议（核心口径，旧钱只做阈值再平衡）
 
-卫星仓 — 行业动量轮动是独立日频任务 industry_momentum.py（尾盘执行，
-见 strategy/industry_momentum.md），本脚本只负责核心再平衡。
-
 估值口径分两层，不互相兜底：市场级 = 全市场 PE/ERP 分位（第一、三节）；
 标的级 = 跟踪指数自身 PE/股息率（估值参考节，无锚或取数失败即显示"无估值锚"）。
 任何估值都不进自动决策——核心仓目标恒等于中性基准。
@@ -29,8 +26,8 @@ import io
 import logging
 import os
 import sys
-from dataclasses import dataclass
-from datetime import datetime
+from dataclasses import dataclass, field
+from datetime import datetime, timedelta, timezone
 from typing import List, Optional
 
 from src.config import setup_env
@@ -39,7 +36,7 @@ from src.trading_calendar import is_trading_day
 
 setup_env()
 
-from src.etf.config import CORE_BASELINE, AssetType, pe_level
+from src.etf.config import CORE_BASELINE, DIVIDEND_STYLE_CODES, AssetType, pe_level
 from src.etf.amazing_factors import (
     get_market_pe, get_treasury_yield_y10, get_erp_percentile,
     etf_valuation_rows,
@@ -63,6 +60,8 @@ class WeekContext:
     y10: Optional[float]         # 10 年期国债收益率（%）
     erp_pct: Optional[float]     # 风险溢价自身近 5 年分位
     alloc: Optional[dict]        # _compute_allocation 快照，见其返回值（None = 台账不可读）
+    trends: dict = field(default_factory=dict)  # 标的自身唐奇安20/10观察快照
+    valuations: list = field(default_factory=list)  # 持仓表与估值明细共用
 
 
 def _build_week_context() -> WeekContext:
@@ -75,8 +74,42 @@ def _build_week_context() -> WeekContext:
     except Exception:
         erp = None
     erp_pct = erp.get("erp_pct") if erp else None
+    equity_etfs = [a for a in CORE_BASELINE if a.asset_type == AssetType.EQUITY]
     return WeekContext(market_pe=market_pe, y10=y10, erp_pct=erp_pct,
-                       alloc=_compute_allocation())
+                       alloc=_compute_allocation(), trends=_fetch_trend_observations(),
+                       valuations=etf_valuation_rows(equity_etfs))
+
+
+def _fetch_trend_observations() -> dict:
+    """逐只观察自身ETF，供应商复权OHLC；失败不替换成原始价或其他ETF。"""
+    from data_provider.bars import get_etf_research_daily
+    from src.etf.trend import donchian_observation
+
+    now = datetime.now(timezone(timedelta(hours=8))).replace(tzinfo=None)
+    observations = {}
+    for asset in CORE_BASELINE:
+        if asset.code == "CASH":
+            continue
+        try:
+            bars = get_etf_research_daily(asset.code, now.strftime("%Y-%m-%d"))
+            observations[asset.code] = donchian_observation(bars, now=now)
+        except Exception as exc:
+            logger.warning("唐奇安观察 %s 不可用: %s", asset.code, exc)
+            observations[asset.code] = {"state": None, "error": "行情不可用"}
+    return observations
+
+
+def _valuation_cell(row: dict) -> str:
+    """现有估值事实，不从绝对PE编造历史分位或买卖判断。"""
+    parts = []
+    if row.get("pe") is not None:
+        parts.append(f"PE {row['pe']:.1f}")
+    if row.get("div_yield") is not None:
+        parts.append(f"股息 {row['div_yield']:.1f}%")
+    spread = row.get("div_yield_spread")
+    if row.get("code") in DIVIDEND_STYLE_CODES and spread is not None:
+        parts.append(f"利差 {spread:+.1f}pt" + ("（偏低）" if spread >= 1.5 else ""))
+    return " / ".join(parts) or "—"
 
 
 # ── 市场概览 ──
@@ -115,17 +148,11 @@ def _market_overview(ctx: WeekContext) -> str:
 
 # ── 买入优先级 ──
 
-def _valuation_reference() -> str:
+def _valuation_reference(ctx: WeekContext) -> str:
     """各标的估值参考（锚=跟踪指数自身 PE/股息率；跨标的不可比，仅展示）"""
     lines = ["## 各标的估值参考（锚对准跟踪指数，PE 跨标的不可比）", ""]
 
-    # 收集所有核心仓权益 ETF（去重）
-    equity_etfs = {}
-    for a in CORE_BASELINE:
-        if a.asset_type == AssetType.EQUITY and a.code not in equity_etfs:
-            equity_etfs[a.code] = a
-
-    rows = etf_valuation_rows(list(equity_etfs.values()))
+    rows = ctx.valuations
 
     lines.append("| ETF | 估值锚 | PE | 股息率 | 备注 |")
     lines.append("|-----|--------|-----|--------|------|")
@@ -263,10 +290,11 @@ def _holding_overview(ctx: WeekContext) -> str:
     held_sum = sum(v for k, v in current_map.items() if k != "CASH")
     current_map["CASH"] = max(0.0, 100.0 - held_sum)
 
-    lines.append("| 资产 | 目标% | 实际% | 偏离 | 建议 |")
-    lines.append("|------|-------|-------|------|------|")
+    lines.append("| 资产 | 目标% | 实际% | 偏离 | 再平衡建议 | 唐奇安20/10 | 估值 |")
+    lines.append("|------|-------|-------|------|------------|-------------|------|")
 
     order_map = {o.code: o for o in orders}
+    valuation_map = {r["code"]: r for r in ctx.valuations}
     for asset in CORE_BASELINE:
         code = asset.code
         tgt = target.get(code, 0.0) * 100
@@ -276,7 +304,36 @@ def _holding_overview(ctx: WeekContext) -> str:
         action = ""
         if order:
             action = f"{'🟢买' if order.action == 'buy' else '🔴卖'} {order.quantity}股"
-        lines.append(f"| {asset.name} | {tgt:.1f}% | {cur:.1f}% | {dev:+.1f}% | {action} |")
+        trend = ctx.trends.get(code, {})
+        state = trend.get("state")
+        trend_text = "√" if state is True else "×" if state is False else "—"
+        if code == "513180":
+            trend_text = f"**{trend_text} ★**"
+        valuation = _valuation_cell(valuation_map.get(code, {}))
+        lines.append(f"| {asset.name}（{code}） | {tgt:.1f}% | {cur:.1f}% | {dev:+.1f}% | {action} | {trend_text} | {valuation} |")
+
+    lines.append("")
+    lines.append("> 唐奇安：√＝规则持有，×＝规则空仓，—＝数据不足或状态未确定；"
+                 "收盘突破此前20日最高价入场、跌破此前10日最低价离场，通道内延续历史状态。"
+                 "当日新信号对应下一交易日开盘，不代表实际持仓或本周新增买卖指令。")
+    lines.append("> ★ 恒生科技：当前样本中唐奇安20/10改善了持有体验，为重点观察规则。")
+    lines.append("> 估值展示跟踪指数PE/股息率；红利沿用股息率减10年国债利差≥1.5pt视同低估的现有口径。"
+                 "其余标的暂无高低判定，—表示无数据或不适用。两列独立参考，不合成评分，不参与名义调仓。")
+    dated = {}
+    unavailable = []
+    for asset in CORE_BASELINE:
+        if asset.code == "CASH":
+            continue
+        observation = ctx.trends.get(asset.code, {})
+        if observation.get("asof"):
+            dated.setdefault(observation["asof"], []).append(asset.code)
+        if observation.get("state") is None:
+            reason = observation.get("error", "尚无明确突破" if observation else "未取到行情")
+            unavailable.append(f"{asset.name}（{reason}）")
+    for date, codes in sorted(dated.items()):
+        lines.append(f"> 唐奇安行情截至 {date} 收盘：{'、'.join(codes)}。")
+    if unavailable:
+        lines.append(f"> 唐奇安暂无判断：{'、'.join(unavailable)}。")
 
     # 卫星持仓与基准外持仓提示（由"现金（以及其他账户）"桶吸收，不产生核心偏离）
     if rotation_positions:
@@ -415,7 +472,7 @@ def _generate_report(dry_run: bool = False) -> str:
         sections.append("## 本次执行\n\n" + ("持仓数据不可用，本次未执行。" if alloc is None
                         else "无调仓指令，保持当前持仓。"))
     sections.extend([_holding_overview(ctx), _market_overview(ctx),
-                     _valuation_reference(), _deploy_cash_section(ctx)])
+                     _valuation_reference(ctx), _deploy_cash_section(ctx)])
 
     sections.extend([
         "---",
