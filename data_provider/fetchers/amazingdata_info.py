@@ -138,8 +138,11 @@ def _info_frame(method_name: str, codes: List[str], begin: str, end: str,
     return pd.concat(frames.values(), ignore_index=True) if frames else pd.DataFrame()
 
 
-def _plain_code(tgw_code: str) -> str:
-    return tgw_code.split(".")[0]
+def _plain_code(tgw_code) -> str:
+    """SDK 快照键可能返回数字形态（如 601225 或 792），归一为 6 位代码。"""
+    if isinstance(tgw_code, (int, float)):
+        return f"{int(tgw_code):06d}"
+    return str(tgw_code).split(".")[0]
 
 
 def _normalize_map(raw, batch: List[str]) -> Dict[str, pd.DataFrame]:
