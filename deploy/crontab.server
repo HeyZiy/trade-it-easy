@@ -46,5 +46,5 @@
 # ── 质量池：09:00 盘前（昨收快照；故障自动恢复；09:31才冻结预算）──
 0 9 * * 1-5 cd /root/trade-it-easy && flock -n /tmp/quality-pool.lock /root/miniconda/envs/rt/bin/python quality_pool.py signal > /dev/null 2>> logs/cron_error.log
 
-# ── 收盘成绩：15:30 采集ETF共享组合与质量池，缺价保留最近完整成绩；不交易、不推送 ──
-30 15 * * 1-5 cd /root/trade-it-easy && flock -n /tmp/portfolio-report.lock /root/miniconda/envs/rt/bin/python portfolio_report.py > /dev/null 2>> logs/cron_error.log
+# ── 收盘成绩：20:30（北京时间）采集ETF共享组合与质量池，留出ETF日线发布时间；缺价保留最近完整成绩；不交易、不推送 ──
+30 20 * * 1-5 cd /root/trade-it-easy && flock -n /tmp/portfolio-report.lock /root/miniconda/envs/rt/bin/python portfolio_report.py > /dev/null 2>> logs/cron_error.log
