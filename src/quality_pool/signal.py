@@ -135,8 +135,11 @@ def run_signal(today: date, dry_run: bool = False, retry: bool = False) -> str:
     lines.append(f"- 质量池 {len(pool)} 只 | 可排名 {len(ranked)} 只 | "
                  f"留存 {len(kept)} | 目标 {len(selected)} | 计划退出 {len(exit_reasons)}")
     lines.append(f"- 下一调仓信号日 {nxt}；今日 09:31 先卖后买；暂缓判断 {len(deferred)} 只")
-    names = _decision_names(decisions)
-    for d in decisions:
+    names = _decision_names([d["code"] for d in decisions] + ranked)
+    # 展示按排名升序（未知排名的退出/暂缓置底）；执行计划仍按原 decisions 提交。
+    ordered = sorted(decisions,
+                     key=lambda d: (d["rank"] is None, d["rank"] or 0, d["code"]))
+    for d in ordered:
         mark = {"keep": "🟢", "entry": "🛒", "exit": "🔴", 'defer': '⏸️'}.get(d["action"], "·")
         name = names.get(d["code"], "")
         lines.append(f"  - {mark} {d['code']}"
@@ -145,6 +148,16 @@ def run_signal(today: date, dry_run: bool = False, retry: bool = False) -> str:
                      f"score={d['score'] if d['score'] is None else round(d['score'], 4)} "
                      f"{d['exit_reason'] or d['action']}"
                      + (f"（{d['pool_reason']}）" if d["pool_reason"] else ""))
+    # 池内其余排名：未持仓未入选，仅作梯队观察（判断持仓是否临近出池/谁会补位）。
+    tail = [c for c in ranked if c not in {d["code"] for d in decisions}]
+    if tail:
+        lines.append(f"- 池内后续排名 {len(tail)} 只（未持仓未入选，仅观察）")
+        for code in tail:
+            score = scores.get(code)
+            lines.append(f"  - · {code}"
+                         + (f" {names[code]}" if names.get(code) else "")
+                         + f" #{rank[code]} "
+                         f"score={score if score is None else round(score, 4)}")
     return "\n".join(lines)
 
 
@@ -184,11 +197,10 @@ def _review_deferred(today: date, st: dict, dry_run: bool) -> str:
             '不重建买入名单，确认出池者今日09:31退出。')
 
 
-def _decision_names(decisions: List[dict]) -> Dict[str, str]:
-    """决策码的简称（实时行情，fail-soft；取不到就只显代码）。"""
+def _decision_names(codes) -> Dict[str, str]:
+    """报告涉及代码的简称（实时行情，fail-soft；取不到就只显代码）。"""
     try:
-        _, names = feeds.fetch_realtime_quotes(
-            sorted({d["code"] for d in decisions}))
+        _, names = feeds.fetch_realtime_quotes(sorted(set(codes)))
     except Exception:
         logger.exception("信号报告简称抓取失败，降级为只显代码")
         return {}

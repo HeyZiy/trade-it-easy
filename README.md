@@ -30,7 +30,6 @@
 ## 文档
 
 - [strategy/](strategy/) — 策略，不记录实验等
-- [docs/trade\_ledger.md](docs/trade_ledger.md) — 模拟测试口径
 
 ## 模拟成绩
 
