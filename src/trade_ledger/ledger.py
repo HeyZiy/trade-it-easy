@@ -16,7 +16,8 @@ profit/profit_pct/pos_pct，另附归因用的 account）+ entry_map + 组合敞
 - T+1：date < as_of 的买入才计 avail_count；
 - 整手：qty 必为 100 整数倍，append 处校验收敛（判定口径单点仍在 mx/executor）;
 - 现金 = 名义期初 − Σ买 + Σ卖，无手续费、无调入调出条目；
-- account 标签（core/satellite/quality_pool）仅服务复盘归因与持仓归属拆分，不分账。
+- account 标签（core/satellite/quality_pool/etf_rotation）仅服务复盘归因与
+  持仓归属拆分，不分账；独立策略账户用独立流水文件（如质量池、跨资产动量轮动）。
 """
 
 from __future__ import annotations
@@ -40,7 +41,7 @@ LOT = 100                              # A 股一手
 DEFAULT_LEDGER_PATH = Path("data/trade_ledger.jsonl")
 
 SIDES = ("buy", "sell")
-ACCOUNTS = ("core", "satellite", "quality_pool")
+ACCOUNTS = ("core", "satellite", "quality_pool", "etf_rotation")
 _DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
 
 

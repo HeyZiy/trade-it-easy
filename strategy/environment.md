@@ -44,7 +44,7 @@ sideways 判定阈值为收盘偏离 MA20 < 1.5%。标签语义单点在 `market
   "verdict 能不能消费"（缺失/不可用/过期）谓词单点 `gate_verdict_issue`，
   读到不可用 verdict 后 fail-closed 还是 fail-soft 是各消费方 policy：
   买入分析 fail-closed（不开新仓，与兜底 chaos 等价）、卖出任务 fail-soft（门控仅展示）、
-  **ETF 核心再平衡不消费**（不读快照、无执行前置、无保护性默认）、
+  **ETF 配置再平衡不消费**（不读快照、无执行前置、无保护性默认）、
   卫星轮动不消费。
 
 **消费边界**：环境标签只作"是否开新仓"的一票（趋势链），

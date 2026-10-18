@@ -27,6 +27,7 @@ def closed_date(now):
 
 def run(*, asof=None, dry_run=False, now=None):
     from src.etf.config import CORE_BASELINE
+    from src.etf.rotation import LEDGER_PATH as ROTATION_LEDGER_PATH
     from src.quality_pool.config import POOL_LEDGER_PATH
     now = now or datetime.now(SHANGHAI)
     latest = closed_date(now)
@@ -41,6 +42,8 @@ def run(*, asof=None, dry_run=False, now=None):
          {"name": "ETF期初权重买入持有（现金零收益，不再平衡）",
           "weights": {a.code: a.neutral_weight for a in CORE_BASELINE}}),
         (POOL_LEDGER_PATH, "质量池轮动", {"name": "中证800价格指数", "index": "000906"}),
+        (ROTATION_LEDGER_PATH, "ETF跨资产动量轮动",
+         {"name": "沪深300价格指数", "index": "000300"}),
     ]
     sections = [f"# 模拟收盘日报 — {target}", ""]
     errors = 0
@@ -64,7 +67,7 @@ def run(*, asof=None, dry_run=False, now=None):
 
 
 def main():
-    parser = argparse.ArgumentParser(description="采集两个模拟资金池的完整收盘成绩")
+    parser = argparse.ArgumentParser(description="采集三个模拟资金池的完整收盘成绩")
     parser.add_argument("--date", help="补采已收盘交易日，YYYY-MM-DD")
     parser.add_argument("--dry-run", action="store_true", help="仅展示，不保存记录")
     args = parser.parse_args()

@@ -22,7 +22,7 @@ single\_factor 只保留可复用的因子诊断引擎（`single_factor_test.py`
 | [expectations](studies/expectations/README.md) | 低预期 × 已披露盈利维持 | 低预期＋历史盈利维持全期核查完成，未显示稳定增量；60日控制系数HAC t=−0.37 |
 | [trend](studies/trend/)                                     | 个股趋势策略                        | 保留原版本、辅助脚本及数据                                   |
 | [industry\_momentum](studies/industry_momentum/)            | 行业 ETF 动量轮动                   | 保留原版本；生产策略说明见 ../strategy/industry\_momentum.md |
-| [etf\_rotation\_reference](studies/etf_rotation_reference/) | 原 research/new\.py 的 ETF 策略参考 | 来源代码保留，尚未整理为明确研究问题                              |
+| [etf\_rotation](studies/etf_rotation/README.md) | ETF跨资产趋势与相对强弱轮动 | 11只池为当前研究版本；收益假设、交易规则、已有对照及后续主线见README |
 | [broad\_index\_strategies](studies/broad_index_strategies/README.md) | 宽基ETF长期配置的持有体验与择时 | 一级比较12只ETF；二级固定参数单跑恒生科技，20/10及ATR通道改善当前样本体验，结论按标的区分 |
 
 ## 研究如何形成积累
