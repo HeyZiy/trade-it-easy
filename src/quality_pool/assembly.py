@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 """
 ===================================
-质量池 09:31 执行闭环 — 快照、模拟记账与跨日状态
+质量池单次运行闭环 — 信号、快照、模拟记账与跨日状态
 ===================================
 
 根入口（编排）与判定核（execution / screener）之间的合并点：
@@ -27,7 +27,7 @@ from dataclasses import replace
 from datetime import date, timedelta
 from typing import List
 
-from src.quality_pool import config, execution, feeds, state as pool_state
+from src.quality_pool import config, execution, feeds, signal, state as pool_state
 from src.trade_ledger.batch import BatchOrder, BatchResult, execute_batch
 from src.trade_ledger.ledger import derive, load_trades
 from src.trade_ledger.performance import execution_summary
@@ -36,8 +36,18 @@ import src.trading_calendar as trading_calendar
 logger = logging.getLogger(__name__)
 
 
+def run_day(today: date, dry_run: bool = False, retry: bool = False) -> str:
+    """09:30启动后顺序完成信号与执行；共享本轮状态，只读预览也不丢新名单。"""
+    st = pool_state.load_state(config.STATE_PATH)
+    signal_report = signal.run_signal(today, dry_run=dry_run, retry=retry, state=st)
+    execution_report = run_execution(today.isoformat(), dry_run=dry_run, state=st)
+    return (f"# 质量池模拟（{today.isoformat()}）\n\n"
+            + signal_report.replace("# ", "## ", 1) + "\n\n"
+            + execution_report.replace("# ", "## ", 1))
+
+
 def build_snapshot(exec_date: str, selected: List[str]) -> execution.ExecSnapshot:
-    """09:31 执行时点快照：台账派生 + 实时价 + 当天证券信息/行情交易阶段。
+    """计算完成后的执行时点快照：台账派生 + 实时价 + 当天证券信息/行情交易阶段。
 
     状态表缺行 → 该码按停牌/ST 处置（fail-closed，缺数据的品种不参与成交判定）。
     """
@@ -131,10 +141,10 @@ def _settle_trades(plan: execution.ExecPlan, exec_date: str, industries=None) ->
     return lines
 
 
-def run_execution(exec_date: str, dry_run: bool = False) -> str:
-    """消费有效名单，执行并按台账核对退出；返回报告，零通知副作用。"""
+def run_execution(exec_date: str, dry_run: bool = False, *, state: dict | None = None) -> str:
+    """消费有效名单，执行并按台账核对退出；state 可承接同轮信号的内存状态。"""
     before = load_trades(config.POOL_LEDGER_PATH)
-    st = pool_state.load_state(config.STATE_PATH)
+    st = pool_state.load_state(config.STATE_PATH) if state is None else state
     signal = pool_state.pop_plan(st)
     if signal is not None:
         prev = trading_calendar.latest_trading_day_on_or_before(

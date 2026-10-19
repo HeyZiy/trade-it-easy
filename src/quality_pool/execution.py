@@ -1,9 +1,9 @@
 # -*- coding: utf-8 -*-
-"""09:31 执行计划 — 纯判定核（规格三、四节）。
+"""执行计划 — 纯判定核（规格三、四节）。
 
 输入是执行时点快照（价格/涨跌停/状态/台账持仓），输出成台的交易意图与
 受阻事件；记账交给 trade_ledger.execute_batch（通用批次安全校验单点）。
-本模块零 I/O：真实下单不存在，成交价 = 09:31 实时价（按判定价模拟记账）。
+本模块零 I/O：真实下单不存在，成交价 = 执行时实时价（按判定价模拟记账）。
 
 资金口径两层关系（勿混）：affordable_shares 是计划侧费用感知预检
 （佣金+滑点，从严），execute_batch 安全校验 2 是记账侧费用盲检
@@ -28,13 +28,13 @@ SELL_TAX_NOTE = ""  # 台账不记费用；滑点/佣金只用于资金可行性
 
 @dataclass
 class ExecSnapshot:
-    """09:31 执行时点快照（编排层组装，台账派生 + 实时行情 + 当日状态）。"""
+    """执行时点快照（编排层组装，台账派生 + 实时行情 + 当日状态）。"""
     trade_date: str
     counts: Dict[str, int]          # code → 台账持仓股数
     avail: Dict[str, int]           # code → T+1 可卖股数
     cash: float
     equity: float                   # 总权益 = 现金 + 持仓按现价市值（每轮冻结预算用）
-    prices: Dict[str, float]        # code → 09:31 实时价（缺/无效不在 dict 中）
+    prices: Dict[str, float]        # code → 执行时实时价（缺/无效不在 dict 中）
     names: Dict[str, str]
     suspended: Dict[str, bool]      # code → 执行日当时停牌
     st: Dict[str, bool]             # code → 执行日当时 ST
@@ -119,7 +119,7 @@ def industry_buy_block(code: str, held, industries: Optional[dict]) -> Optional[
 
 
 def plan_exit_retry(exit_queue: Dict[str, str], snap: ExecSnapshot) -> ExecPlan:
-    """非调仓日：仅重试退出队列（每交易日 09:31），照常受停牌/跌停/可卖量约束。
+    """非调仓日：仅重试退出队列（每交易日模拟任务中），照常受停牌/跌停/可卖量约束。
     部分成交的剩余持仓继续留在队列（与调仓日退出语义一致）。"""
     result = ExecPlan()
     remaining: Dict[str, str] = {}

@@ -9,6 +9,9 @@ import quality_pool as entry
 def _stub_main(monkeypatch, trading, argv):
     seen = {}
     monkeypatch.setattr(entry, "is_trading_day", lambda day=None: trading)
+    monkeypatch.setattr(entry, "run",
+                        lambda today, dry_run=False, retry=False:
+                        seen.update(command="run", dry_run=dry_run, retry=retry) or "报告")
     monkeypatch.setattr(entry, "run_signal",
                         lambda today, dry_run=False, retry=False:
                         seen.update(dry_run=dry_run, retry=retry) or "报告")
@@ -59,3 +62,21 @@ def test_manual_retry_reaches_signal_command(monkeypatch):
     seen = _stub_main(monkeypatch, trading=True, argv=["signal", "--retry-signal"])
     assert entry.main() == 0
     assert seen["retry"] is True and seen["dry_run"] is False
+
+
+def test_default_command_runs_full_simulation(monkeypatch):
+    seen = _stub_main(monkeypatch, trading=True, argv=[])
+    assert entry.main() == 0
+    assert seen["command"] == "run" and seen["dry_run"] is False
+
+
+def test_default_holiday_force_is_readonly(monkeypatch):
+    seen = _stub_main(monkeypatch, trading=False, argv=["--force"])
+    assert entry.main() == 0
+    assert seen["command"] == "run" and seen["dry_run"] is True
+
+
+def test_default_dry_run_can_retry_signal(monkeypatch):
+    seen = _stub_main(monkeypatch, trading=True, argv=["--dry-run", "--retry-signal"])
+    assert entry.main() == 0
+    assert seen["command"] == "run" and seen["dry_run"] is True and seen["retry"] is True

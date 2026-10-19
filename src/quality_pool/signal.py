@@ -44,14 +44,16 @@ def _next_rebalance_day(day: date) -> date:
     return upcoming[config.ROTATE_EVERY - 1]
 
 
-def run_signal(today: date, dry_run: bool = False, retry: bool = False) -> str:
+def run_signal(today: date, dry_run: bool = False, retry: bool = False,
+               *, state: dict | None = None) -> str:
     """处理一个信号日，返回报告；状态提交先于报告生成，零通知副作用。
 
     retry 与入口的手动恢复选项一致：只恢复持久化的失败轮，
     不提前开启未到期轮，也不重放已成功生成的当日名单。
+    state 由一次运行的装配层共享；只读时也在内存中生成名单供执行预览。
     """
     today_str = today.isoformat()
-    st = pool_state.load_state(config.STATE_PATH)
+    st = pool_state.load_state(config.STATE_PATH) if state is None else state
     next_day = st.get("next_signal_date")
     is_round_day = next_day is None or today_str >= next_day
     if st.get('last_signal_date') == today_str and not st.get('signal_retry'):
@@ -82,7 +84,7 @@ def run_signal(today: date, dry_run: bool = False, retry: bool = False) -> str:
         fundamentals = feeds.fetch_fundamentals(codes, asof, raw_closes=raw_close)
         if fundamentals.empty or not fundamentals.notna().any().any():
             raise RuntimeError('财务快照为空或全部未知')
-        # 历史信息次日发布，盘前预筛使用已完成的 T−1。
+        # 历史信息次日发布，质量预筛使用已完成的 T−1。
         status = feeds.fetch_status(codes, asof)
         if status.empty:
             raise RuntimeError('状态快照为空')
@@ -103,7 +105,7 @@ def run_signal(today: date, dry_run: bool = False, retry: bool = False) -> str:
         # 恢复标记已经落盘；取数/日志中断不丢失失败轮，也不挪动原定周期。
         logger.exception("调仓名单生成失败")
         return "\n".join(lines + [
-            f"- ⚠️ 数据异常，本轮暂停；下一交易日盘前自动重试，原定节点 {nxt}：{exc}"])
+            f"- ⚠️ 数据异常，本轮暂停；下一交易日模拟任务自动重试，原定节点 {nxt}：{exc}"])
 
     rank = {c: i + 1 for i, c in enumerate(ranked)}
     exit_reasons = {c: config.EXIT_OUT_OF_POOL for c in sorted(held)
@@ -134,7 +136,7 @@ def run_signal(today: date, dry_run: bool = False, retry: bool = False) -> str:
 
     lines.append(f"- 质量池 {len(pool)} 只 | 可排名 {len(ranked)} 只 | "
                  f"留存 {len(kept)} | 目标 {len(selected)} | 计划退出 {len(exit_reasons)}")
-    lines.append(f"- 下一调仓信号日 {nxt}；今日 09:31 先卖后买；暂缓判断 {len(deferred)} 只")
+    lines.append(f"- 下一调仓信号日 {nxt}；本轮随后先卖后买；暂缓判断 {len(deferred)} 只")
     names = _decision_names([d["code"] for d in decisions] + ranked)
     # 展示按排名升序（未知排名的退出/暂缓置底）；执行计划仍按原 decisions 提交。
     ordered = sorted(decisions,
@@ -194,7 +196,7 @@ def _review_deferred(today: date, st: dict, dry_run: bool) -> str:
         pool_state.save_state(st, config.STATE_PATH)
     return (f'# 质量池补判（{today_str}）\n'
             f'- 已检查 {len(codes)} 只；仍未知 {len(unresolved)} 只；'
-            '不重建买入名单，确认出池者今日09:31退出。')
+            '不重建买入名单，确认出池者本轮随后尝试退出。')
 
 
 def _decision_names(codes) -> Dict[str, str]:

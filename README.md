@@ -9,7 +9,7 @@
 | ETF 长期配置    | `etf_observe.py`（周一尾盘自动调仓批次）                         |
 | 行业动量轮动      | `industry_momentum.py`                               |
 | ETF 跨资产动量轮动  | `etf_rotation.py`                                    |
-| 质量池轮动       | `quality_pool.py signal` / `quality_pool.py execute` |
+| 质量池轮动       | `quality_pool.py`（09:30一次完成信号、模拟成交与报告） |
 | 价格循环（Cycle） | —                                                    |
 
 趋势回踩（pullback）已退役，入口脚本不再存在；环境快照随之休眠（唯一消费方

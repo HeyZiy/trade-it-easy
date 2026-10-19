@@ -512,7 +512,7 @@ def _latest_total_shares(structure: Optional[pd.DataFrame],
 
 
 def fetch_realtime_quotes(codes: List[str]) -> Tuple[Dict[str, float], Dict[str, str]]:
-    """09:31 实时价与简称：单只跨源合并，失败/无效价不入结果（fail-soft）。"""
+    """执行时实时价与简称：单只跨源合并，失败/无效价不入结果（fail-soft）。"""
     prices: Dict[str, float] = {}
     names: Dict[str, str] = {}
     from data_provider import get_fetcher

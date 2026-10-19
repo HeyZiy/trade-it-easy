@@ -154,10 +154,11 @@ def test_close_collector_rejects_intraday_and_nontrading_dates(monkeypatch):
         entry.closed_date(now)
 
 
-def test_quality_signal_execution_and_dry_run_archive_separately(tmp_path, monkeypatch):
+def test_quality_combined_run_and_manual_stages_archive_separately(tmp_path, monkeypatch):
     import quality_pool as entry
     from src.task_io import save_report
     monkeypatch.setattr("src.quality_pool.config.POOL_LEDGER_PATH", str(tmp_path / "empty.jsonl"))
+    monkeypatch.setattr("src.quality_pool.config.STATE_PATH", str(tmp_path / "state.json"))
     monkeypatch.setattr(entry.pool_signal, "run_signal", lambda *a, **kw: "# 信号\n无指令")
     monkeypatch.setattr(entry.assembly, "run_execution", lambda *a, **kw: "# 执行\n无成交")
     monkeypatch.setattr(entry, "notify", lambda *a, **kw: True)
@@ -166,9 +167,12 @@ def test_quality_signal_execution_and_dry_run_archive_separately(tmp_path, monke
     entry.run_signal(day)
     entry.run_execute(day)
     entry.run_execute(day, dry_run=True)
+    entry.run(day)
+    entry.run(day, dry_run=True)
     assert {p.name for p in tmp_path.glob("*.md")} == {
         "quality_pool_signal_20260923.md", "quality_pool_execute_20260923.md",
-        "quality_pool_execute_dry_run_20260923.md"}
+        "quality_pool_execute_dry_run_20260923.md", "quality_pool_20260923.md",
+        "quality_pool_dry_run_20260923.md"}
 
 
 def test_two_account_collector_keeps_ledgers_untouched(tmp_path, monkeypatch):
