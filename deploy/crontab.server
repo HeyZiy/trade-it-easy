@@ -45,5 +45,6 @@
 # ── 行业动量轮动（卫星仓）：每交易日 14:50 尾盘（截面排名→卖出/买入→推送）──
 50 14 * * 1-5 cd /root/trade-it-easy && flock -n /tmp/industry_momentum.lock /root/miniconda/envs/rt/bin/python industry_momentum.py > /dev/null 2>> logs/cron_error.log
 
-# ── 收盘成绩：20:30（北京时间）采集ETF共享组合、质量池与跨资产动量轮动，留出ETF日线发布时间；缺价保留最近完整成绩；不交易、不推送 ──
-30 20 * * 1-5 cd /root/trade-it-easy && flock -n /tmp/portfolio-report.lock /root/miniconda/envs/rt/bin/python portfolio_report.py > /dev/null 2>> logs/cron_error.log
+# ── 收盘成绩：次日08:30（北京时间）采集上一交易日ETF共享组合、质量池与跨资产动量轮动，
+#    并回补最近5个交易日不完整记录；给ETF日线源留出整夜；缺价保留最近完整成绩；不交易、不推送 ──
+30 8 * * 1-5 cd /root/trade-it-easy && flock -n /tmp/portfolio-report.lock /root/miniconda/envs/rt/bin/python portfolio_report.py > /dev/null 2>> logs/cron_error.log

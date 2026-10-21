@@ -38,13 +38,14 @@
 ETF 长期配置和行业动量共用组合成绩；质量池与跨资产动量轮动各自独立统计。缺价时保留最近完整日期，
 未开始记账的账户不显示虚构收益。当前未计手续费、分红和份额变更。
 
-`deploy/crontab.server` 在工作日北京时间20:30采集收盘成绩，给ETF日线源留出发布时间；更新服务器代码后需重新安装该定时任务表。若届时仍缺价，保留最近完整成绩。
+`deploy/crontab.server` 在工作日北京时间次日08:30采集上一交易日收盘成绩，给ETF日线源留出整夜，
+并回补最近5个交易日的不完整记录；更新服务器代码后需重新安装该定时任务表。仍缺价时保留最近完整成绩。
 收盘任务不交易、不发送通知，成绩与台账保存在服务器，本地不会自动同步。
 
 ```bash
-python portfolio_report.py                  # 采集最近已收盘交易日
+python portfolio_report.py                  # 采集最近已收盘交易日，并回补前5个交易日缺口
 python portfolio_report.py --dry-run        # 只展示，不保存
-python portfolio_report.py --date 2026-10-09 # 重试或补采指定已收盘交易日
+python portfolio_report.py --date 2026-10-09 # 重试或补采指定已收盘交易日（只采该日）
 ```
 
 基准规则和存储口径见 [台账规格第七节](docs/trade_ledger.md#七模拟报告与收盘成绩第一版)。
