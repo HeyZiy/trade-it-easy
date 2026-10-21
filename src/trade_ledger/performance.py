@@ -24,6 +24,11 @@ def _load(ledger_path):
     return json.loads(path.read_text(encoding="utf-8")) if path.exists() else {}
 
 
+def load_performance(ledger_path):
+    """只读已保存的成绩状态；无记录返回空字典（采集方判断缺行用）。"""
+    return _load(ledger_path)
+
+
 def _fingerprint(trades, asof):
     payload = [asdict(t) for t in trades if t.date <= asof]
     return hashlib.sha256(json.dumps(payload, sort_keys=True, ensure_ascii=False)
