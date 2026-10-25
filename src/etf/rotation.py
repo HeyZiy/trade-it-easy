@@ -36,18 +36,18 @@ from dataclasses import dataclass
 from datetime import date, timedelta
 from typing import Dict, List, Optional, Sequence, Tuple
 
-import numpy as np
 import pandas as pd
 
+from src.etf.momentum import (DIVE_RATIO, SCORE_DAYS, EtfOrder,
+                              momentum_score)
 from src.mx.executor import floor_lot
 from src.trading_calendar import latest_trading_day_on_or_before
 
-# ── 研究线参数（research/studies/etf_rotation/unified_coverage.py）──
+# ── 研究线参数（research/studies/etf_rotation/unified_coverage.py；
+#    趋势分参数 SCORE_DAYS/DIVE_RATIO 居 src/etf/momentum.py 单点）──
 
-SCORE_DAYS = 25          # 打分回看天数：25 根已完成日线 + 当日现价 = 26 点
 SCORE_LOW = 0.0          # 合格下限（严格大于）
 SCORE_HIGH = 5.0         # 合格上限（严格小于）
-DIVE_RATIO = 0.95        # 近 3 个日环比任一 < 0.95 → score=0
 STALE_DAYS = 10          # 交易日历不可用时：最后日线距今 > N 自然日 → 剔除
 
 # ── 模拟账户与执行口径 ──
@@ -96,60 +96,12 @@ class RotationRow:
     rank: int = 0         # 合格候选内排名（1 = 最强）；不合格为 0
 
 
-@dataclass
-class RotationOrder:
-    """调仓指令（入口映射为台账 BatchOrder）。"""
-    code: str
-    name: str
-    action: str           # buy / sell
-    shares: int
-    price: float
-    amount: float
-    reason: str
-
-    @property
-    def qty(self) -> int:
-        """执行层统一股数口径（与 RotationOrder/BatchOrder 对齐）。"""
-        return self.shares
+# 旧名重导出：根入口 etf_rotation.py 与台账测试仍按 RotationOrder 引用；
+# 引擎订单类为 momentum.EtfOrder，本模块内直接用新名，改名随入口侧下次改动。
+RotationOrder = EtfOrder
 
 
-# ── 判定核（零 I/O）──
-
-def momentum_score(close_tail: Sequence[float], last_price: float) -> float:
-    """25 根已完成日线收盘 + 当日现价 → 加权回归动量分。
-
-    与 `src/etf/industry_momentum.momentum_score`、研究线
-    `unified_coverage.calculate_momentum_score` 同一公式：
-    对数价格对 w=linspace(1,2) 加权线性回归 → 年化 = exp(斜率×250)-1 →
-    score = 年化 × 加权 R²（R² 的残差平方和、总离差与均值都用 w² 加权）。
-    近 3 个日环比任一 < DIVE_RATIO 时返回 0.0；数据不足或价格非法返回 nan
-    （研究线里 nan 表示"不入候选"，0 只表示跳水，两者在下游等价但保留区分）。
-
-    不四舍五入：分数用于与 0/5 的严格比较和排名，取整可能在边界上改变结论。
-    """
-    try:
-        prices = np.append(np.asarray(close_tail[-SCORE_DAYS:], dtype=float),
-                           float(last_price))
-        if len(prices) < SCORE_DAYS + 1 or np.any(prices <= 0) \
-                or not np.isfinite(prices).all():
-            return math.nan
-        logp = np.log(prices)
-        x = np.arange(len(logp), dtype=float)
-        w = np.linspace(1.0, 2.0, len(logp))
-        slope, intercept = np.polyfit(x, logp, 1, w=w)
-        ann = math.exp(slope * 250.0) - 1.0
-        effective_w = w ** 2
-        mean_logp = float(np.average(logp, weights=effective_w))
-        ss_res = float(np.sum(effective_w * (logp - (slope * x + intercept)) ** 2))
-        ss_tot = float(np.sum(effective_w * (logp - mean_logp) ** 2))
-        r2 = float(np.clip(1.0 - ss_res / ss_tot, 0.0, 1.0)) if ss_tot > 0 else 0.0
-        score = ann * r2
-        if min(prices[-1] / prices[-2], prices[-2] / prices[-3],
-               prices[-3] / prices[-4]) < DIVE_RATIO:
-            return 0.0
-        return float(score)
-    except Exception:
-        return math.nan
+# ── 判定核（零 I/O；momentum_score/SCORE_DAYS/DIVE_RATIO 引自趋势分引擎）──
 
 
 def is_eligible(score: float) -> bool:
@@ -287,7 +239,7 @@ def plan_rotation(rows: Sequence[RotationRow], positions: List[dict],
     held = [p for p in positions
             if p.get("account") == account and int(p.get("count") or 0) > 0]
     notes: List[str] = []
-    orders: List[RotationOrder] = []
+    orders: List[EtfOrder] = []
     if len(held) > 1:
         notes.append(f"⚠️ 台账中存在 {len(held)} 只持仓，本策略应为单只，"
                      f"按规则先全部卖出再买入第一名")
@@ -300,7 +252,7 @@ def plan_rotation(rows: Sequence[RotationRow], positions: List[dict],
         return price if math.isfinite(price) and price > 0 else 0.0
 
     # 先确定"卖出谁"：目标是现持仓 → 只处理台账异常多出来的持仓；否则清空全部。
-    sells: List[RotationOrder] = []
+    sells: List[EtfOrder] = []
     unsellable: List[str] = []
     if target is not None and holding is not None and holding["code"] == target.code:
         to_sell = [p for p in held if p is not holding]
@@ -324,12 +276,12 @@ def plan_rotation(rows: Sequence[RotationRow], positions: List[dict],
             continue
         if qty <= 0:
             continue
-        sells.append(RotationOrder(
+        sells.append(EtfOrder(
             code=pos["code"], name=pos.get("name", "") or pos["code"],
             action="sell", shares=qty, price=price, amount=qty * price,
             reason=sell_reason))
 
-    buys: List[RotationOrder] = []
+    buys: List[EtfOrder] = []
     if target is not None and not (
             holding is not None and holding["code"] == target.code):
         if unsellable:
@@ -342,7 +294,7 @@ def plan_rotation(rows: Sequence[RotationRow], positions: List[dict],
                 notes.append(f"{target.name}({target.code}) 可用资金不足一手，未买入")
             else:
                 flow = (f"先卖后买（卖出 {len(sells)} 笔）" if sells else "空仓建仓")
-                buys.append(RotationOrder(
+                buys.append(EtfOrder(
                     code=target.code, name=target.name, action="buy", shares=shares,
                     price=target.price, amount=shares * target.price,
                     reason=(f"合格候选第{target.rank}名（score={target.score:+.4f}）；"

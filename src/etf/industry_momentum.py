@@ -58,9 +58,12 @@ from datetime import date, timedelta
 from pathlib import Path
 from typing import Dict, List, Optional, Sequence, Tuple
 
-import numpy as np
 import pandas as pd
 
+# 趋势分引擎单点（CONTEXT.md「趋势分」）：SCORE_DAYS 供出场逐日重放用；
+# DIVE_RATIO 仅为模块可见性重导出（测试钉研究线同值）。
+from src.etf.momentum import (DIVE_RATIO, EtfOrder, SCORE_DAYS,
+                              momentum_score as trend_score)
 from src.mx.executor import round_lot
 from src.trading_calendar import (get_trading_dates,
                                   latest_trading_day_on_or_before)
@@ -81,8 +84,6 @@ CROWD_LOOKBACK = 250            # 量价热度分量的历史分位窗口（日�
 CROWD_MIN_OBS = 60              # 分量最少观测数（不足则该分量缺失）
 MIN_BARS = 250                  # 截面/入池门槛（与相关性去重窗口同宽）
 STALE_DAYS = 10                 # 最后日线距今超过 N 个自然日 → 停牌/退市，剔除截面
-SCORE_DAYS = 25                 # 打分取 25 根收盘 + 当日现价 = 26 点
-DIVE_RATIO = 0.95               # 近 3 个日环比 <0.95 → 跳水，score 清零
 LIQ_LOOKBACK = 20               # 流动性门槛窗口（日均额）
 LIQ_AMT20_MIN = 50_000_000.0    # 近 20 日均成交额 ≥5000 万
 MATURE_DAYS = 365               # 上市 ≥365 自然日（首根日线计）
@@ -120,21 +121,9 @@ EXCLUDE_KW = ('沪深300', '中证500', '中证1000', '中证800', '中证全指
 POOL_STATE_PATH = Path(__file__).parent.parent.parent / "data" / "industry_momentum_pool.json"
 
 
-@dataclass
-class RotationOrder:
-    """卫星仓调仓订单。"""
-    code: str
-    name: str
-    action: str      # buy / sell
-    shares: int
-    price: float
-    amount: float
-    reason: str
-
-    @property
-    def qty(self) -> int:
-        """执行层统一股数口径（与 RebalanceOrder.qty 同名，混合订单批次无需 getattr 探测）。"""
-        return self.shares
+# 旧名重导出：根入口 industry_momentum.py 与台账测试仍按 RotationOrder 引用；
+# 引擎订单类为 momentum.EtfOrder，本模块内直接用新名，改名随入口侧下次改动。
+RotationOrder = EtfOrder
 
 
 @dataclass
@@ -158,38 +147,14 @@ class RotationRow:
 # ── 判定核（零 I/O）──
 
 def momentum_score(close_tail: Sequence[float], last_price: float) -> float:
-    """25 根日收盘 + 当日现价的对数回归动量（与修正后的 lM_v3_3_2 一致）。
+    """趋势分（src/etf/momentum 引擎单点）＋研究线继承口径：失败记 0.0、round 4。
 
-    对数价格对 w=linspace(1,2) 加权线性回归 → 年化 = exp(slope×250)−1 →
-    score = 年化 × 加权 R²（R² 惩罚歪斜路径，只放行"走得直"的趋势）；
-    polyfit 的有效残差平方权重为 w²，R²也用 w²残差、总离差和加权均值。
-    回归斜率不变；R²限于[0,1]，仅防浮点误差，不会反转趋势符号。
-    近 3 个日环比任一 <0.95（跳水）清零；数据不足/非正价格返回 0。
-    负分保留（排序供卖出用，买入侧 score>0 门槛）。
+    lM_v3_3_2 的 nan→0.0 与 round(…,4) 是本策略历史行为（score>0 买入门与
+    score≤0 出场计数在第 4 位小数边界依赖取整），与跨资产侧（nan/不取整）
+    不同源，保留在这条缝上；引擎公式只有一份，改口径改这里不动引擎。
     """
-    try:
-        prices = np.append(np.asarray(close_tail[-SCORE_DAYS:], dtype=float),
-                           float(last_price))
-        if len(prices) < SCORE_DAYS + 1 or np.any(prices <= 0) \
-                or not np.isfinite(prices).all():
-            return 0.0
-        logp = np.log(prices)
-        x = np.arange(len(logp), dtype=float)
-        w = np.linspace(1.0, 2.0, len(logp))
-        slope, intercept = np.polyfit(x, logp, 1, w=w)
-        ann = math.exp(slope * 250.0) - 1.0
-        effective_w = w ** 2
-        mean_logp = float(np.average(logp, weights=effective_w))
-        ss_res = float(np.sum(effective_w * (logp - (slope * x + intercept)) ** 2))
-        ss_tot = float(np.sum(effective_w * (logp - mean_logp) ** 2))
-        r2 = float(np.clip(1.0 - ss_res / ss_tot, 0.0, 1.0)) if ss_tot > 0 else 0.0
-        score = ann * r2
-        if min(prices[-1] / prices[-2], prices[-2] / prices[-3],
-               prices[-3] / prices[-4]) < DIVE_RATIO:
-            score = 0.0
-        return round(float(score), 4)
-    except Exception:
-        return 0.0
+    score = trend_score(close_tail, last_price)
+    return round(score, 4) if math.isfinite(score) else 0.0
 
 
 def filter_by_name(etfs: List[dict]) -> List[dict]:
@@ -400,7 +365,7 @@ def build_sell_orders(rows: List[RotationRow], positions: List[dict],
                       bars: Dict[str, pd.DataFrame],
                       prices: Dict[str, float],
                       entry_map: Optional[Dict[str, str]] = None
-                      ) -> Tuple[List[RotationOrder], List[str]]:
+                      ) -> Tuple[List[EtfOrder], List[str]]:
     """生成卫星卖出订单（v3_3_2 出场，只管 account=satellite 持仓）。
 
     退出规则（出池持仓直评——池洞结构性消失，池只管买入侧）：
@@ -418,7 +383,7 @@ def build_sell_orders(rows: List[RotationRow], positions: List[dict],
             （单笔全仓建仓下等价；顶加仓情形未定义，本策略不产生）。
     """
     entry_map = entry_map or {}
-    orders: List[RotationOrder] = []
+    orders: List[EtfOrder] = []
     notes: List[str] = []
     for p in positions:
         if p.get("account") != "satellite":
@@ -446,7 +411,7 @@ def build_sell_orders(rows: List[RotationRow], positions: List[dict],
             reason = "保本损" if facts["latched"] else "跌破成本-8%"
         else:
             reason = f"score转负x{facts['neg_run']}日"
-        orders.append(RotationOrder(code=code, name=name, action="sell",
+        orders.append(EtfOrder(code=code, name=name, action="sell",
                                     shares=count, price=price,
                                     amount=count * price, reason=reason))
         notes.append(f"{name}({code}) {reason}"
@@ -457,7 +422,7 @@ def build_sell_orders(rows: List[RotationRow], positions: List[dict],
 
 def build_buy_orders(rows: List[RotationRow], held_codes: set, total_assets: float,
                      satellite_mv: float, avail_cash: float
-                     ) -> Tuple[List[RotationOrder], List[str]]:
+                     ) -> Tuple[List[EtfOrder], List[str]]:
     """生成卫星买入订单：准入过滤后按动量评分降序补足空槽等权。
 
     - 准入 = score>0（负分=下降趋势/跳水清零，不买）且量价热度 < CROWD_PCT_MAX
@@ -487,7 +452,7 @@ def build_buy_orders(rows: List[RotationRow], held_codes: set, total_assets: flo
     if per <= 0:
         return [], []
 
-    orders: List[RotationOrder] = []
+    orders: List[EtfOrder] = []
     notes: List[str] = []
     for r in selected:
         shares = round_lot(per / r.price)
@@ -496,7 +461,7 @@ def build_buy_orders(rows: List[RotationRow], held_codes: set, total_assets: flo
         heat_txt = f"{r.crowd:.0f} 分" if r.crowd is not None else "—"
         reason = (f"动量评分第{r.rank}/{r.n}名（score={r.score:+.4f}），"
                   f"量价热度 {heat_txt}")
-        orders.append(RotationOrder(code=r.code, name=r.name, action="buy",
+        orders.append(EtfOrder(code=r.code, name=r.name, action="buy",
                                     shares=shares, price=r.price,
                                     amount=shares * r.price, reason=reason))
         notes.append(f"{r.name}({r.code}) {reason}")

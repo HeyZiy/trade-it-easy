@@ -19,13 +19,11 @@ from datetime import date
 from pathlib import Path
 from types import SimpleNamespace
 
-import numpy as np
 import pandas as pd
 import pytest
 
 import etf_rotation as entry
 from src.etf import rotation as rot
-from src.etf.industry_momentum import momentum_score as industry_momentum_score
 from src.etf.rotation import (
     ACCOUNT, POOL, RotationRow,
     affordable_shares, build_rows, is_eligible, momentum_score,
@@ -82,22 +80,8 @@ def _position(code: str, count: int = 1000, price: float = 10.0,
             "market_value": count * price, "account": account}
 
 
-# ══════════════ momentum_score：公式 + 与行业动量一致性 ══════════════
-
-def _cross_check_cases():
-    """(25 根历史收盘, 当日现价)：覆盖上行/下行/随机/横盘/跳水。"""
-    rng = np.random.default_rng(20261018)
-    walk = list(10.0 * np.cumprod(1.0 + rng.normal(0.0012, 0.009, size=26)))
-    dive = _geo(25)
-    dive[-2] = dive[-3] * 0.90                     # 倒数第二日跳水
-    return [
-        (_geo(25), 10.0 * GEO_STEP ** 25),         # 上行等比
-        ([10.0 * 0.999 ** k for k in range(25)], 10.0 * 0.999 ** 25),  # 阴跌等比
-        (walk[:-1], walk[-1]),                     # 随机游走
-        ([10.0] * 25, 10.0),                       # 横盘：ss_tot=0 → 0
-        (dive, dive[-1] * 1.001),                  # 近 3 日跳水 → 0
-    ]
-
+# ══════════════ momentum_score：消费侧口径 ══════════════
+# 引擎公式直测见 tests/test_etf_momentum.py（趋势分单点，对拍测试已随之退役）。
 
 class TestMomentumScore:
     @pytest.mark.parametrize("step", [1.002, 1.001, 0.999])
@@ -108,22 +92,11 @@ class TestMomentumScore:
         score = momentum_score(closes, last)
         assert score == pytest.approx(step ** 250 - 1.0, rel=1e-9)
 
-    def test_matches_industry_momentum_within_rounding(self):
-        """与既有行业动量实现同公式：差值 ≤ 5e-5（后者四舍五入到 4 位）。"""
-        for tail, last in _cross_check_cases():
-            score = momentum_score(tail, last)
-            reference = industry_momentum_score(tail, last)
-            assert math.isfinite(score)
-            assert abs(score - reference) <= 5e-5
-            assert reference == round(score, 4)
-
     def test_insufficient_bars_returns_nan(self):
         assert math.isnan(momentum_score(_geo(24), 10.0))       # 24+1 < 26 点
         assert math.isnan(momentum_score([], 10.0))
         # 边界：25 根历史 + 当日现价 = 26 点，够数
         assert math.isfinite(momentum_score(_geo(25), 10.0 * GEO_STEP ** 25))
-        # 行业动量同输入返回 0（口径差：nan=不入候选，0=跳水/失败）
-        assert industry_momentum_score(_geo(24), 10.0) == 0.0
 
     def test_nan_and_nonpositive_prices_return_nan(self):
         closes = _geo(25)
