@@ -12,8 +12,9 @@ run_signal 是调用 seam：调用者只给日期与只读/恢复选项，不掌
 from __future__ import annotations
 
 import logging
-from datetime import date
-from typing import Dict, List
+from dataclasses import dataclass
+from datetime import date, timedelta
+from typing import Dict, List, Optional
 
 import pandas as pd
 
@@ -22,6 +23,53 @@ from src.quality_pool import config, feeds, screener, state as pool_state
 from src.trade_ledger.ledger import derive, load_trades
 
 logger = logging.getLogger(__name__)
+
+
+@dataclass
+class SignalPlan:
+    """一轮调仓名单的执行事实；持久化形状（to_dict/from_stored）归本类型所有。
+
+    报告专用的 decisions 明细不进名单——生成侧渲染完即弃，执行侧不消费。
+    """
+
+    signal_day: str
+    execute_day: str
+    asof: str
+    selected: List[str]
+    deferred: List[str]
+    industries: Dict[str, str]
+    kept: List[str]
+    exit_reasons: Dict[str, str]
+
+    def to_dict(self) -> dict:
+        return {"signal_day": self.signal_day, "execute_day": self.execute_day,
+                "asof": self.asof, "selected": self.selected,
+                "deferred": self.deferred, "industries": self.industries,
+                "kept": self.kept, "exit_reasons": self.exit_reasons}
+
+    @classmethod
+    def from_stored(cls, raw: Optional[dict], exec_date: str) -> "SignalPlan | None":
+        """读回并校验持久化名单：版本/执行日/数据截止日任一不符返回 None（丢弃）。
+
+        asof 校验要求名单的数据截止日 = 执行日的前一交易日（与生成侧口径一致）。
+        """
+        if raw is None:
+            return None
+        prev = trading_calendar.latest_trading_day_on_or_before(
+            date.fromisoformat(exec_date) - timedelta(days=1))
+        if prev is None:
+            raise RuntimeError(f"交易日历无 {exec_date} 之前的数据")
+        if (raw.get('strategy_version') != config.STRATEGY_VERSION
+                or raw.get('execute_day') != exec_date
+                or raw.get('asof') != prev.isoformat()):
+            logger.warning("STALE_SIGNAL：计划版本/执行日/数据截止日不匹配，丢弃")
+            return None
+        return cls(signal_day=raw["signal_day"], execute_day=raw["execute_day"],
+                   asof=raw["asof"], selected=list(raw.get("selected", [])),
+                   deferred=list(raw.get("deferred", [])),
+                   industries=dict(raw.get("industries", {})),
+                   kept=list(raw.get("kept", [])),
+                   exit_reasons=dict(raw.get("exit_reasons", {})))
 
 
 def _prev_trading_day(day: date) -> date:
@@ -60,7 +108,7 @@ def run_signal(today: date, dry_run: bool = False, retry: bool = False,
         return f'# 质量池信号（{today_str}）\n\n- 今日名单已生成，不重复本轮。\n'
     if not is_round_day and not st.get('signal_retry'):
         if st.get('deferred_codes'):
-            return _review_deferred(today, st, dry_run)
+            return review_deferred(today, st, dry_run)
         return f"# 质量池信号（{today_str}）\n\n- 非调仓日：下一调仓信号日 {next_day}\n"
 
     asof = _prev_trading_day(today).isoformat()
@@ -122,12 +170,11 @@ def run_signal(today: date, dry_run: bool = False, retry: bool = False,
             "exit_reason": exit_reasons.get(code, ""),
             "pool_reason": (audit.get(code, {}) or {}).get("pool_reason", ""),
         })
-    plan = {"signal_day": today_str, "execute_day": today_str,
-            "asof": asof, "selected": selected, 'deferred': sorted(no_adjust),
-            'industries': industries,
-            "kept": kept, "exit_reasons": exit_reasons, "decisions": decisions}
+    plan = SignalPlan(signal_day=today_str, execute_day=today_str, asof=asof,
+                      selected=selected, deferred=sorted(no_adjust),
+                      industries=industries, kept=kept, exit_reasons=exit_reasons)
 
-    pool_state.put_plan(st, plan)
+    pool_state.put_plan(st, plan.to_dict())
     st['signal_retry'] = False
     st['last_signal_date'] = today_str
     st['deferred_codes'] = sorted(deferred)
@@ -138,9 +185,18 @@ def run_signal(today: date, dry_run: bool = False, retry: bool = False,
                  f"留存 {len(kept)} | 目标 {len(selected)} | 计划退出 {len(exit_reasons)}")
     lines.append(f"- 下一调仓信号日 {nxt}；本轮随后先卖后买；暂缓判断 {len(deferred)} 只")
     names = _decision_names([d["code"] for d in decisions] + ranked)
+    lines += render_decision_table(decisions, ranked, rank, scores, names)
+    return "\n".join(lines)
+
+
+def render_decision_table(decisions: List[dict], ranked: List[str],
+                          rank: Dict[str, int], scores: Dict[str, float],
+                          names: Dict[str, str]) -> List[str]:
+    """轮次报告的决策表与梯队段（纯渲染、零 I/O；名单与排序事实由轮次核算好）。"""
     # 展示按排名升序（未知排名的退出/暂缓置底）；执行计划仍按原 decisions 提交。
     ordered = sorted(decisions,
                      key=lambda d: (d["rank"] is None, d["rank"] or 0, d["code"]))
+    lines: List[str] = []
     for d in ordered:
         mark = {"keep": "🟢", "entry": "🛒", "exit": "🔴", 'defer': '⏸️'}.get(d["action"], "·")
         name = names.get(d["code"], "")
@@ -160,11 +216,13 @@ def run_signal(today: date, dry_run: bool = False, retry: bool = False,
                          + (f" {names[code]}" if names.get(code) else "")
                          + f" #{rank[code]} "
                          f"score={score if score is None else round(score, 4)}")
-    return "\n".join(lines)
+    return lines
 
 
-def _review_deferred(today: date, st: dict, dry_run: bool) -> str:
-    """非调仓日仅补判缺数据旧仓；不重新排名/开仓/再平衡。"""
+def review_deferred(today: date, st: dict, dry_run: bool) -> str:
+    """非调仓日的补判（公开入口，run_signal 的非调仓分支按 deferred_codes 分派）。
+
+    仅补判缺数据旧仓；不重新排名/开仓/再平衡。"""
     today_str = today.isoformat()
     asof = _prev_trading_day(today).isoformat()
     held = {p['code'] for p in derive(load_trades(config.POOL_LEDGER_PATH), as_of=today_str).positions}

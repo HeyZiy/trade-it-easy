@@ -24,7 +24,7 @@
 import logging
 import pandas as pd
 from dataclasses import replace
-from datetime import date, timedelta
+from datetime import date
 from typing import List
 
 from src.quality_pool import config, execution, feeds, signal, state as pool_state
@@ -145,29 +145,19 @@ def run_execution(exec_date: str, dry_run: bool = False, *, state: dict | None =
     """消费有效名单，执行并按台账核对退出；state 可承接同轮信号的内存状态。"""
     before = load_trades(config.POOL_LEDGER_PATH)
     st = pool_state.load_state(config.STATE_PATH) if state is None else state
-    signal = pool_state.pop_plan(st)
-    if signal is not None:
-        prev = trading_calendar.latest_trading_day_on_or_before(
-            date.fromisoformat(exec_date) - timedelta(days=1))
-        if prev is None:
-            raise RuntimeError(f"交易日历无 {exec_date} 之前的数据")
-        if (signal.get('strategy_version') != config.STRATEGY_VERSION
-                or signal.get('execute_day') != exec_date
-                or signal.get('asof') != prev.isoformat()):
-            logger.warning("STALE_SIGNAL：计划版本/执行日/数据截止日不匹配，丢弃")
-            signal = None
+    sig_plan = signal.SignalPlan.from_stored(pool_state.pop_plan(st), exec_date)
 
-    selected = list((signal or {}).get("selected", []))
+    selected = list(sig_plan.selected) if sig_plan is not None else []
     exits = dict(st.get("exit_queue", {}))
-    if signal is not None:
-        exits.update(signal["exit_reasons"])
+    if sig_plan is not None:
+        exits.update(sig_plan.exit_reasons)
         exits = {c: r for c, r in exits.items() if c not in set(selected)}
     snapshot = build_snapshot(exec_date, selected)
-    per = snapshot.equity / config.TOP_N if signal is not None else None
+    per = snapshot.equity / config.TOP_N if sig_plan is not None else None
     plan = (execution.plan_round(selected, exits, per, snapshot,
-                                 deferred=signal.get('deferred', ()),
-                                 industries=signal.get('industries', {}))
-            if signal is not None else execution.plan_exit_retry(exits, snapshot))
+                                 deferred=sig_plan.deferred,
+                                 industries=sig_plan.industries)
+            if sig_plan is not None else execution.plan_exit_retry(exits, snapshot))
 
     lines = [f"# 质量池执行（{exec_date}）"]
     lines.append(f"- 调仓轮：总权益 {snapshot.equity:,.0f}，单只预算 {per:,.0f}"
@@ -182,7 +172,8 @@ def run_execution(exec_date: str, dry_run: bool = False, *, state: dict | None =
         st["exit_queue"] = {c: r for c, r in exits.items() if held.get(c, 0) > 0}
         pool_state.save_state(st, config.STATE_PATH)
         lines += _settle_trades(plan, exec_date,
-                               industries=(signal or {}).get('industries')) or ["- 无成台交易"]
+                               industries=(sig_plan.industries
+                                           if sig_plan is not None else None)) or ["- 无成台交易"]
         held = derive(load_trades(config.POOL_LEDGER_PATH), as_of=exec_date).held_counts()
         st["exit_queue"] = {c: r for c, r in exits.items() if held.get(c, 0) > 0}
         pool_state.save_state(st, config.STATE_PATH)
