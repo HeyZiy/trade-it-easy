@@ -9,6 +9,7 @@ import logging
 import math
 
 from src.config import setup_env
+from src.cron_entry import hard_exit
 from src.logging_config import setup_logging
 from src.trading_calendar import get_trading_dates
 from src.trade_ledger.ledger import DEFAULT_LEDGER_PATH
@@ -144,10 +145,4 @@ def main():
 
 
 if __name__ == "__main__":
-    # 与质量池入口相同：采集完成后不等待SDK后台回调线程。
-    import os
-    result = main()
-    import sys
-    sys.stdout.flush()
-    sys.stderr.flush()
-    os._exit(result)
+    hard_exit(main())

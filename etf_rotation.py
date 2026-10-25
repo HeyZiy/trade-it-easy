@@ -36,14 +36,13 @@ ETF 跨资产动量轮动 — 每日模拟账户入口
 import argparse
 import io
 import logging
-import os
 import sys
 from datetime import date, datetime
 from typing import List, Optional
 
 from src.config import setup_env
+from src.cron_entry import add_standard_flags, hard_exit, resolve_run_gate
 from src.logging_config import setup_logging
-from src.trading_calendar import is_trading_day
 
 setup_env()
 
@@ -219,11 +218,7 @@ def parse_arguments() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description='ETF 跨资产动量轮动 — 每日模拟账户（截面判定 + 台账记账 + 出报告）',
     )
-    parser.add_argument('--debug', action='store_true', help='启用调试模式')
-    parser.add_argument('--no-notify', action='store_true', help='不发送推送通知')
-    parser.add_argument('--dry-run', action='store_true', help='只检测不记账（调试用）')
-    parser.add_argument('--force', action='store_true',
-                        help='跳过交易日检查（手动调试用；非交易日一律只读不记账）')
+    add_standard_flags(parser)
     return parser.parse_args()
 
 
@@ -236,15 +231,12 @@ def main() -> int:
     logger.info(f"运行时间: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
     logger.info("=" * 60)
 
-    trading = is_trading_day()
-    if not args.force and not trading:
+    skip, dry_run = resolve_run_gate(force=args.force, dry_run=args.dry_run)
+    if skip:
         logger.info("今天不是 A 股交易日，跳过执行")
         return 0
-
-    # 非交易日不可能有真实成交，硬记账就是假日假账 → --force 试跑一律只读
-    dry_run = args.dry_run or not trading
     if dry_run and not args.dry_run:
-        logger.info("非交易日 --force：本次只检测，不写台账")
+        logger.info("非交易日 --force：本次只读，不写台账")
 
     try:
         report = run(dry_run=dry_run)
@@ -264,6 +256,5 @@ def main() -> int:
 
 
 if __name__ == "__main__":
-    # AmazingData/TGW SDK 启动了非守护 SWIG 回调线程，sys.exit 会等不到该线程
-    # 导致进程挂住；主流程完成后用 os._exit 直接终止进程（同 quality_pool.py）。
-    os._exit(main())
+    # 硬退出理由（SDK 非守护回调线程）单点在 cron_entry.hard_exit。
+    hard_exit(main())

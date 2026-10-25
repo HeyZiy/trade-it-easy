@@ -4,6 +4,7 @@ import io
 import sys
 
 import etf_observe as eo
+from src import cron_entry
 from src.etf.rebalancer import RebalanceOrder, RebalancePlan
 
 
@@ -72,7 +73,8 @@ def _stub_main(monkeypatch, trading, argv):
         seen["dry_run"] = dry_run
         return "# 报告"
 
-    monkeypatch.setattr(eo, "is_trading_day", lambda day=None: trading)
+    # 交易日政策单点在 cron_entry.resolve_run_gate，桩打在其查找命名空间。
+    monkeypatch.setattr(cron_entry, "is_trading_day", lambda day=None: trading)
     monkeypatch.setattr(eo, "_generate_report", fake_report)
     monkeypatch.setattr(eo, "setup_logging", lambda **kw: None)
     monkeypatch.setattr(eo, "save_report", lambda *a, **kw: None)

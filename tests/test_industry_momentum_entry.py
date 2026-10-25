@@ -4,11 +4,13 @@ import io
 import sys
 
 import industry_momentum as entry
+from src import cron_entry
 
 
 def _stub_main(monkeypatch, trading, argv):
     seen = {}
-    monkeypatch.setattr(entry, "is_trading_day", lambda day=None: trading)
+    # 交易日政策单点在 cron_entry.resolve_run_gate，桩打在其查找命名空间。
+    monkeypatch.setattr(cron_entry, "is_trading_day", lambda day=None: trading)
     monkeypatch.setattr(entry, "run",
                         lambda dry_run=False: seen.update(dry_run=dry_run) or "报告")
     monkeypatch.setattr(entry, "setup_logging", lambda **kw: None)

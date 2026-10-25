@@ -24,11 +24,11 @@ signal / execute 子命令仅保留供手动分阶段排查，不单独配置定
 import argparse
 import io
 import logging
-import os
 import sys
 from datetime import date
 
 from src.config import setup_env
+from src.cron_entry import hard_exit, resolve_run_gate
 from src.logging_config import setup_logging
 from src.trading_calendar import is_trading_day
 
@@ -93,13 +93,11 @@ def main() -> int:
     setup_logging()
 
     today = date.today()
-    trading = is_trading_day(today)
-    if not args.force and not trading:
+    skip, dry_run = resolve_run_gate(force=args.force, dry_run=args.dry_run,
+                                     trading_day=is_trading_day(today))
+    if skip:
         logger.info(f"{today} 非交易日，跳过")
         return 0
-
-    # 非交易日不可能有真实成交，硬记账就是假日假账 → --force 试跑一律只读
-    dry_run = args.dry_run or not trading
     if dry_run and not args.dry_run:
         logger.info("非交易日 --force：本次只读，不写状态/台账")
 
@@ -116,8 +114,4 @@ def main() -> int:
 
 
 if __name__ == "__main__":
-    # AmazingData/TGW SDK 启动了非守护 SWIG 回调线程，正常 sys.exit 会
-    # 等不到该线程导致进程挂住（terminate 时打 Swig::DirectorMethodException）。
-    # 主流程（信号/执行/报告/飞书推送）已全部完成后用 os._exit 直接终止进程，
-    # 残留 C 线程随进程一起被回收。
-    os._exit(main())
+    hard_exit(main())
