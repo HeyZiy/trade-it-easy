@@ -66,7 +66,7 @@ def main() -> int:
     closes = feeds.fetch_closes(codes, asof_str)
     raw_closes = feeds.raw_closes_at(codes, asof_str)
     fundamentals = feeds.fetch_fundamentals(codes, asof_str, raw_closes)
-    status = feeds.fetch_status(codes, asof_str)
+    status = feeds.fetch_screening_status(codes, asof_str)
     industries = feeds.fetch_industries(codes, asof_str)
     pool = screener.build_pool(set(codes), fundamentals, status, closes)
     ranked, _ = screener.rank_pool(pool, closes)

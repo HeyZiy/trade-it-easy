@@ -14,6 +14,15 @@
   使用含少数股东损益的净利润，与回测inc_net_profit_year_on_year对应，基数为0或缺失则未知；
 - PE(TTM) = 总市值 / TTM 归母净利，筛选要求PE/PB均为正；
   PB = 总市值 / 期末归母权益；总市值 = 总股本 × 截止日原始收盘。
+
+失败口径（两种合法语义，按用途分，勿互相硬套）：
+- 轮级暂停：信号路径的数据不完整 = 整轮错误——fetch_* 返回空表由调用方
+  （signal）在轮次 try 内 raise，报告记"本轮暂停"；
+- 执行级按码阻断：执行状态缺行 = 该码 fail-closed——fetch_execution_status
+  对缺行/过期/失败返回空表，装配层翻译为 unavailable，不炸整轮。
+
+边界：数据契约解码（风险警示标志、沪深交易阶段码、快照新鲜窗）是装配的
+一部分，留在本模块；策略可调阈值（真正的判定数字）才在 config。
 """
 
 from __future__ import annotations
@@ -206,8 +215,11 @@ def _factor_series(factors: pd.DataFrame, code: str,
     return None
 
 
-def fetch_status(codes: List[str], date: str) -> pd.DataFrame:
-    """按日状态快照 → index=code：is_st / is_suspended / preclose / 涨跌停价。"""
+def fetch_screening_status(codes: List[str], date: str) -> pd.DataFrame:
+    """T−1 预筛状态快照 → index=code：is_st / is_suspended（ST/停牌过滤口径）。
+
+    当日执行口径（交易阶段与涨跌停价）走 fetch_execution_status，勿混用。
+    """
     raw = _raw_status(codes, date)
     if raw is None or raw.empty:
         return pd.DataFrame(columns=["is_st", "is_suspended"])
@@ -219,9 +231,6 @@ def fetch_status(codes: List[str], date: str) -> pd.DataFrame:
     df = pd.DataFrame({
         "is_st": _numcol("IS_ST_SEC").map({0: False, 1: True}).astype("boolean"),
         "is_suspended": _numcol("IS_SUSP_SEC").map({0: False, 1: True}).astype("boolean"),
-        "preclose": _numcol("PRECLOSE"),
-        "high_limit": _numcol("HIGH_LIMITED"),
-        "low_limit": _numcol("LOW_LIMITED"),
     })
     df.index = raw["MARKET_CODE"].astype(str).str.split(".").str[0]
     if df.index.has_duplicates:

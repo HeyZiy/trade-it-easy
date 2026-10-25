@@ -16,14 +16,14 @@ def test_signal_status_uses_previous_trading_day(env, deferred):
         st = state.load_state(config.STATE_PATH)
         st.update(next_signal_date='2026-10-20', deferred_codes=['600001'])
         state.save_state(st, config.STATE_PATH)
-    original = feeds.fetch_status
+    original = feeds.fetch_screening_status
     dates = []
 
     def historical_only(codes, day):
         dates.append(day)
         return original(codes, day) if day == '2026-10-02' else pd.DataFrame()
 
-    env.setattr(feeds, 'fetch_status', historical_only)
+    env.setattr(feeds, 'fetch_screening_status', historical_only)
     report = signal.run_signal(dt.date(2026, 10, 5))
     assert dates == ['2026-10-02']
     assert '本轮暂停' not in report

@@ -300,10 +300,9 @@ def test_status_normalization(monkeypatch):
         "LOW_LIMITED": [9.0, np.nan],
     })
     monkeypatch.setattr(feeds, "_raw_status", lambda codes, date: raw)
-    status = feeds.fetch_status(["600001", "600002"], ASOF)
+    status = feeds.fetch_screening_status(["600001", "600002"], ASOF)
     assert bool(status.at["600001", "is_st"]) is True
     assert bool(status.at["600002", "is_suspended"]) is True
-    assert status.at["600001", "high_limit"] == pytest.approx(11.0)
 
 
 def test_unlock_codes_collected(monkeypatch):

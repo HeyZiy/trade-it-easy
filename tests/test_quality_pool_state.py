@@ -51,7 +51,7 @@ def _patch_signal_data(monkeypatch, universe={"600001", "600002"},
                             {c: dict(roe_ttm_pct=16.0, np_yoy_pct=20.0,
                                      pe_ttm=15.0, pb=2.0) for c in codes},
                             orient="index"))
-    monkeypatch.setattr(feeds, "fetch_status",
+    monkeypatch.setattr(feeds, "fetch_screening_status",
                         lambda codes, date: pd.DataFrame(
                             {"is_st": False, "is_suspended": False},
                             index=pd.Index(list(codes), name="code")))
@@ -286,7 +286,7 @@ def test_deferred_review_preserves_state_and_holding_when_not_committed(env, fai
     if failure == "status":
         def unavailable(*args, **kwargs):
             raise RuntimeError("status down")
-        env.setattr(feeds, "fetch_status", unavailable)
+        env.setattr(feeds, "fetch_screening_status", unavailable)
     elif failure == "stale_closes":
         env.setattr(feeds, "fetch_closes", lambda codes, asof, rows=253:
                     pd.DataFrame({c: 10.0 for c in codes},

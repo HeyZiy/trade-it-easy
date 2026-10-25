@@ -133,7 +133,7 @@ def run_signal(today: date, dry_run: bool = False, retry: bool = False,
         if fundamentals.empty or not fundamentals.notna().any().any():
             raise RuntimeError('财务快照为空或全部未知')
         # 历史信息次日发布，质量预筛使用已完成的 T−1。
-        status = feeds.fetch_status(codes, asof)
+        status = feeds.fetch_screening_status(codes, asof)
         if status.empty:
             raise RuntimeError('状态快照为空')
 
@@ -236,7 +236,7 @@ def review_deferred(today: date, st: dict, dry_run: bool) -> str:
                 raise RuntimeError('补判行情未更新至截止日')
             raw_close = feeds.raw_closes_at(codes, asof)
             fundamentals = feeds.fetch_fundamentals(codes, asof, raw_closes=raw_close)
-            status = feeds.fetch_status(codes, asof)
+            status = feeds.fetch_screening_status(codes, asof)
             screener.build_pool(set(codes) & universe, fundamentals, status, closes, audit=audit)
         except Exception as exc:
             return f'# 质量池补判（{today_str}）\n- 数据仍不可用，持仓暂不调整：{exc}'

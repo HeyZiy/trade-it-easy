@@ -31,10 +31,10 @@ def env(tmp_path, monkeypatch):
     cal = [d for d in cal if d.weekday() < 5]
     monkeypatch.setattr(tc, "latest_trading_day_on_or_before",
                         lambda d, **kw: max((x for x in cal if x <= d), default=None))
-    calls = {"fetch_status": 0}
+    calls = {"fetch_execution_status": 0}
 
     def _count_status(codes, date):
-        calls["fetch_status"] += 1
+        calls["fetch_execution_status"] += 1
         return pd.DataFrame(
             {"is_st": [c == "600002" for c in codes],
              "is_suspended": [False] * len(codes),
@@ -78,7 +78,7 @@ def test_snapshot_merges_ledger_quotes_status_once(env):
     assert not any(snap.suspended.values())
     assert snap.limits["600001"] == (12.0 * 1.1, 12.0 * 0.9)
     # 状态表只拉一次（停牌/ST/涨跌停共享）
-    assert env.calls["fetch_status"] == 1
+    assert env.calls["fetch_execution_status"] == 1
 
 
 def test_snapshot_missing_status_row_fail_closed(env):

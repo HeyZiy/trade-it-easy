@@ -60,14 +60,14 @@ def test_deferred_quality_failure_only_adds_exit_without_new_round(env):
 def test_suspended_quality_holding_is_retained_and_execution_blocked(env):
     _patch_signal_data(env)
     _seed_positions([('600001', 100, 10.)])
-    original = feeds.fetch_status
+    original = feeds.fetch_screening_status
 
     def suspended(codes, day):
         frame = original(codes, day)
         frame.loc['600001', 'is_suspended'] = True
         return frame
 
-    env.setattr(feeds, 'fetch_status', suspended)
+    env.setattr(feeds, 'fetch_screening_status', suspended)
     signal.run_signal(dt.date(2026, 10, 2))
     plan = state.load_state(pool_config.STATE_PATH)['pending_plan']
     assert '600001' in plan['kept'] and plan['exit_reasons'] == {}
@@ -112,7 +112,7 @@ def test_future_adjustment_factor_cannot_backfill_earlier_prices():
 def test_unknown_status_flag_remains_unknown(monkeypatch):
     monkeypatch.setattr(feeds, '_raw_status', lambda codes, day: pd.DataFrame(
         {'MARKET_CODE': ['600001.SH'], 'IS_ST_SEC': [np.nan], 'IS_SUSP_SEC': [np.nan]}))
-    frame = feeds.fetch_status(['600001'], '2026-10-01')
+    frame = feeds.fetch_screening_status(['600001'], '2026-10-01')
     assert pd.isna(frame.at['600001', 'is_st']) and pd.isna(frame.at['600001', 'is_suspended'])
 
 
