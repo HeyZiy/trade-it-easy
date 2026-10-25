@@ -100,11 +100,6 @@ class RotationRow:
     rank: int = 0         # 合格候选内排名（1 = 最强）；不合格为 0
 
 
-# 旧名重导出：根入口 etf_rotation.py 与台账测试仍按 RotationOrder 引用；
-# 引擎订单类为 momentum.EtfOrder，本模块内直接用新名，改名随入口侧下次改动。
-RotationOrder = EtfOrder
-
-
 # ── 判定核（零 I/O；momentum_score/SCORE_DAYS/DIVE_RATIO 引自趋势分引擎）──
 
 

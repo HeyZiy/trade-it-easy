@@ -280,12 +280,12 @@ class TestStrategyCallers:
 
     def test_industry_writes_without_caller_cash_or_holdings(self, tmp_path):
         import industry_momentum
-        from src.etf.industry_momentum import RotationOrder
+        from src.etf.momentum import EtfOrder
 
         path = tmp_path / "ledger.jsonl"
         _seed(path, {"510300": 100}, cash=0)
-        orders = [RotationOrder("510300", "ETF", "sell", 100, 4, 400, "exit"),
-                  RotationOrder("512880", "ETF", "buy", 400, 1, 400, "entry")]
+        orders = [EtfOrder("510300", "ETF", "sell", 100, 4, 400, "exit"),
+                  EtfOrder("512880", "ETF", "buy", 400, 1, 400, "entry")]
         abort, lines = industry_momentum._execute(orders, "2026-09-27", ledger_path=path)
         assert abort is None and len(lines) == 2
         assert _snapshot(path).cash == 0

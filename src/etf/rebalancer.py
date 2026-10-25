@@ -47,7 +47,7 @@ class RebalanceOrder:
 
     @property
     def qty(self) -> int:
-        """执行层统一股数口径（与 RotationOrder.qty 同名，混合订单批次无需 getattr 探测）。"""
+        """执行层统一股数口径（与 EtfOrder.qty 同名，混合订单批次无需 getattr 探测）。"""
         return self.quantity
 
 

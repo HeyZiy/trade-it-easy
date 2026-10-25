@@ -36,7 +36,7 @@ from src.logging_config import setup_logging
 setup_env()
 
 from src.etf.industry_momentum import (           # noqa: E402
-    SATELLITE_BUDGET_RATIO, RotationOrder, analyze_rotation,
+    SATELLITE_BUDGET_RATIO, EtfOrder, analyze_rotation,
 )
 from src.task_io import notify, save_report       # noqa: E402
 from src.trade_ledger import (                    # noqa: E402
@@ -47,7 +47,7 @@ from src.trade_ledger.performance import render_summary, execution_summary  # no
 logger = logging.getLogger(__name__)
 
 
-def _execute(orders: List[RotationOrder], trade_date: str, *,
+def _execute(orders: List[EtfOrder], trade_date: str, *,
              ledger_path=None):
     """执行一批轮动指令：批次语义（收敛/安全校验/先卖后买/逐单记账）
     委托 trade_ledger.execute_batch，本函数只映射指令与渲染结果行。

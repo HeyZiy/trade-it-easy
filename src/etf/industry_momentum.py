@@ -121,11 +121,6 @@ EXCLUDE_KW = ('沪深300', '中证500', '中证1000', '中证800', '中证全指
 POOL_STATE_PATH = Path(__file__).parent.parent.parent / "data" / "industry_momentum_pool.json"
 
 
-# 旧名重导出：根入口 industry_momentum.py 与台账测试仍按 RotationOrder 引用；
-# 引擎订单类为 momentum.EtfOrder，本模块内直接用新名，改名随入口侧下次改动。
-RotationOrder = EtfOrder
-
-
 @dataclass
 class RotationRow:
     """截面单只 ETF 的当日事实：动量评分 + 量价热度，判定核只读此表。"""
