@@ -89,6 +89,22 @@ def rank_pool(pool: List[str], closes: pd.DataFrame) -> Tuple[List[str], Dict[st
     return sorted(scores, key=lambda c: (-scores[c], c)), scores
 
 
+def industry_buy_block_reason(key: Optional[str], occupied,
+                              industries: Dict[str, str]) -> Optional[str]:
+    """行业约束单点：新开仓的行业闸门，选股与执行核对共用。
+
+    key = 候选行业；occupied = 已占名额的代码集合（选股=已选名单，
+    执行=台账持仓）。候选缺行业或任一 occupied 缺行业 → 'industry_unknown'
+    （不能确认集中度就不放行，fail-closed）；同业已满 INDUSTRY_CAP →
+    'industry_cap'；放行返回 None。
+    """
+    if not key or any(not industries.get(c) for c in occupied):
+        return 'industry_unknown'
+    if sum(industries[c] == key for c in occupied) >= INDUSTRY_CAP:
+        return 'industry_cap'
+    return None
+
+
 def select_targets(ranked: List[str], held: Set[str], pool: Set[str],
                    industries: Dict[str, str], deferred: Set[str] = frozenset()
                    ) -> Tuple[List[str], List[str]]:
@@ -101,19 +117,14 @@ def select_targets(ranked: List[str], held: Set[str], pool: Set[str],
     if len(kept) > TOP_N:
         raise ValueError('More existing positions than TOP_N')
     selected = list(kept)
-    counts = {}
     # 缺旧仓行业时，不能确认新增后集中度；本轮保留旧仓但暂缓所有新开仓。
     if any(not industries.get(c) for c in kept):
         return selected, kept
-    for code in kept:
-        key = industries[code]
-        counts[key] = counts.get(key, 0) + 1
     for code in ranked[:TOP_N]:
         if len(selected) >= TOP_N:
             break
-        key = industries.get(code)
-        if code in selected or not key or counts.get(key, 0) >= INDUSTRY_CAP:
+        if code in selected or industry_buy_block_reason(
+                industries.get(code), selected, industries):
             continue
         selected.append(code)
-        counts[key] = counts.get(key, 0) + 1
     return selected, kept

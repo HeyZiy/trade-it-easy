@@ -20,8 +20,9 @@ from typing import Dict, List, Optional, Tuple
 
 from src.mx.executor import floor_lot  # 整手收敛单点（勿在他处重写）
 from src.quality_pool.config import (
-    INDUSTRY_CAP, LIMIT_PAD, MIN_COMMISSION, FEE_COMMISSION, SLIPPAGE_SPREAD, TOP_N,
+    LIMIT_PAD, MIN_COMMISSION, FEE_COMMISSION, SLIPPAGE_SPREAD, TOP_N,
 )
+from src.quality_pool.screener import industry_buy_block_reason
 
 SELL_TAX_NOTE = ""  # 台账不记费用；滑点/佣金只用于资金可行性检查（规格三节）
 
@@ -108,14 +109,13 @@ def _sellable_qty(code: str, snap: ExecSnapshot) -> int:
 
 
 def industry_buy_block(code: str, held, industries: Optional[dict]) -> Optional[str]:
+    """执行核对的行业闸门：规则单点在 screener.industry_buy_block_reason。
+
+    industries 为 None（无名单的退出重试轮）或已持有（不重复买）不拦。
+    """
     if industries is None or code in held:
         return None
-    key = industries.get(code)
-    if not key or any(not industries.get(c) for c in held):
-        return 'industry_unknown'
-    if sum(industries[c] == key for c in held) >= INDUSTRY_CAP:
-        return 'industry_cap'
-    return None
+    return industry_buy_block_reason(industries.get(code), held, industries)
 
 
 def plan_exit_retry(exit_queue: Dict[str, str], snap: ExecSnapshot) -> ExecPlan:
