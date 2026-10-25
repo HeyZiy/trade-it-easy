@@ -13,18 +13,23 @@
 - 探针C（近期确认）：ret21 = C[T-1]/C[T-22]-1；blocked = ret21<=-10%。
 - 探针D（高点约束）：dd120 = C[T-1]/max(C[T-120..T-1])-1；blocked = dd120<=-20%。
   C/D沿用行业上限探针模板：blocked候选 vs allowed（全体ranked成员与实际
-  selected买入两层）的前瞻收益对比；v4_1_2不顺延补位，被挡即空仓，故同时
+  selected目标入选（含旧仓）两层）的前瞻收益对比；v4_1_2不顺延补位，故同时
   对照现金（前瞻收益符号）；报selected被挡数量与受影响期数、60日内跌幅
   <=-15%发生率、分年拆分。
 - 统计：以期为单位，naive t 与 Newey-West t（lag=期限//20）；不宣称窗口独立。
 - 边界：收盘近似（无开盘/涨跌停/费用）；排名层观察而非组合模拟；停牌缺口为
   NaN剔除不填零；前瞻窗口止于缓存末端标记censored。
+- 2026-10-24追加E：平台原始12-2动量<=0的新仓资格过滤；旧仓不动，不扫阈值。
+  原始members统计覆盖率，已有member_signals提供20/40/60日收益，缺行情保留未知。
+  selected & ~kept只代表原策略的新仓入选，不保证实际成交，也不模拟补位演化。
 运行：.conda\\python.exe research/studies/quality_momentum/internal/analyze_momentum_variants_probe.py
+仅追加E（复用已有输出，不重算B/C/D）：上述命令加 --positive-entry-only
 """
 from __future__ import annotations
 
 import json
 import math
+import sys
 from pathlib import Path
 
 import numpy as np
@@ -118,6 +123,84 @@ def yearly(diffs, label):
             rows.append(dict(probe=label, horizon=h, year=int(year), periods=int(len(v)),
                              mean=float(v.mean()), positive=int(v.gt(0).sum())))
     return pd.DataFrame(rows)
+
+
+def positive_entry_probe(members, signals):
+    """使用平台分数判断资格；局部现金对照不冒充完整账户反事实。"""
+    keys = ['signal_day', 'code']
+    require(not members.duplicated(keys).any(), 'E原始成员重复')
+    require(not signals.duplicated(keys).any(), 'E前瞻数据重复')
+    data = members[members['rank'].notna()].copy()
+    data = data.merge(signals[keys + ['momentum_jq'] + [f'r{h}' for h in HORIZONS]],
+                      on=keys, how='left', validate='one_to_one')
+    scores = pd.to_numeric(data.momentum, errors='raise')
+    require(np.isfinite(scores).all(), 'E可排名成员的平台动量缺失或非有限')
+    matched = data.momentum_jq.notna()
+    require(np.isclose(scores[matched], data.loc[matched, 'momentum_jq'],
+                       rtol=0, atol=1e-12).all(), 'E前瞻缓存与原始平台动量不匹配')
+    data['blocked'] = scores.le(0)
+    data['new_entry'] = data.selected & ~data.kept
+    blocked = data[data.new_entry & data.blocked].copy()
+    differences = {}
+    for h in HORIZONS:
+        pairs = []
+        for day, frame in data.groupby('signal_day'):
+            allowed_ret = frame.loc[~frame.blocked, f'r{h}'].mean()
+            blocked_ret = frame.loc[frame.blocked, f'r{h}'].mean()
+            if np.isfinite(allowed_ret) and np.isfinite(blocked_ret):
+                pairs.append((day, allowed_ret - blocked_ret))
+        differences[h] = pd.Series(dict(pairs), dtype=float)
+
+    horizons = {}
+    for h in HORIZONS:
+        values = blocked[f'r{h}'].dropna()
+        # 同期原目标中的被挡新仓每只预算1/6，其余目标和价格路径冻结。
+        # 一期若有任何被挡新仓缺收益，整期局部差值保留未知。
+        local_diffs = []
+        for _, frame in blocked.groupby('signal_day'):
+            returns = frame[f'r{h}']
+            if returns.notna().all():
+                local_diffs.append(float(-returns.sum() / TOP_N))
+        horizons[str(h)] = dict(
+            observed=int(len(values)), missing_or_censored=int(len(blocked) - len(values)),
+            mean=float(values.mean()), median=float(values.median()),
+            positive=int(values.gt(0).sum()), negative=int(values.lt(0).sum()),
+            local_affected_periods=int(len(local_diffs)),
+            local_cash_minus_original_mean=float(np.mean(local_diffs)) if local_diffs else None)
+
+    yearly_rows = []
+    for year, frame in data.groupby(data.signal_day.dt.year):
+        new = frame[frame.new_entry]
+        denied = new[new.blocked]
+        yearly_rows.append(dict(year=int(year), new_entries=int(len(new)),
+                                blocked=int(len(denied)),
+                                affected_periods=int(denied.signal_day.nunique())))
+    records = blocked[keys + ['rank', 'momentum'] + [f'r{h}' for h in HORIZONS]].copy()
+    records['signal_day'] = records.signal_day.dt.strftime('%Y-%m-%d')
+    return clean(dict(
+        date='2026-10-24', rule='new entry momentum > 0; keep existing holdings unchanged',
+        source='v4_1_2 members + existing forward-price probe; not v5 account replay',
+        ranked_rows=int(len(data)), signal_days=int(data.signal_day.nunique()),
+        nonpositive_rows=int(data.blocked.sum()),
+        new_entry_rows=int(data.new_entry.sum()), blocked_new_entries=int(len(blocked)),
+        affected_periods=int(blocked.signal_day.nunique()),
+        new_entries_without_forward20=int(data.loc[data.new_entry, 'r20'].isna().sum()),
+        kept_selected_nonpositive=int((data.kept & data.selected & data.blocked).sum()),
+        allowed_minus_blocked=summarize(differences), horizons=horizons,
+        yearly=yearly_rows, blocked_entries=records.to_dict('records')))
+
+
+def append_positive_entry_probe():
+    """只更新原探针的汇总与报告，不新增一组输出文件。"""
+    members = pd.read_csv(MEMBERS, parse_dates=['signal_day'])
+    signals = pd.read_csv(OUT / 'member_signals.csv', parse_dates=['signal_day'])
+    summary_path = OUT / 'summary.json'
+    summary = json.loads(summary_path.read_text(encoding='utf-8'))
+    summary['probe_e'] = positive_entry_probe(members, signals)
+    summary_path.write_text(json.dumps(summary, ensure_ascii=False, indent=2,
+                                       allow_nan=False), encoding='utf-8')
+    write_report(summary)
+    print('[E]', json.dumps(summary['probe_e'], ensure_ascii=False), flush=True)
 
 
 def main():
@@ -320,7 +403,7 @@ def main():
         y.to_csv(OUT / f'{label}_yearly.csv', index=False, encoding='utf-8-sig')
         diff_by_h = {h: diffs[diffs.horizon.eq(h)].set_index('signal_day')
                      ['diff_allowed_minus_blocked'] for h in HORIZONS}
-        # 实际selected买入中被挡的名单与对照：同日同层allowed的selected均值
+        # selected为目标入选（包含旧仓），不等于新仓买入或实际成交。
         sel_block_frame = pd.DataFrame(sel_blocked)
         sel_summary = dict(
             selected_rows=int(sig.selected.sum()),
@@ -355,6 +438,7 @@ def main():
     probe_d, _ = run_filter_probe('d_blocked', 'd')
     summary['probe_c'] = probe_c
     summary['probe_d'] = probe_d
+    summary['probe_e'] = positive_entry_probe(members, sig)
     print('[C] 近期确认：', json.dumps(clean(probe_c), ensure_ascii=False, default=str), flush=True)
     print('[D] 高点约束：', json.dumps(clean(probe_d), ensure_ascii=False, default=str), flush=True)
 
@@ -373,12 +457,12 @@ def fmt(d, key):
 
 def sel_line(sel):
     if not sel.get('selected_blocked'):
-        return '被挡的实际买入：0笔。'
-    return (f"被挡的实际买入 {sel['selected_blocked']}/{sel['selected_rows']} 笔，事后 "
+        return '被挡的目标入选记录（含旧仓）：0条。'
+    return (f"被挡的目标入选记录（含旧仓） {sel['selected_blocked']}/{sel['selected_rows']} 条，事后 "
             f"r20 {fmt(sel, 'blocked_selected_r20_mean')} / "
             f"r40 {fmt(sel, 'blocked_selected_r40_mean')} / "
             f"r60 {fmt(sel, 'blocked_selected_r60_mean')}"
-            f"（v4_1_2被挡即空仓，对照现金0收益）。")
+            f"（不等于实际成交；若整条目标预算留空，对照现金0收益）。")
 
 
 def table(measures):
@@ -439,6 +523,54 @@ def write_report(s):
         '60日内跌幅<=−15%发生率：blocked ' + fmt(d['severe60'], 'blocked')
         + f"（n={d['severe60']['blocked_n']}） vs allowed " + fmt(d['severe60'], 'allowed')
         + f"（n={d['severe60']['allowed_n']}）", '',
+    ]
+    if 'probe_e' in s:
+        e = s['probe_e']
+        lines += [
+            '## 探针E：新仓要求12-2动量为正（2026-10-24追加）', '',
+            '**当前不建议增加这个门槛。** 原策略中实际受影响的新仓入选记录很少，'
+            '被挡样本的20/40/60日前瞻均值均为正，未显示优于现金的过滤收益。'
+            '样本小，结论仅为缺乏采用依据，不代表已证明该门槛永远无效。', '',
+            f"原始平台members共有 {e['ranked_rows']} 条可排名记录、{e['signal_days']} 期，"
+            f"其中动量不为正 {e['nonpositive_rows']} 条。原策略新仓入选 "
+            f"{e['new_entry_rows']} 条，被挡 {e['blocked_new_entries']} 条，涉及 "
+            f"{e['affected_periods']} 期。这里新仓为 selected & ~kept，不等于实际成交。"
+            f"所有新仓中20日前瞻缺行情或截断 {e['new_entries_without_forward20']} 条；"
+            '不把缺失样本当作零收益。', '',
+            '| 前瞻期限 | 被挡样本有效/缺失 | 被挡均值 | 上涨/下跌 | 受影响期现金替代的局部差值均值 |',
+            '| --- | ---: | ---: | ---: | ---: |',
+        ]
+        for h in HORIZONS:
+            m = e['horizons'][str(h)]
+            lines.append(f"| {h}日 | {m['observed']}/{m['missing_or_censored']} | "
+                         f"{fmt(m, 'mean')} | {m['positive']}/{m['negative']} | "
+                         f"{fmt(m, 'local_cash_minus_original_mean')} |")
+        lines += [
+            '', '局部差值只把当期被挡新仓的1/6预算换为现金，其余目标及路径冻结；'
+            '按受影响期等权，不是全期累计收益，也不包含后续补位、留存、成本与成交变化。', '',
+            '| 信号日 | 代码 | 名次 | 平台动量 | 20日 | 40日 | 60日 |',
+            '| --- | --- | ---: | ---: | ---: | ---: | ---: |',
+        ]
+        for r in e['blocked_entries']:
+            lines.append(f"| {r['signal_day']} | {r['code']} | {int(r['rank'])} | "
+                         f"{fmt(r, 'momentum')} | {fmt(r, 'r20')} | "
+                         f"{fmt(r, 'r40')} | {fmt(r, 'r60')} |")
+        lines += [
+            '', '| 年份 | 原新仓入选 | 被挡新仓 | 受影响期数 |',
+            '| --- | ---: | ---: | ---: |',
+        ]
+        for r in e['yearly']:
+            lines.append(f"| {r['year']} | {r['new_entries']} | {r['blocked']} | {r['affected_periods']} |")
+        lines += [
+            '', '全体池成员层的 allowed − blocked 前瞻收益差：',
+            table(e['allowed_minus_blocked']), '',
+            f"另有 {e['kept_selected_nonpositive']} 条合格旧仓留存记录的动量不为正。"
+            '把门槛加到整个质量池会额外触发旧仓退出，与本次仅限制新买的提案不同。', '',
+            'E使用平台原始momentum判断正负，避免本地日历早期不足253日造成删样。'
+            '前瞻收益沿用B/C/D的缓存与窗口。数据来自v4_1_2而非新v5账户，'
+            '可用于降低实验优先级，不能宣称已完成v5完整账户对照。', '',
+        ]
+    lines += [
         '## 边界', '',
         '收盘近似（无开盘/涨跌停/费用）；排名层观察而非组合模拟；停牌缺口剔除不填零；'
         '前瞻窗口T+1收盘→T+1+h收盘，止于缓存末端；B探针受日历起点2015-06-01限制；'
@@ -449,4 +581,7 @@ def write_report(s):
 
 
 if __name__ == '__main__':
-    main()
+    if '--positive-entry-only' in sys.argv[1:]:
+        append_positive_entry_probe()
+    else:
+        main()

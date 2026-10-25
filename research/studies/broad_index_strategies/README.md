@@ -11,7 +11,6 @@
 | 一级：12只ETF、代表规则横向比较 | [结果](results/level1/summary.md) · [脚本](run_level1.py) |
 | 二级：恒生科技、固定参数组比较 | [结果](results/level2/513180/summary.md) · [脚本](run_level2.py) |
 | 创业板：46%回撤如何形成，与恒生科技同时间比较 | [诊断](results/chi_next_drawdown/summary.md) · [脚本](experiments/chi_next_drawdown.py) |
-| 聚宽：恒生科技三组账户核对 | [运行说明](docs/JOINQUANT.md) · [可粘贴脚本](study_jq.py) |
 
 ## 当前结论
 
@@ -40,13 +39,11 @@ broad_index_strategies/
 ├─ fetch_data.py       数据准备
 ├─ run_level1.py       一级：多标的固定规则
 ├─ run_level2.py       二级：单标的固定参数
-├─ study_jq.py         聚宽：长拿、唐奇安20/10、ATR主规则，分别回测
 ├─ common/             共享账户、信号和体验指标
 ├─ experiments/        网格频率对照、创业板回撤诊断
 ├─ docs/
 │  ├─ FINDINGS.md      当前结论
-│  ├─ METHOD.md        统一口径
-│  └─ JOINQUANT.md     聚宽运行与导出说明
+│  └─ METHOD.md        统一口径
 ├─ results/
 │  ├─ level1/          一级当前结果
 │  ├─ level2/513180/    二级当前结果

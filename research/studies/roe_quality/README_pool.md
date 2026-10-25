@@ -322,5 +322,5 @@ v3a 于2026-10-05起入聚宽模拟盘（代码同pool_rotation_v3a.py，100万�
 
 质量池 + 12-2动量的集中6只版 v4 迁至
 [quality_momentum](../quality_momentum/README.md)。当前完整规则与运行入口见该 README，
-[V3→V4版本差异与回测结果](../quality_momentum/EXPERIMENTS.md)在新目录维护。
+[V3→V4版本差异与回测结果](../quality_momentum/README.md#五影响当前选择的证据)在新目录维护。
 本目录继续保存池质量、容量、v1～v3及离线筛查的历史证据；v3a参考实现及模拟盘协议保留在原处。

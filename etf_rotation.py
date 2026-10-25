@@ -48,8 +48,7 @@ from src.trading_calendar import is_trading_day
 setup_env()
 
 from src.etf.rotation import (                    # noqa: E402
-    ACCOUNT, LEDGER_PATH, SCORE_HINT, RotationOrder, plan_rotation,
-    rotation_snapshot,
+    ACCOUNT, LEDGER_PATH, RotationOrder, plan_rotation, rotation_snapshot,
 )
 from src.task_io import notify, save_report       # noqa: E402
 from src.trade_ledger import (                    # noqa: E402
@@ -135,14 +134,12 @@ def run(dry_run: bool = False, trade_date: Optional[str] = None) -> str:
         "",
         "## 决策口径",
         "",
-        f"- 决策时点：策略按 {SCORE_HINT} 现价决策（研究线口径，cron 对齐）；"
-        f"本次实时价缺失 {diag['realtime_missing']}/{diag['n']} 只，回退最新收盘",
         f"- 数据基准日：上一交易日 {diag.get('prev_trading_day') or '—'}；"
         f"池内可用 {diag['n']}/{diag['pool']} 只，合格候选 {diag['eligible']} 只",
-        "",
-        "## 今日截面（15 只池）",
-        "",
     ]
+    if diag["realtime_missing"]:
+        lines.append(f"- 实时价缺失 {diag['realtime_missing']}/{diag['n']} 只，回退最新收盘")
+    lines += ["", "## 今日截面（15 只池）", ""]
     lines += _cross_section_table(rows)
     lines += [""]
 
@@ -182,16 +179,6 @@ def run(dry_run: bool = False, trade_date: Optional[str] = None) -> str:
         summary = execution_summary(trades, load_trades(LEDGER_PATH),
                                     dry_run=dry_run, planned=len(orders))
         lines.insert(action_index, summary + "\n")
-        lines.extend([
-            "## 口径", "",
-            "- 单只全仓：合格候选第一名持有全部可用资金；无合格候选持有现金",
-            "- 排名退出：持仓不再是合格候选第一名即换仓；仍是第一名不动数量",
-            "- 不设止损/止盈/分散/再平衡，不按波动率缩放仓位",
-            "- 名义模拟口径：名义期初 100 万，台账不记手续费与滑点；"
-            "买侧按万二佣金、最低 5 元预检可执行股数",
-            "- 价格：新浪日线份额折算前复权（不处理现金分红）；"
-            "规则与已知口径差见 strategy/etf_rotation.md",
-            ""])
         return "\n".join(lines)
 
     if not orders:

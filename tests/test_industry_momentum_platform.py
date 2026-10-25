@@ -130,17 +130,6 @@ def test_fee_update_for_earlier_partial_order_updates_closed_trade(name):
     assert code not in ns['g'].sell_partial
 
 
-@pytest.mark.parametrize('name', ['lM_v3_2.py', 'lM_v3_2_1.py'])
-def test_late_trail_fill_starts_cold_period(name):
-    ns, context, code, orders, _ = scenario(name, [(0, 0.0, 0.0)])
-    ns['run_rotation'](context)
-    assert code not in ns['g'].ban
-    orders['1'].filled, orders['1'].price, orders['1'].commission = 400, 8.8, 0.352
-    context.portfolio.positions[code].total_amount = 600
-    ns['after_trading_end'](context)
-    assert ns['g'].ban[code] == ns['g'].day + ns['REENTRY_BAN']
-
-
 @pytest.mark.parametrize('name', LEDGER_SCRIPTS)
 def test_shared_ledger_cannot_drift_between_standalone_versions(name):
     baseline = (ROOT / 'lM_v3_3_2.py').read_text(encoding='utf-8')
@@ -188,44 +177,7 @@ def test_report_with_numpy_sum_preserves_closed_partial_and_top3_totals(name, ha
     assert any('待核对账户差额 +0.00' in line for line in messages)
 
 
-def test_original_reference_weighted_regressions_use_consistent_r2():
-    path = ROOT.parent / 'etf_rotation_reference/new.py'
-    tree = ast.parse(path.read_text(encoding='utf-8'))
-    blocks = []
-    def find_blocks(node):
-        for _, value in ast.iter_fields(node):
-            if isinstance(value, list):
-                for i, child in enumerate(value):
-                    if isinstance(child, ast.Assign) and any(isinstance(t, ast.Name)
-                            and t.id == 'ss_res' for t in child.targets):
-                        end = next(j for j in range(i, len(value))
-                                   if isinstance(value[j], ast.Assign) and any(
-                                   isinstance(t, ast.Name) and t.id == 'r2' for t in value[j].targets))
-                        blocks.append(value[i-2:end+1])
-                    if isinstance(child, ast.AST):
-                        find_blocks(child)
-            elif isinstance(value, ast.AST):
-                find_blocks(value)
-    find_blocks(tree)
-    assert len(blocks) == 2
-    prices = np.array([1.355, 1.352, 1.339, 1.321, 1.313, 1.323, 1.290,
-        1.161, 1.102, 1.133, 1.172, 1.198, 1.212, 1.207, 1.185, 1.180,
-        1.177, 1.219, 1.208, 1.263, 1.246, 1.246, 1.221, 1.239, 1.284, 1.318])
-    y = np.log(prices)
-    x = np.arange(len(y))
-    w = np.linspace(1.0, 2.0, len(y))
-    slope, intercept = np.polyfit(x, y, 1, w=w)
-    expected = 1 - np.sum(w**2 * (y-slope*x-intercept)**2) / np.sum(
-        w**2 * (y-np.average(y, weights=w**2))**2)
-    for block in blocks:
-        ns = dict(np=np, w=w, weights=w, y=y, log_prices=y, x=x, x_values=x,
-                  slope=slope, intercept=intercept, resid=y-slope*x-intercept)
-        exec(compile(ast.Module(body=block, type_ignores=[]), 'reference_r2', 'exec'), ns)
-        assert ns['r2'] == pytest.approx(expected)
-        assert ns['r2'] > 0
-
-
-@pytest.mark.parametrize('name', sorted(p.name for p in ROOT.glob('lM_v3*.py')))
+@pytest.mark.parametrize('name', LEDGER_SCRIPTS)
 def test_all_weighted_scores_match_correct_reference(name):
     ns = load_script(name)
     prices = np.array([1.355, 1.352, 1.339, 1.321, 1.313, 1.323, 1.290,

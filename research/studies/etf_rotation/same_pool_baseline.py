@@ -170,6 +170,46 @@ def rebalance_task(context):
                 context.portfolio.available_cash))
 
 
+def record_execution_metrics(context, previous_value):
+    """单边换手=(当日买入+卖出成交额)/(2×前次收盘净值)，不含费用。"""
+    turnover = float('nan')
+    exposure = float('nan')
+    try:
+        previous_value = float(previous_value)
+        if not math.isfinite(previous_value) or previous_value <= 0:
+            raise ValueError('前次收盘净值无效')
+        traded = 0.0
+        for trade in get_trades().values():
+            price = float(trade.price)
+            amount = abs(float(trade.amount))
+            if not math.isfinite(price) or price <= 0 or not math.isfinite(amount):
+                raise ValueError('实际成交价格或数量无效')
+            traded += price * amount
+        if not math.isfinite(traded):
+            raise ValueError('实际成交额无效')
+        turnover = traded / (2.0 * previous_value) * 100.0
+    except Exception as error:
+        log.error('[副图换手缺失] %s' % error)
+    try:
+        total = float(context.portfolio.total_value)
+        if not math.isfinite(total) or total <= 0:
+            raise ValueError('账户净值无效')
+        invested = 0.0
+        for position in context.portfolio.positions.values():
+            if position.total_amount <= 0:
+                continue
+            value = float(position.value)
+            if not math.isfinite(value) or value < 0:
+                raise ValueError('实际持仓市值无效')
+            invested += value
+        if not math.isfinite(invested):
+            raise ValueError('实际持仓总市值无效')
+        exposure = invested / total * 100.0
+    except Exception as error:
+        log.error('[副图仓位缺失] %s' % error)
+    record(**{'单边换手%': turnover, '实际仓位%': exposure})
+
+
 def after_market_close(context):
     today = context.current_dt.date()
     if g.last_stats_date == today:
@@ -205,9 +245,9 @@ def after_market_close(context):
     stats['cash_weight_sum'] += (total - invested) / total
     g.total_peak = py.max(g.total_peak, total)
     g.total_drawdown = py.min(g.total_drawdown, total / g.total_peak - 1)
+    record_execution_metrics(context, g.previous_value)
     g.previous_value = total
     g.last_stats_date = today
-    record(**{'收益率%': (total / context.portfolio.starting_cash - 1) * 100})
 
 
 def print_year_stats(year):

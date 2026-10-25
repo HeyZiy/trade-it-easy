@@ -1,5 +1,8 @@
 # 趋势回踩策略（Pullback Trend，底部偏右进场）
 
+> **状态：已退役（2026-10）**。入口脚本已移除，本页保留规则与失效复盘，
+> 不再作为运行策略。研究记录见 [`research/studies/trend/`](../research/studies/trend/README.md)。
+
 > **策略身份**：交易已建立上涨趋势中的健康回踩后续涨。
 >
 > **账户职责**：子账户战术策略，日频扫描、做多、通常持有数天至数周。账户层定位、与行业轮动及 Cycle 研究的边界见 [overview.md](./overview.md)。
@@ -185,7 +188,7 @@
 > ✅ **对应代码：`src/pullback_trend/sell_rules.py`（纯判定核）+ `sell_pipeline.py`（组装与记账执行）
 > + `pullback_sell.py`（入口编排）**。
 > 每交易日 **14:45 尾盘**读名义成交台账推导持仓（`src/trade_ledger`，derive 同形供料，
-> 见 docs/trade_ledger.md），检测卖出信号后**自动记入成交台账**；真实账户按成交
+> 见 [`src/trade_ledger`](../src/trade_ledger/)），检测卖出信号后**自动记入成交台账**；真实账户按成交
 > 报告股数手动执行。
 > 仅对股票持仓（A 股代码前缀白名单）检测卖出信号；ETF/基金/债券等非股票持仓由 ETF 系统管理，不参与。
 

@@ -9,8 +9,8 @@
 - ROE 系（`roe_factor_study.py` / `roe_factor_study_jq.py` / `roe_pool.py` /
   `pool_ic_probe_v1.py`）在 `research/studies/roe_quality/`，
   工作流见该目录 `README_factor_study.md`；
-- 行业动量量价热度（`crowd_factor_study.py`）在
-  `research/studies/industry_momentum/`。
+- 行业动量量价热度研究曾在 `research/studies/industry_momentum/`，结论未进入
+  现行规则，脚本已随该线清理；现行行业动量证据见该目录 README。
 
 **独立扩展**：定价位置 × 经营改善研究在
 [`research/studies/value_revenue/`](../../studies/value_revenue/README.md)，复用本工具的

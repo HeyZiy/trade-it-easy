@@ -23,7 +23,35 @@
 当前名单来自新浪，因此不保证包含已退市品种；历史名称亦只有名单快照。
 Tushare 的基金日线和复权因子有权限要求，本工具不需要它的凭据。
 
-## 读取
+## 腾讯备用快照
+
+东财连接失败时，可用独立入口，不覆盖东财缓存：
+
+```powershell
+.conda/python.exe -m research.tools.etf_data.fetch_tencent --codes 515880 159611 --start-date 2015-10-01 --end-date 2026-09-30 --cache-dir research/studies/etf_rotation/_cache/pool37_tencent_20260930 --direct --allow-day-response --history-floor-file research/tools/etf_data/_cache/etf_securities.csv
+```
+
+`fetch_tencent.py` 分段获取腾讯公开接口的原始OHLC与后复权请求结果，保存每段日期、端点、响应字段及文件SHA256，支持断点重取。备用 `newfqkline` 返回截至终点的最多640条，只有确定覆盖请求起点时才裁去多余早期记录，未覆盖则拒绝截断数据。`--history-floor-file` 只利用已有首根行情日期跳过上市前空请求，不参与选池。
+
+部分ETF的 `hfq` 请求仍返回 `day` 字段；默认拒绝，显式启用 `--allow-day-response` 时保留并记录 `hfq_day_response_rows`，不将其伪装为明确的 `hfqday` 响应。该标记及供应商后复权字段仍需与平台或权益事件验证，不能仅凭请求参数宣称复权已完全正确。缓存命中也遵守该开关。
+
+此接口没有提供成交额，`amount` 保留NaN，不能用于成交额过滤。成交量由手换算为份；`quality=ok` 只表示数值、OHLC范围及活动量检查通过，不表示已验证平台复权等价。腾讯快照不使用原东财 `LocalEtfData` 的来源标记，不能直接混入其缓存。
+
+2026-10-19已获取ETF轮动37只池、73466条日线，全部末日为2026-09-30。核验确认腾讯部分 `hfq` 序列存在加法偏移，非除权日的价格比例也不等同于原始价；该快照仅保留作原始价来源，标记 `usable_for_returns=false`，不能直接用其 `hfq_close` 算收益或评分。
+
+### 乘法复权与聚宽核验
+
+`event_adjustment.py` 读取明确的分红/折算记录构建价格，不按价格跳变猜事件：现金分红以除息前收盘计算乘法因子，公开份额折算登记日在下一交易日作用于交易价格。SDK授权区间可获取精确折算因子时，保留公开比例并使用SDK精确价格乘数与生效日，避免比例舍入和日期错位。
+
+```powershell
+.conda/python.exe -m research.tools.etf_data.event_adjustment --source-cache research/studies/etf_rotation/_cache/pool37_tencent_20260930 --output research/studies/etf_rotation/_cache/pool37_event_adjusted_20260930 --jq-market research/studies/etf_rotation/fit_market.csv --jq-sdk-market research/studies/etf_rotation/_cache/pool37_joinquant_20250711_20260718/market.csv
+```
+
+本次SDK账号只允许2025-07-11至2026-07-18，已合法取得实际交易日2025-07-11至2026-07-17的37只原始/后复权行情共9139行；与已有平台导出3705行重叠，差异仅为旧导出的三位小数舍入。修正后37只均通过该区间核验，日收益差最大约0.000396个百分点。
+
+有效研究快照在 `pool37_event_adjusted_20260930/market.csv`，共73311行：原15只直接保留完整聚宽导出，新22只使用原始价及显式权益事件。`close` 为原始价，`event_close` 为乘法复权价格，因子起点常数不影响区间收益；`source` 明确逐行来源。`equity_events/` 保留事件及出处，manifest保留生效日、精确因子来源和核验误差。新增行业早期历史依据公开事件，逐值同源核验只覆盖SDK授权区间，不声称全十年均通过SDK验证。停牌/缺价仍需下游明确排除，不填旧价。
+
+## 读取东财缓存
 
 ```python
 from research.tools.etf_data.data import LocalEtfData

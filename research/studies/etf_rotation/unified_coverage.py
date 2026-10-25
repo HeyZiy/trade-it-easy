@@ -109,6 +109,30 @@ class EtfRotationStrategy:
             # 利率
             '511090.XSHG',  # 30年国债（久期）
             '511010.XSHG',  # 5年期国债（有久期风险，不是现金）
+
+            # 行业
+            '515170.XSHG',  # 食品饮料ETF
+            '512660.XSHG',  # 军工ETF
+            '512690.XSHG',  # 酒ETF
+            '512400.XSHG',  # 有色ETF（行业股票，不是有色金属期货）
+            '159928.XSHE',  # 消费ETF（主要消费）
+            '515220.XSHG',  # 煤炭ETF
+            '512010.XSHG',  # 医药ETF
+            '515210.XSHG',  # 钢铁ETF
+            '512170.XSHG',  # 医疗ETF
+            '159870.XSHE',  # 化工ETF
+            '512800.XSHG',  # 银行ETF
+            '159996.XSHE',  # 家电ETF
+            '512000.XSHG',  # 券商ETF
+            '512200.XSHG',  # 房地产ETF
+            '512480.XSHG',  # 半导体ETF
+            '159611.XSHE',  # 电力ETF
+            '515880.XSHG',  # 通信ETF
+            '516110.XSHG',  # 汽车ETF
+            '512720.XSHG',  # 计算机ETF
+            '512980.XSHG',  # 传媒ETF
+            '515030.XSHG',  # 新能源车ETF
+            '515790.XSHG',  # 光伏ETF
         ]
         
         # ======== 可选过滤器开关 ========
@@ -352,14 +376,54 @@ class EtfRotationStrategy:
         pass
 
 
+def record_execution_metrics(context, previous_value):
+    """单边换手=(当日买入+卖出成交额)/(2×前次收盘净值)，不含费用。"""
+    turnover = float('nan')
+    exposure = float('nan')
+    try:
+        previous_value = float(previous_value)
+        if not math.isfinite(previous_value) or previous_value <= 0:
+            raise ValueError('前次收盘净值无效')
+        traded = 0.0
+        for trade in get_trades().values():
+            price = float(trade.price)
+            amount = abs(float(trade.amount))
+            if not math.isfinite(price) or price <= 0 or not math.isfinite(amount):
+                raise ValueError('实际成交价格或数量无效')
+            traded += price * amount
+        if not math.isfinite(traded):
+            raise ValueError('实际成交额无效')
+        turnover = traded / (2.0 * previous_value) * 100.0
+    except Exception as error:
+        log.error('[副图换手缺失] %s' % error)
+    try:
+        total = float(context.portfolio.total_value)
+        if not math.isfinite(total) or total <= 0:
+            raise ValueError('账户净值无效')
+        invested = 0.0
+        for position in context.portfolio.positions.values():
+            if position.total_amount <= 0:
+                continue
+            value = float(position.value)
+            if not math.isfinite(value) or value < 0:
+                raise ValueError('实际持仓市值无效')
+            invested += value
+        if not math.isfinite(invested):
+            raise ValueError('实际持仓总市值无效')
+        exposure = invested / total * 100.0
+    except Exception as error:
+        log.error('[副图仓位缺失] %s' % error)
+    record(**{'单边换手%': turnover, '实际仓位%': exposure})
+
+
 # ========================= 调度入口 =========================
 def trade_handler(context):
     g.strategy.execute_trade()
 
 def after_market_close(context):
     total = context.portfolio.total_value
-    ret = (total / context.portfolio.starting_cash - 1) * 100
-    record(**{'收益率%': ret})
+    record_execution_metrics(context, getattr(g, 'stats_last_total_value',
+                                              context.portfolio.starting_cash))
     
     # 确保统计字典已初始化
     if not hasattr(g, 'holding_stats'):
