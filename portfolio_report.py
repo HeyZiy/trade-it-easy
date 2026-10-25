@@ -12,7 +12,6 @@ from src.config import setup_env
 from src.cron_entry import hard_exit
 from src.logging_config import setup_logging
 from src.trading_calendar import get_trading_dates
-from src.trade_ledger.ledger import DEFAULT_LEDGER_PATH
 from src.trade_ledger.closing_prices import ClosingPrices
 from src.trade_ledger.performance import collect_close, load_performance, render_summary
 
@@ -55,9 +54,8 @@ def _collect(path, day, benchmark, feed, dry_run):
 
 
 def run(*, asof=None, dry_run=False, now=None, backfill=False):
-    from src.etf.config import CORE_BASELINE
-    from src.etf.rotation import LEDGER_PATH as ROTATION_LEDGER_PATH
-    from src.quality_pool.config import POOL_LEDGER_PATH
+    from src.sim_accounts import all_accounts
+
     now = now or datetime.now(SHANGHAI)
     latest = closed_date(now)
     target = datetime.strptime(asof, "%Y-%m-%d").date() if asof else latest
@@ -66,19 +64,14 @@ def run(*, asof=None, dry_run=False, now=None, backfill=False):
     if target not in get_trading_dates(target, target):
         raise ValueError("目标日期不是已确认交易日")
     feed = ClosingPrices()
-    accounts = [
-        (DEFAULT_LEDGER_PATH, "ETF共享组合（核心配置＋行业动量）",
-         {"name": "ETF期初权重买入持有（现金零收益，不再平衡）",
-          "weights": {a.code: a.neutral_weight for a in CORE_BASELINE}}),
-        (POOL_LEDGER_PATH, "质量池轮动", {"name": "中证800价格指数", "index": "000906"}),
-        (ROTATION_LEDGER_PATH, "ETF跨资产动量轮动",
-         {"name": "沪深300价格指数", "index": "000300"}),
-    ]
+    accounts = all_accounts()
     sections = [f"# 模拟收盘日报 — {target}", ""]
     notes = []
     errors = 0
     window = _backfill_dates(target) if backfill else []
-    for path, label, benchmark in accounts:
+    for account in accounts:
+        path, label, benchmark = (account.ledger_path, account.label,
+                                  account.benchmark)
         try:
             state = load_performance(path)
             healed, lingering = [], []

@@ -1,6 +1,8 @@
 # -*- coding: utf-8 -*-
 """质量池策略常量 — 数字唯一来源是 strategy/roe_quality_pool.md，改动须同步该文档。"""
 
+from src.sim_accounts import SimAccount
+
 # ── 池与轮转（规格「策略在做什么」「二、怎么选」） ──
 STRATEGY_VERSION = 2
 TOP_N = 6             # 现行质量池 + 12-2 强弱；旧仓只按质量池留存
@@ -42,3 +44,9 @@ EXIT_OUT_OF_POOL = "out_of_pool"          # 附 pool_reason：全部已确认失
 # 财务可见性：报告期有效且披露日不晚于截止日（T−1）
 FINANCIAL_STATEMENT_TYPE_SINGLE = 2   # 合并报表(单季度)
 FINANCIAL_STATEMENT_TYPE_CONSOL = 1   # 合并报表
+
+# ── 模拟账户描述符（收盘成绩等消费方经 src/sim_accounts 枚举）──
+
+SIM_ACCOUNT = SimAccount(
+    ledger_path=POOL_LEDGER_PATH, label="质量池轮动",
+    benchmark={"name": "中证800价格指数", "index": "000906"})
