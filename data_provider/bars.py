@@ -4,18 +4,24 @@
 日线取数（ETF / A股指数）
 ===================================
 
-项目 ETF 与 A股指数日线的唯一取数入口，替代各模块散落的 akshare 直连
+项目 ETF 与 A股指数日线的取数入口，替代各模块散落的 akshare 直连
 （rebalancer / market_gate /
 data_collector / momentum_check 此前各自拼 sh/sz 前缀、各自选接口）。
 
 设计原则：
-- 函数名即类型：get_etf_daily / get_index_daily 两个入口，调用方自己声明要什么，
-  不做"从裸代码推断标的类型"（000 家族天生歧义，推断必然出错）。
+- 函数名即类型：get_etf_daily / get_etf_daily_em / get_index_daily 三个入口，
+  调用方自己声明要什么，不做"从裸代码推断标的类型"（000 家族天生歧义，
+  推断必然出错）。
 - 市场前缀显式：sh/sz 前缀优先；裸码仅按确定规则推断（ETF 码族→市场无歧义；
   指数 399→sz、其余→sh），规则写死在各自函数内，不扩散。
 - 源选择（单源为主；指数三腿是"互斥代码族路由 + 一次网络保底"，不是 failover）：
     ETF(51/52/53/55/56/58/15/16/18) → 新浪 fund_etf_hist_sina（带 amount；
       未复权原始价；份额折算前复权 adjust="qfq"，单点 adjust_series）
+      ——现价与历史比值口径（get_etf_daily）
+    ETF 同码族                      → 东财 fund_etf_hist_em 双线（原始 OHLC+amount
+      与供应商后复权 hfq_ OHLC 同表；失败抛错不回退）——唐奇安通道观察与
+      研究缓存口径（get_etf_daily_em）；两适配器复权口径不可互换，
+      通道观察迁回 qfq 折算属策略决策
     A股指数(000/399)          → 中证官网 csindex（000 权威源）
                                 → 东财 index_zh_a_hist（399 深证/国证不在 csindex）
                                 → 新浪 stock_zh_index_daily（东财不可达时保底；
@@ -100,11 +106,15 @@ def adjust_series(close: pd.Series) -> pd.Series:
     return out
 
 
-def get_etf_research_daily(code: str, end_date: str) -> pd.DataFrame:
-    """研究日线：东财原始 OHLC + 供应商后复权 OHLC，禁止价格跳变猜复权。
+def get_etf_daily_em(code: str, end_date: str) -> pd.DataFrame:
+    """东财双线日线：原始 OHLC + 供应商后复权 OHLC（hfq_ 前缀同表），禁止猜复权。
 
-    价格两条线来自同一供应商；成交额为元，成交量由手转换为份。
-    返回失败时抛错，让构建方保留旧缓存并记录失败，不能回退到猜测复权。
+    与 get_etf_daily（新浪单源）是同一 ETF 日线缝上的第二适配器：本线为
+    供应商后复权口径，消费方是唐奇安通道观察（etf_observe/trend）与研究
+    缓存（research/tools/etf_data）。价格两条线来自同一供应商；成交额为元，
+    成交量由手转换为份。失败抛错（区别于 get_etf_daily 返 None 的
+    fail-soft），让缓存构建方保留旧缓存并记录失败，不回退到猜测复权。
+    两适配器复权口径不可互换；通道观察迁回 qfq 折算属策略决策，需研究背书。
     """
     import akshare as ak
 
@@ -137,7 +147,8 @@ def get_etf_daily(code: str, *, adjust: Optional[str] = None) -> Optional[pd.Dat
     """ETF 日线全历史（新浪 fund_etf_hist_sina 单源，带 amount 成交额）。
 
     统一入口（三路合一）：池分数线（momentum）、observe/台账读侧现价补口
-    都走这里。返回形状唯一：date 列升序，
+    都走这里；供应商后复权 OHLC 口径走第二适配器 get_etf_daily_em（东财
+    双线，唐奇安通道/研究缓存用）。返回形状唯一：date 列升序，
     columns=['date','open','high','low','close','volume','amount']；
     空/失败返回 None；非 ETF 码族拒绝（个股走 DataFetcherManager）。
 

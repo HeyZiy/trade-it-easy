@@ -70,12 +70,12 @@ def cache_is_fresh(path, expected_last):
 
 
 def fetch_one(code, cache, cutoff, refresh=False):
-    from data_provider.bars import get_etf_research_daily
+    from data_provider.bars import get_etf_daily_em
 
     path = cache / "etf_daily" / f"{code}.csv"
     if not refresh and cache_is_fresh(path, cutoff):
         return None
-    df = normalize_bars(get_etf_research_daily(code, cutoff))
+    df = normalize_bars(get_etf_daily_em(code, cutoff))
     if df.empty:
         raise ValueError("行情为空")
     atomic_csv(df, path)

@@ -81,7 +81,7 @@ def _build_week_context() -> WeekContext:
 
 def _fetch_trend_observations() -> dict:
     """逐只观察自身ETF，供应商复权OHLC；失败不替换成原始价或其他ETF。"""
-    from data_provider.bars import get_etf_research_daily
+    from data_provider.bars import get_etf_daily_em
     from src.etf.trend import donchian_observation
 
     now = datetime.now(timezone(timedelta(hours=8))).replace(tzinfo=None)
@@ -90,7 +90,7 @@ def _fetch_trend_observations() -> dict:
         if asset.code == "CASH":
             continue
         try:
-            bars = get_etf_research_daily(asset.code, now.strftime("%Y-%m-%d"))
+            bars = get_etf_daily_em(asset.code, now.strftime("%Y-%m-%d"))
             observations[asset.code] = donchian_observation(bars, now=now)
         except Exception as exc:
             logger.warning("唐奇安观察 %s 不可用: %s", asset.code, exc)

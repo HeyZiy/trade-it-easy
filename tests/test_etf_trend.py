@@ -65,7 +65,7 @@ def test_fetch_failure_is_isolated_and_uses_each_configured_etf(monkeypatch):
             raise RuntimeError("unavailable")
         return history()
 
-    monkeypatch.setattr(provider, "get_etf_research_daily", fetch)
+    monkeypatch.setattr(provider, "get_etf_daily_em", fetch)
     observations = eo._fetch_trend_observations()
     assert observations["563360"]["state"] is None
     assert observations["513180"]["state"] is False
