@@ -1,5 +1,9 @@
 # -*- coding: utf-8 -*-
-"""聚宽日频换手率探针：粘贴整个文件，2016-01-04至2026-09-01，资金100万。
+"""聚宽日频候选探针：粘贴整个文件，2016-01-04至2026-09-01，资金100万。
+
+PROBE='earnings_response' 检验财报后相对行业表现是否持续，以及后续兑现速度。
+PROBE='turnover' 保留原换手率探针。两模式独立输出，不混用历史结果。
+财报模式固定设计见README第八节。以下说明对应原turnover模式：
 
 不下单，空账户曲线不是实验结果。每20交易日盘前按v5质量规则采样，信息截至T-1。
 因子固定为最近20交易日平台turnover_ratio(%)的算术均值，不扫描窗口或阈值。
@@ -23,6 +27,7 @@ import time as _time
 import numpy as np
 import pandas as pd
 
+PROBE = 'turnover'  # 本轮财报反应实验改为 'earnings_response'；其余参数不改。
 ROTATE_EVERY = 20
 TURNOVER_DAYS = 20
 HORIZONS = (20, 40, 60)
@@ -50,6 +55,13 @@ SOURCE_V5_SHA256 = 'f522e494648e1437d35f535e76f31c1ff2508b4deeb43231fa0a2086473b
 
 
 def initialize(context):
+    global OUTPUT_PREFIX
+    if PROBE not in ('turnover', 'earnings_response'):
+        raise _python_builtins.ValueError('Unknown probe mode')
+    OUTPUT_PREFIX = 'quality_momentum_v5_' + PROBE + '_probe'
+    if PROBE == 'earnings_response':
+        initialize_response(context)
+        return
     params = _python_builtins.getattr(context, 'run_params', None)
     if params is not None and _python_builtins.getattr(params, 'frequency', 'day') not in ('day', 'daily'):
         raise _python_builtins.ValueError('请选择每天频率；这是不下单的信号探针')
@@ -187,6 +199,9 @@ def freeze_groups(frame):
 
 
 def on_probe_signal(context):
+    if PROBE == 'earnings_response':
+        on_response_signal(context)
+        return
     today = pd.Timestamp(context.current_dt).normalize()
     if g.last_signal_day == today:
         return
@@ -267,6 +282,9 @@ def quote_at(quotes, day, code):
 
 
 def resolve_snapshot(snapshot, today):
+    if PROBE == 'earnings_response':
+        resolve_response(snapshot, today)
+        return
     frame = snapshot['frame'].copy()
     days = pd.DatetimeIndex(get_trade_days(start_date=snapshot['signal_day'].date(),
                                           end_date=today.date())).normalize()
@@ -392,6 +410,9 @@ def after_trading_end(context):
 
 
 def on_strategy_end(context):
+    if PROBE == 'earnings_response':
+        end_response(context)
+        return
     today = pd.Timestamp(context.current_dt).normalize()
     for snapshot in _python_builtins.list(g.pending):
         resolve_snapshot(snapshot, today)
@@ -440,6 +461,393 @@ for _h in HORIZONS:
     SAMPLE_COLUMNS += ['r%d' % _h, 'status_r%d' % _h, 'exit_date_%d' % _h,
                        'exit_open_%d' % _h, 'exit_paused_%d' % _h]
 SAMPLE_COLUMNS += ['snapshot_error', 'quote_error', 'neutral_error']
+
+
+# 财报反应模式与原换手率模式共用构池、分组、时钟、前瞻报价和HAC工具。
+RESPONSE_MIN_AGE = 20
+RESPONSE_MAX_AGE = 60
+RESPONSE_RECENT = 20
+RESPONSE_TARGET = .05
+RESPONSE_MIN_PEERS = 5
+RESPONSE_SCOPES = ('pool_response', 'pool_momentum', 'strong_response')
+RESPONSE_METRICS = ('return', 'hit5', 'wait5', 'mdd', 'mae')
+RESPONSE_FIELDS = ['response_score', 'response_status', 'response_state', 'response_anchor',
+                   'response_age', 'stock_anchor_close', 'stock_asof_close', 'stock_recent_close',
+                   'industry_gross_post', 'industry_gross_recent', 'excess_log_post',
+                   'excess_log_recent', 'peer_count', 'peer_members', 'reference_start',
+                   'reference_member_count', 'reference_valid_count',
+                   'group_pool_response', 'group_pool_momentum', 'group_strong_response',
+                   'forward_dates', 'forward_opens', 'forward_paused', 'forward_statuses']
+
+
+def initialize_response(context):
+    params = _python_builtins.getattr(context, 'run_params', None)
+    if params is not None and _python_builtins.getattr(params, 'frequency', 'day') not in ('day', 'daily'):
+        raise _python_builtins.ValueError('请选择每天频率')
+    set_option('use_real_price', True)
+    set_option('avoid_future_data', True)
+    set_benchmark(BENCHMARK)
+    log.set_level('order', 'error')
+    g.day, g.last_signal_day, g.last_close_day = 0, None, None
+    g.pending, g.periods, g.started_files = [], [], _python_builtins.set()
+    g.sample_count, g.source_errors, g.industry_errors = 0, 0, 0
+    g.wall_started = _time.time()
+    g.settings = _python_builtins.dict(
+        probe=PROBE, probe_revision='2026-10-26-response-1', source_v5_sha256=SOURCE_V5_SHA256,
+        frequency='day', no_orders=True, pandas_version=pd.__version__, numpy_version=np.__version__,
+        start_date=_python_builtins.str(_python_builtins.getattr(params, 'start_date', '')),
+        end_date=_python_builtins.str(_python_builtins.getattr(params, 'end_date', '')),
+        signal_cutoff='T-1 before_open; every 20 market sessions; no retry off grid',
+        event='latest visible indicator.pubDate, not earnings surprise or announcement timestamp',
+        anchor='close of first market session strictly after pubDate; excludes initial reaction',
+        event_age_min=RESPONSE_MIN_AGE, event_age_max=RESPONSE_MAX_AGE,
+        recent_days=RESPONSE_RECENT, target_return=RESPONSE_TARGET,
+        score='20*min(log(stock_gross/industry_gross)/event_age, recent20_excess_log/20)',
+        industry='sw_l1 members at T-1; fixed equal-weight buy-and-hold reference, excludes self',
+        reference_eligibility='complete positive close and unpaused on common historical window',
+        minimum_other_peers=RESPONSE_MIN_PEERS,
+        grouping='terciles, ties kept, min 5/group; pool response vs momentum on SAME eligible set',
+        strong_definition='highest momentum tercile of original quality pool, then response eligible',
+        primary='20-day hit +5% and restricted wait; high response vs high momentum, same eligible pool',
+        wait_definition='min(first +5% open observation, horizon); unhit=horizon; read with hit rate',
+        path='post-adjusted daily opens T..T+h; no intraday hit/drawdown or actual fill claim',
+        horizons='20;40;60', costs='not modeled; signals only, not full-account returns',
+        missing='keep frozen rows; unknown path is missing, never counted as non-hit',
+        paired='strict complete groups in same sample period, equal period weight',
+        hac='horizon/20; internal missing periods not compressed',
+        roe_min_pct=ROE_MIN, roe_factor_unit=ROE_FACTOR_UNIT, profit_yoy_min_pct=NP_YOY_MIN,
+        pe_max=PE_MAX, pb_max=PB_MAX, vol60_max_pct=VOL60_MAX,
+        momentum_days=MOMENTUM_DAYS, skip_recent_days=SKIP_RECENT_DAYS)
+    _write_settings()
+    run_daily(on_probe_signal, time='before_open')
+    log.info('[财报反应探针] 日频、不下单；先看行业参考覆盖率和完整分组期数。')
+
+
+def response_closes(codes, days):
+    blocks = []
+    for offset in _python_builtins.range(0, _python_builtins.len(codes), 100):
+        chunk = codes[offset:offset + 100]
+        frame = get_price(chunk, start_date=days[0].date(), end_date=days[-1].date(),
+                          fields=['close', 'paused'], frequency='daily', fq='post',
+                          skip_paused=False, panel=False)
+        _require_columns(frame, ('time', 'code', 'close', 'paused'), 'response history')
+        blocks.append(frame)
+    data = pd.concat(blocks, ignore_index=True)
+    data['time'] = pd.to_datetime(data.time).dt.normalize()
+    if (not data.time.isin(days).all() or not data.code.isin(codes).all()
+            or data.duplicated(['time', 'code']).any()):
+        raise PoolDataError('Response history outside requested calendar/code or duplicated')
+    matrices = []
+    for key in ('close', 'paused'):
+        data[key] = pd.to_numeric(data[key], errors='coerce')
+        matrices.append(data.pivot(index='time', columns='code', values=key).reindex(index=days, columns=codes))
+    return matrices
+
+
+def response_features(frame, asof):
+    """只消费T-1已知财报、行业成员和价格；未来收益完全不参与分组。"""
+    frame = frame.copy()
+    for key in RESPONSE_FIELDS:
+        frame[key] = '' if key in ('response_status', 'response_state', 'response_anchor',
+                                  'peer_members', 'reference_start', 'forward_dates',
+                                  'forward_opens', 'forward_paused', 'forward_statuses') else NAN
+    frame['response_status'] = 'report_age_unavailable'
+    days = pd.DatetimeIndex(get_trade_days(end_date=asof.date(), count=RESPONSE_MAX_AGE + 2)).normalize()
+    if _python_builtins.len(days) != RESPONSE_MAX_AGE + 2 or days[-1] != asof:
+        raise PoolDataError('Incomplete response calendar ending at T-1')
+    anchors = {}
+    for code, row in frame.iterrows():
+        pub = pd.to_datetime(row.pub_date, errors='coerce')
+        stat = _report_date(row.stat_date)
+        if pd.isna(pub) or pd.isna(stat) or pub > asof or stat > asof:
+            frame.at[code, 'response_status'] = 'report_not_visible'
+            continue
+        pub = pub.normalize()
+        if pub < days[0]:
+            frame.at[code, 'response_status'] = 'report_too_old'
+            continue
+        after = days[days > pub]
+        age = _python_builtins.len(after) - 1
+        frame.at[code, 'response_age'] = age
+        if age < RESPONSE_MIN_AGE:
+            frame.at[code, 'response_status'] = 'report_too_recent'
+            continue
+        if age > RESPONSE_MAX_AGE:
+            frame.at[code, 'response_status'] = 'report_too_old'
+            continue
+        frame.at[code, 'response_anchor'] = _python_builtins.str(after[0].date())
+        if not row.industry_code:
+            frame.at[code, 'response_status'] = 'industry_unknown'
+            continue
+        anchors[code] = after[0]
+        frame.at[code, 'response_status'] = 'reference_unavailable'
+    memberships = {}
+    for industry in _python_builtins.sorted(_python_builtins.set(frame.loc[_python_builtins.list(anchors), 'industry_code'])):
+        try:
+            members = get_industry_stocks(industry, date=asof.date())
+            memberships[industry] = _python_builtins.sorted(_python_builtins.set(members or []))
+        except _python_builtins.Exception as exc:
+            g.industry_errors += 1
+            log.info('[财报反应探针] 行业参考缺失 %s: %s' % (industry, exc))
+    all_codes = _python_builtins.set(anchors)
+    for members in memberships.values():
+        all_codes.update(members)
+    if not all_codes or not anchors:
+        return freeze_response(frame)
+    try:
+        closes, paused = response_closes(_python_builtins.sorted(all_codes), days)
+    except _python_builtins.Exception as exc:
+        g.source_errors += 1
+        frame.loc[_python_builtins.list(anchors), 'response_status'] = 'history_error: ' + _python_builtins.str(exc)
+        return freeze_response(frame)
+    for industry, members in memberships.items():
+        own_codes = [c for c in anchors if frame.at[c, 'industry_code'] == industry]
+        start = _python_builtins.min([anchors[c] for c in own_codes] + [days[-RESPONSE_RECENT - 1]])
+        historical = closes.loc[start:, members]
+        valid = (historical.notna() & np.isfinite(historical) & historical.gt(0)
+                 & paused.loc[start:, members].eq(0)).all()
+        eligible_peers = _python_builtins.list(valid.index[valid])
+        for code in own_codes:
+            anchor = anchors[code]
+            stock_start = _python_builtins.min(anchor, days[-RESPONSE_RECENT - 1])
+            own = closes.loc[stock_start:, code]
+            frame.at[code, 'reference_start'] = _python_builtins.str(start.date())
+            frame.at[code, 'reference_member_count'] = _python_builtins.len(members)
+            frame.at[code, 'reference_valid_count'] = _python_builtins.len(eligible_peers)
+            if not (own.notna() & np.isfinite(own) & own.gt(0) & paused.loc[stock_start:, code].eq(0)).all():
+                frame.at[code, 'response_status'] = 'stock_history_missing_or_paused'
+                continue
+            peers = [p for p in eligible_peers if p != code]
+            frame.at[code, 'peer_count'] = _python_builtins.len(peers)
+            frame.at[code, 'peer_members'] = ';'.join(peers)
+            if _python_builtins.len(peers) < RESPONSE_MIN_PEERS:
+                frame.at[code, 'response_status'] = 'too_few_peers'
+                continue
+            industry_post = (closes.loc[asof, peers] / closes.loc[anchor, peers]).mean()
+            industry_recent = (closes.loc[asof, peers] / closes.loc[days[-RESPONSE_RECENT - 1], peers]).mean()
+            stock_end = closes.at[asof, code]
+            stock_anchor = closes.at[anchor, code]
+            stock_recent = closes.at[days[-RESPONSE_RECENT - 1], code]
+            post = _math.log(stock_end / stock_anchor / industry_post)
+            recent = _math.log(stock_end / stock_recent / industry_recent)
+            age = frame.at[code, 'response_age']
+            score = RESPONSE_RECENT * _python_builtins.min(post / age, recent / RESPONSE_RECENT)
+            state = ('continuing' if post > 0 and recent > 0 else 'faded' if post > 0 else
+                     'recent_only' if recent > 0 else 'weak')
+            frame.loc[code, ['response_score', 'response_status', 'response_state',
+                             'stock_anchor_close', 'stock_asof_close', 'stock_recent_close',
+                             'industry_gross_post', 'industry_gross_recent',
+                             'excess_log_post', 'excess_log_recent']] = [
+                score, 'ok', state, stock_anchor, stock_end, stock_recent,
+                industry_post, industry_recent, post, recent]
+    return freeze_response(frame)
+
+
+def freeze_response(frame):
+    # 两种排序共用完全相同的可比较候选；原池中不可比较的股票仍保留。
+    eligible = clean(frame.response_score).notna() & clean(frame.momentum).notna()
+    frame['group_pool_response'] = fixed_groups(frame.response_score.where(eligible))
+    frame['group_pool_momentum'] = fixed_groups(frame.momentum.where(eligible))
+    frame['momentum_strong'] = assign_groups(frame.momentum, GROUPS).eq(GROUPS)
+    frame['group_strong_response'] = fixed_groups(frame.response_score.where(eligible & frame.momentum_strong))
+    return frame
+
+
+def on_response_signal(context):
+    today = pd.Timestamp(context.current_dt).normalize()
+    if g.last_signal_day == today:
+        return
+    g.last_signal_day = today
+    g.day += 1
+    if (g.day - 1) % ROTATE_EVERY:
+        return
+    asof = _prev_trade_day(context.current_dt)
+    snapshot = _python_builtins.dict(signal_day=today, asof=asof, sample_day=g.day,
+                                    error='', frame=pd.DataFrame())
+    try:
+        audit = {}
+        pool, closes = build_pool(context, asof, audit=audit)
+        ranked, scores = rank_pool(pool, closes)
+        if pool:
+            codes = _python_builtins.sorted(pool)
+            try:
+                industry = get_industry(codes, date=asof.date()) or {}
+            except _python_builtins.Exception:
+                industry = {}
+                g.industry_errors += 1
+            ranks = {c: i + 1 for i, c in _python_builtins.enumerate(ranked)}
+            rows = []
+            for code in codes:
+                row = _python_builtins.dict(audit[code])
+                row.update(code=code, momentum=scores.get(code, NAN), momentum_rank=ranks.get(code, NAN),
+                           momentum_top6=code in ranked[:6],
+                           industry_code=((industry.get(code) or {}).get('sw_l1') or {}).get('industry_code', ''))
+                rows.append(row)
+            snapshot['frame'] = response_features(pd.DataFrame(rows).set_index('code', drop=False), asof)
+    except _python_builtins.Exception as exc:
+        snapshot['error'] = _python_builtins.str(exc)
+        g.source_errors += 1
+        log.info('[财报反应探针] 保留本期异常、不移动采样时钟: %s' % exc)
+    g.pending.append(snapshot)
+    g.sample_count += 1
+    log.info('[财报反应探针] 第%d期 %s 池=%d 用时%.1fs' % (
+        g.sample_count, today.date(), _python_builtins.len(snapshot['frame']), _time.time() - g.wall_started))
+
+
+def response_path_metrics(prices, statuses, horizon):
+    """固定期限完整日开盘路径；未达标与未知严格区分。"""
+    result = {key: NAN for key in ('hit5', 'wait5', 'mdd', 'mae')}
+    if _python_builtins.len(prices) <= horizon:
+        return result, 'censored'
+    if _python_builtins.any(s != 'ok' for s in statuses[:horizon + 1]):
+        return result, 'path_unknown'
+    values = np.asarray(prices[:horizon + 1], dtype=_python_builtins.float)
+    if not np.isfinite(values).all() or (values <= 0).any():
+        return result, 'path_unknown'
+    gross = values / values[0]
+    hits = np.flatnonzero(gross[1:] >= 1 + RESPONSE_TARGET)
+    wait = _python_builtins.int(hits[0] + 1) if _python_builtins.len(hits) else horizon
+    result.update(hit5=_python_builtins.float(_python_builtins.len(hits) > 0), wait5=wait,
+                  mdd=_python_builtins.float((gross / np.maximum.accumulate(gross) - 1).min()),
+                  mae=_python_builtins.float((gross - 1).min()))
+    return result, 'ok'
+
+
+def resolve_response(snapshot, today):
+    frame = snapshot['frame'].copy()
+    days = pd.DatetimeIndex(get_trade_days(start_date=snapshot['signal_day'].date(),
+                                          end_date=today.date())).normalize()[:_python_builtins.max(HORIZONS) + 1]
+    quotes, quote_error = pd.DataFrame(), ''
+    if not frame.empty:
+        try:
+            quotes = forward_quotes(_python_builtins.list(frame.code), days[0], days[-1])
+        except _python_builtins.Exception as exc:
+            quote_error = _python_builtins.str(exc)
+            g.source_errors += 1
+    for h in HORIZONS:
+        mature = _python_builtins.len(days) > h
+        snapshot['status_%d' % h] = ('censored' if not mature else 'snapshot_error' if snapshot['error'] else
+                                    'quote_error' if quote_error else 'mature')
+        for key in ('r', 'hit5_', 'wait5_', 'mdd_', 'mae_', 'exit_open_'):
+            frame[key + _python_builtins.str(h)] = NAN
+        frame['status_r%d' % h] = 'censored' if not mature else 'quote_error'
+        frame['path_status_%d' % h] = 'censored' if not mature else 'quote_error'
+        frame['exit_date_%d' % h] = _python_builtins.str(days[h].date()) if mature else ''
+    frame['entry_open'] = NAN
+    if not frame.empty and not quote_error:
+        for code in frame.index:
+            observations = [quote_at(quotes, day, code) for day in days]
+            prices, paused, states = _python_builtins.zip(*observations)
+            frame.at[code, 'entry_open'] = prices[0]
+            frame.at[code, 'forward_dates'] = ';'.join(_python_builtins.str(d.date()) for d in days)
+            for field, values in [('forward_opens', prices), ('forward_paused', paused), ('forward_statuses', states)]:
+                frame.at[code, field] = ';'.join(_python_builtins.str(v) for v in values)
+            for h in HORIZONS:
+                if _python_builtins.len(days) <= h:
+                    continue
+                frame.at[code, 'exit_open_%d' % h] = prices[h]
+                state = ('entry_' + states[0] if states[0] != 'ok' else
+                         'exit_' + states[h] if states[h] != 'ok' else 'ok')
+                frame.at[code, 'status_r%d' % h] = state
+                if state == 'ok':
+                    frame.at[code, 'r%d' % h] = prices[h] / prices[0] - 1
+                metrics, status = response_path_metrics(prices, states, h)
+                frame.at[code, 'path_status_%d' % h] = status
+                for key, value in metrics.items():
+                    frame.at[code, key + '_%d' % h] = value
+    if frame.empty:
+        frame = pd.DataFrame([_python_builtins.dict(code='')])
+    frame['signal_day'], frame['asof'] = _python_builtins.str(snapshot['signal_day'].date()), _python_builtins.str(snapshot['asof'].date())
+    frame['snapshot_error'], frame['quote_error'] = snapshot['error'], quote_error
+    fields = ['signal_day', 'asof', 'code', 'stat_date', 'pub_date', 'industry_code',
+              'roe_ttm_pct', 'np_yoy_pct', 'pe_ttm', 'pb', 'vol60', 'momentum',
+              'momentum_rank', 'momentum_top6', 'momentum_strong', 'entry_open'] + RESPONSE_FIELDS
+    for h in HORIZONS:
+        fields += ['r%d' % h, 'status_r%d' % h, 'path_status_%d' % h,
+                   'exit_date_%d' % h, 'exit_open_%d' % h]
+        fields += [key + '_%d' % h for key in RESPONSE_METRICS if key != 'return']
+    _append_csv('samples', frame.reindex(columns=fields + ['snapshot_error', 'quote_error']))
+    rows = response_periods(snapshot, frame)
+    g.periods.extend(rows)
+    _append_csv('periods', pd.DataFrame(rows))
+
+
+def response_periods(snapshot, frame):
+    rows = []
+    for h in HORIZONS:
+        for metric in RESPONSE_METRICS:
+            column = 'r%d' % h if metric == 'return' else metric + '_%d' % h
+            comparisons = {}
+            for scope in RESPONSE_SCOPES:
+                for group, label in _python_builtins.enumerate(('low', 'mid', 'high'), 1):
+                    own = frame[frame['group_' + scope].eq(group)] if 'group_' + scope in frame else pd.DataFrame()
+                    values = clean(own[column]) if not own.empty else pd.Series(dtype=_python_builtins.float)
+                    known = values.dropna()
+                    row = _python_builtins.dict(
+                        signal_day=_python_builtins.str(snapshot['signal_day'].date()),
+                        asof=_python_builtins.str(snapshot['asof'].date()), horizon=h, metric=metric,
+                        scope=scope, group=label, window_status=snapshot['status_%d' % h],
+                        n=_python_builtins.len(own), observed=_python_builtins.len(known),
+                        coverage=_python_builtins.len(known) / _python_builtins.len(own) if not own.empty else NAN,
+                        value=_python_builtins.float(values.mean()) if not own.empty and values.notna().all() else NAN,
+                        available=_python_builtins.float(known.mean()) if not known.empty else NAN,
+                        snapshot_error=snapshot['error'])
+                    comparisons[(scope, label)] = row
+                    rows.append(row)
+                rows.append(response_difference(comparisons[(scope, 'high')], comparisons[(scope, 'low')],
+                                                scope, 'high_minus_low'))
+            rows.append(response_difference(comparisons[('pool_response', 'high')],
+                                            comparisons[('pool_momentum', 'high')],
+                                            'response_vs_momentum', 'high_minus_high'))
+    return rows
+
+
+def response_difference(left, right, scope, label):
+    row = _python_builtins.dict(left)
+    row.update(scope=scope, group=label, n=left['n'] + right['n'],
+               observed=left['observed'] + right['observed'],
+               coverage=_python_builtins.min(left['coverage'], right['coverage'])
+               if np.isfinite(left['coverage']) and np.isfinite(right['coverage']) else NAN,
+               value=left['value'] - right['value'], available=left['available'] - right['available'])
+    return row
+
+
+def response_summary(periods):
+    periods = periods.copy()
+    periods['signal_day'] = pd.to_datetime(periods.signal_day)
+    windows = [('full', periods), ('2020_onward', periods[periods.signal_day.dt.year.ge(2020)])]
+    windows += [(_python_builtins.str(year), block) for year, block in periods.groupby(periods.signal_day.dt.year)]
+    rows = []
+    for window, block in windows:
+        for (scope, h, group, metric), subset in block.groupby(['scope', 'horizon', 'group', 'metric']):
+            mature = subset.sort_values('signal_day')
+            mature = mature[mature.window_status.ne('censored')]
+            stats = summarize_ic(mature.value, _python_builtins.int(h // ROTATE_EVERY))
+            rows.append(_python_builtins.dict(
+                window=window, scope=scope, horizon=h, group=group, metric=metric,
+                periods=_python_builtins.len(subset), censored=_python_builtins.int(subset.window_status.eq('censored').sum()),
+                valid_periods=stats['n'], mean_value=stats['mean'], positive_period_share=stats['positive_fraction'],
+                t_iid=stats['t_iid'], t_hac=stats['t_hac'], available_mean=mature.available.mean(),
+                coverage_mean=mature.coverage.mean(), members_mean=mature.n.mean()))
+    return pd.DataFrame(rows)
+
+
+def end_response(context):
+    today = pd.Timestamp(context.current_dt).normalize()
+    for snapshot in _python_builtins.list(g.pending):
+        resolve_snapshot(snapshot, today)
+    g.pending.clear()
+    if g.periods:
+        summary = response_summary(pd.DataFrame(g.periods))
+        write_file(OUTPUT_PREFIX + '_summary.csv', summary.to_csv(index=False), append=False)
+        main = summary[(summary.window == 'full') & (summary.scope == 'response_vs_momentum')]
+        for row in main.itertuples():
+            log.info('[财报反应汇总] %d日 %s 新排序-旧排序=%s 完整配对=%d' % (
+                row.horizon, row.metric, row.mean_value, row.valid_periods))
+    g.settings.update(sample_count=g.sample_count, source_errors=g.source_errors,
+                      industry_errors=g.industry_errors, elapsed_seconds=_time.time() - g.wall_started)
+    _write_settings()
+    log.info('[财报反应结束] 下载4份CSV；检查覆盖率，再判断速度、收益和风险；尚无账户结论。')
 
 
 class PoolDataError(_python_builtins.Exception):

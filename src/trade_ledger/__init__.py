@@ -12,7 +12,7 @@
 - snapshot_with_prices：读侧 + 现价装配（prices.py），供敞口/再平衡/轮动入口，
   derive 本体保持零 I/O。
 
-口径决策见 docs/trade_ledger.md：单池名义期初、全百分比呈现、无资金流条目。
+口径：单池名义期初、全百分比呈现、无资金流条目。
 """
 
 from src.trade_ledger.batch import (

@@ -18,7 +18,7 @@ lark-oapi>=1.0.0             # 飞书API
 
 # 数据处理
 pandas>=2.0.0               # 数据分析
-numpy>=1.24.0               # 数值计算
+numpy>=1.24.0,<2.5          # 数值计算；上界=AmazingData(TGW) 依赖 numba<=2.4，2.5 会断 import
 json-repair>=0.55.1         # JSON 修复
 pydantic>=2.0.0             # 数据验证和设置管理
 

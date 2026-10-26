@@ -267,3 +267,202 @@ def test_standalone_pool_and_statistics_match_authoritative_sources(world):
             if isinstance(node, (ast.FunctionDef, ast.ClassDef)) and node.name in names:
                 assert ast.dump(probe_nodes[node.name]) == ast.dump(node), node.name
     assert module.SOURCE_V5_SHA256 == hashlib.sha256((BASE / 'pool_rotation_v5.py').read_bytes()).hexdigest()
+
+
+def response_probe(world):
+    stub, module, codes, cal = probe(world)
+    module.PROBE = 'earnings_response'
+    stub.date_tables['indicator']['statDate'] = '2024-09-30'
+    stub.date_tables['indicator']['pubDate'] = str(cal[220].date())
+    stub.reference_calls, stub.response_history_calls = [], []
+    original_prices = module.get_price
+
+    def prices(securities, start_date, end_date, fields, frequency, fq, skip_paused, panel):
+        if fields == ['open', 'paused']:
+            return original_prices(securities, start_date, end_date, fields, frequency, fq, skip_paused, panel)
+        assert fields == ['close', 'paused'] and fq == 'post' and not skip_paused and not panel
+        start, end = pd.Timestamp(start_date), pd.Timestamp(end_date)
+        assert end < stub.today and end == cal[cal < stub.today][-1]
+        stub.response_history_calls.append((start, end, tuple(securities)))
+        return pd.DataFrame([dict(time=d, code=c, close=stub.closes[c].at[d],
+                                   paused=int((d, c) in stub.paused_endpoints))
+                             for c in securities for d in cal[(cal >= start) & (cal <= end)]])
+
+    def industry_stocks(industry, date):
+        assert pd.Timestamp(date) < stub.today
+        stub.reference_calls.append((industry, date))
+        return [c for c in codes if 'industry_%d' % (int(c[3:6]) % 3) == industry]
+
+    module.get_price, module.get_industry_stocks = prices, industry_stocks
+    stub.scheduled.clear()
+    stub.exports.clear()  # 此辅助桩此前初始化过换手模式；两次运行的输出独立。
+    stub.initialize()
+    return stub, module, codes, cal
+
+
+def test_response_real_callbacks_freeze_t1_groups_and_export_auditable_paths(world):
+    stub, module, codes, cal = response_probe(world)
+    run(stub, module, cal[270:271])
+    snapshot = stub.g.pending[0]
+    assert snapshot['error'] == '', snapshot['error']
+    frozen = snapshot['frame'].copy()
+    assert frozen.response_status.eq('ok').all()
+    assert frozen.response_anchor.eq(str(cal[221].date())).all()
+    assert frozen.response_age.eq(48).all()
+    assert frozen.group_pool_response.notna().all()
+    assert frozen.group_pool_momentum.notna().all()
+    assert not stub.turnover_calls and not stub.quote_calls and not stub.orders
+    # 冻结后变动未来报价，不得重新用未来路径分组。
+    code = codes[-1]
+    stub.closes[code].loc[cal[275]:] *= 1.08
+    run(stub, module, cal[271:336])
+    module.on_strategy_end(stub.ctx)
+    samples = exported(stub, module, 'samples')
+    first = samples[samples.signal_day.eq(str(cal[270].date()))].set_index('code')
+    assert not samples.duplicated(['signal_day', 'code']).any()
+    assert first.loc[code, 'group_pool_response'] == frozen.loc[code, 'group_pool_response']
+    assert first.loc[code, 'hit5_20'] == 1 and first.loc[code, 'wait5_20'] == 5
+    assert len(first.loc[code, 'forward_opens'].split(';')) == 61
+    assert first.loc[code, 'r60'] == pytest.approx(stub.closes[code].at[cal[330]] / stub.closes[code].at[cal[270]] - 1)
+    assert samples[samples.signal_day.eq(str(cal[330].date()))].path_status_20.eq('censored').all()
+    assert len(stub.exports) == 4 and not stub.orders
+    periods = exported(stub, module, 'periods')
+    summary = exported(stub, module, 'summary')
+    paired = periods[(periods.signal_day.eq(str(cal[270].date()))) & (periods.horizon == 20) &
+                     (periods.metric == 'hit5')].set_index(['scope', 'group'])
+    assert paired.loc[('response_vs_momentum', 'high_minus_high'), 'value'] == pytest.approx(
+        paired.loc[('pool_response', 'high'), 'value'] - paired.loc[('pool_momentum', 'high'), 'value'])
+    assert set(summary.metric) == set(module.RESPONSE_METRICS)
+    settings = exported(stub, module, 'settings').set_index('setting').value
+    assert settings['probe'] == 'earnings_response' and int(settings['source_errors']) == 0
+
+
+def test_response_score_excludes_self_and_detects_fading_after_report(world):
+    stub, module, codes, cal = response_probe(world)
+    run(stub, module, cal[270:271])
+    frame = stub.g.pending[0]['frame'].copy()
+    for code in codes:
+        stub.closes[code][:] = 10.
+    code = codes[0]
+    stub.closes[code].loc[cal[249]:] = 12.
+    stub.closes[code].loc[cal[269]:] = 11.
+    frame = module.response_features(frame, cal[269])
+    row = frame.loc[code]
+    assert code not in row.peer_members.split(';') and row.peer_count == 19
+    assert row.industry_gross_post == 1 and row.industry_gross_recent == 1
+    assert row.excess_log_post == pytest.approx(np.log(1.1))
+    assert row.excess_log_recent == pytest.approx(np.log(11 / 12))
+    assert row.response_state == 'faded'
+    assert row.response_score == pytest.approx(np.log(11 / 12))
+    assert all(pd.Timestamp(date) == cal[269] for _, date in stub.reference_calls)
+
+
+def test_response_report_visibility_age_and_missing_industry_preserve_original_candidates(world):
+    stub, module, codes, cal = response_probe(world)
+    run(stub, module, cal[270:271])
+    original = stub.g.pending[0]['frame'].copy()
+    original.loc[codes[0], 'pub_date'] = str(cal[270].date())
+    original.loc[codes[1], 'pub_date'] = str(cal[260].date())
+    original.loc[codes[2], 'pub_date'] = str(cal[190].date())
+    original.loc[codes[3], 'industry_code'] = ''
+    original.loc[codes[4], 'momentum'] = np.nan
+    frozen = module.response_features(original, cal[269])
+    assert len(frozen) == len(original)
+    assert frozen.loc[codes[0], 'response_status'] == 'report_not_visible'
+    assert frozen.loc[codes[1], 'response_status'] == 'report_too_recent'
+    assert frozen.loc[codes[2], 'response_status'] == 'report_too_old'
+    assert frozen.loc[codes[3], 'response_status'] == 'industry_unknown'
+    eligible_new = frozen.group_pool_response.notna()
+    eligible_old = frozen.group_pool_momentum.notna()
+    pd.testing.assert_series_equal(eligible_new, eligible_old, check_names=False)
+    assert not eligible_new.loc[codes[:5]].any()
+
+
+def test_response_missing_peer_history_and_industry_errors_are_not_filled(world):
+    stub, module, codes, cal = response_probe(world)
+    run(stub, module, cal[270:271])
+    original = stub.g.pending[0]['frame'].copy()
+    code = codes[0]
+    stub.closes[code].loc[cal[245]] = np.nan
+    frame = module.response_features(original, cal[269])
+    assert frame.loc[code, 'response_status'] == 'stock_history_missing_or_paused'
+    assert pd.isna(frame.loc[code, 'response_score'])
+    # 同业参考只使用T-1已经可见的完整历史，缺报价成员不伪造为平盘。
+    assert code not in frame.loc[codes[3], 'peer_members'].split(';')
+    module.get_industry_stocks = lambda *a, **kw: (_ for _ in ()).throw(RuntimeError('industry down'))
+    frame = module.response_features(original, cal[269])
+    assert len(frame) == len(original) and frame.response_score.isna().all()
+    assert stub.g.industry_errors == 3
+
+
+def test_response_rejects_future_history_but_retains_pool_rows(world):
+    stub, module, codes, cal = response_probe(world)
+    run(stub, module, cal[270:271])
+    original = stub.g.pending[0]['frame'].copy()
+    regular = module.get_price
+    def future(*a, **kw):
+        result = regular(*a, **kw)
+        result.loc[0, 'time'] = cal[270]
+        return result
+    module.get_price = future
+    frame = module.response_features(original, cal[269])
+    assert len(frame) == len(codes) and frame.response_score.isna().all()
+    assert frame.response_status.str.startswith('history_error').all()
+    assert stub.g.source_errors == 1
+
+
+def test_response_wait_does_not_discard_non_hits_or_call_unknown_a_failure(world):
+    _, module, _, _ = response_probe(world)
+    metrics, status = module.response_path_metrics([100., 110., 100., 105.], ['ok'] * 4, 3)
+    assert status == 'ok' and metrics['hit5'] == 1 and metrics['wait5'] == 1
+    assert metrics['mdd'] == pytest.approx(100 / 110 - 1) and metrics['mae'] == 0
+    metrics, status = module.response_path_metrics([100., 101., 99., 102.], ['ok'] * 4, 3)
+    assert metrics['hit5'] == 0 and metrics['wait5'] == 3
+    metrics, status = module.response_path_metrics([100., 101., 99., 105.], ['ok'] * 4, 3)
+    assert metrics['hit5'] == 1 and metrics['wait5'] == 3
+    metrics, status = module.response_path_metrics([100., 110., 100., 105.], ['ok', 'ok', 'paused', 'ok'], 3)
+    assert status == 'path_unknown' and all(pd.isna(v) for v in metrics.values())
+    metrics, status = module.response_path_metrics([100., 110.], ['ok'] * 2, 3)
+    assert status == 'censored' and all(pd.isna(v) for v in metrics.values())
+
+
+def test_response_missing_interior_price_keeps_endpoint_return_and_paired_path_missing(world):
+    stub, module, _, cal = response_probe(world)
+    run(stub, module, cal[270:271])
+    frozen = stub.g.pending[0]['frame']
+    code = frozen[frozen.group_pool_response.eq(3)].index[0]
+    stub.paused_endpoints.add((cal[280], code))
+    run(stub, module, cal[271:291])
+    module.on_strategy_end(stub.ctx)
+    first_day = str(cal[270].date())
+    samples = exported(stub, module, 'samples')
+    row = samples[samples.signal_day.eq(first_day)].set_index('code').loc[code]
+    assert row.status_r20 == 'ok' and pd.notna(row.r20)
+    assert row.path_status_20 == 'path_unknown' and pd.isna(row.hit5_20)
+    periods = exported(stub, module, 'periods')
+    paired = periods[(periods.signal_day.eq(first_day)) & (periods.horizon == 20) &
+                     (periods.scope == 'response_vs_momentum')]
+    assert pd.notna(paired[paired.metric.eq('return')].value.iloc[0])
+    assert pd.isna(paired[paired.metric.eq('hit5')].value.iloc[0])
+
+
+def test_response_works_without_modern_pandas_conversion_or_turnover_api(world, monkeypatch):
+    stub, module, codes, cal = response_probe(world)
+    monkeypatch.setattr(pd.DataFrame, 'to_numpy', lambda *a, **kw: (_ for _ in ()).throw(AttributeError('legacy pandas')))
+    del module.get_valuation
+    run(stub, module, cal[270:271])
+    assert stub.g.pending[0]['error'] == ''
+    assert len(stub.g.pending[0]['frame']) == len(codes)
+    assert stub.g.pending[0]['frame'].response_status.eq('ok').all()
+
+
+def test_response_summary_does_not_compress_missing_pair_or_include_censored_tail(world):
+    _, module, _, _ = response_probe(world)
+    periods = pd.DataFrame([
+        dict(signal_day=day, scope='response_vs_momentum', horizon=20, group='high_minus_high',
+             metric='hit5', window_status='censored' if i == 5 else 'mature',
+             value=value, available=.2, coverage=1., n=10)
+        for i, (day, value) in enumerate(zip(pd.bdate_range('2024-01-01', periods=6), [.1, .2, np.nan, -.1, .3, .9]))])
+    row = module.response_summary(periods).query("window == 'full'").iloc[0]
+    assert row.periods == 6 and row.censored == 1 and row.valid_periods == 4
+    assert row.mean_value == pytest.approx(.125) and pd.isna(row.t_hac)

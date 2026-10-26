@@ -1,5 +1,4 @@
 """同池基线的历史可用性、实际下单约束与年度收益/回撤口径。"""
-import ast
 import importlib.util
 import sys
 import types
@@ -12,7 +11,13 @@ import pytest
 
 
 SCRIPT = (Path(__file__).resolve().parents[1] / 'research/studies/'
-          'etf_rotation_reference/jq_same_pool_baseline.py')
+          'etf_rotation/same_pool_baseline.py')
+
+# 原8只排名策略已归档；冻结历史名单，不随当前15/37只研究池扩充。
+ORIGINAL8 = (
+    '510300.XSHG', '159915.XSHE', '515180.XSHG', '513500.XSHG',
+    '513100.XSHG', '518880.XSHG', '511090.XSHG', '511010.XSHG',
+)
 
 
 @pytest.fixture
@@ -86,12 +91,7 @@ def world(monkeypatch):
 def test_same_pool_and_historical_entry_gate(world):
     w = world
     codes = w.module.ETF_POOL
-    original = ast.parse(SCRIPT.with_name('new_unified.py').read_text(encoding='utf-8'))
-    original_pool = next(node.value for node in ast.walk(original)
-                         if isinstance(node, ast.Assign)
-                         and any(isinstance(target, ast.Attribute) and target.attr == 'etf_pool'
-                                 for target in node.targets))
-    assert list(codes) == ast.literal_eval(original_pool)
+    assert tuple(codes) == ORIGINAL8
     w.starts[codes[-1]] = date(2023, 1, 1)
     w.history[codes[-2]] = [1.0] * 24
     w.history[codes[-3]] = [1.0] * 24 + [np.nan]

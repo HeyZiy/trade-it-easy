@@ -32,8 +32,8 @@
 
 判定只依赖国证A指（399317）日线的均线结构，优先级 trending\_down > trending\_up > sideways > weak\_up > chaos；
 sideways 判定阈值为收盘偏离 MA20 < 1.5%。标签语义单点在 `market_gate._gate_state_label`；标签一律过去式措辞，不读作行情预测。
-**响应动作（CAN\_OPEN / 收紧档 / 清仓）是各策略的 policy**（趋势回踩 = `buy_pipeline.CAN_OPEN_STATES`；卫星轮动无门控），
-见 [trend\_strategy.md](./trend_strategy.md)「市场状态分级与响应动作」。
+**响应动作（CAN\_OPEN / 收紧档 / 清仓）是各策略的 policy**（趋势回踩已退役；卫星轮动无门控），
+见 [trend\_strategy.md](./trend_strategy.md)「市场环境过滤」。
 
 ***
 

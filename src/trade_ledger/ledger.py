@@ -11,7 +11,7 @@ book.py 手动建仓），读侧一个动词 derive()——产出与妙想 get_p
 profit/profit_pct/pos_pct，另附归因用的 account）+ entry_map + 组合敞口，
 判定核零改动消费。
 
-口径（docs/trade_ledger.md 决策，改动须同步该文档）：
+口径：
 - 单池名义期初 NOMINAL_EQUITY，真实资金数字在系统内不存在；呈现全百分比；
 - T+1：date < as_of 的买入才计 avail_count；
 - 整手：qty 必为 100 整数倍，append 处校验收敛（判定口径单点仍在 mx/executor）;
@@ -34,7 +34,7 @@ from data_provider import canonical_stock_code
 
 logger = logging.getLogger(__name__)
 
-# ── 常量（名义口径，改动须同步 docs/trade_ledger.md） ──
+# ── 常量（名义口径） ──
 
 NOMINAL_EQUITY = 1_000_000.0          # 单池名义期初（元，纯名义）
 LOT = 100                              # A 股一手

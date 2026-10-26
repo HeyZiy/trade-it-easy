@@ -26,7 +26,7 @@ ETF 跨资产动量轮动 — 每日模拟账户入口
   execute_batch；本入口额外 fail-closed：无截面数据或持仓缺价时整次不调仓，
   避免把取数故障记成"清仓"；
 - 买侧股数由引擎按万二佣金/最低 5 元做资金可行性预检，台账本身按名义口径
-  不记手续费（docs/trade_ledger.md）。
+  不记手续费。
 
 运行：
     python etf_rotation.py            # 记账 + 推送

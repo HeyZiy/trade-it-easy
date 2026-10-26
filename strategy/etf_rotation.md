@@ -9,8 +9,9 @@
 > 生产引擎 [`src/etf/rotation.py`](../src/etf/rotation.py)，每日模拟账户入口
 > [`etf_rotation.py`](../etf_rotation.py)（cron 每交易日 10:40，对齐研究线决策
 > 时点）；判定核与研究线
-> [`unified_coverage.py`](../research/studies/etf_rotation/unified_coverage.py)
-> 一致，收益假设、回测结果与已知研究边界见
+> 原15只导出版 [`study_etf_fit_jq.py`](../research/studies/etf_rotation/study_etf_fit_jq.py)
+> 一致；`unified_coverage.py` 当前为37只研究池，独立维护，不自动接入生产。
+> 收益假设、回测结果与已知研究边界见
 > [`research/studies/etf_rotation/README.md`](../research/studies/etf_rotation/README.md)。
 > 本文件只写生产策略口径、执行边界与已知局限。
 
@@ -133,7 +134,7 @@ score = 0（跳水过滤）与 nan（数据不足）都不合格：0 与 nan 在
 
 ## 七、与聚宽研究线的已知口径差
 
-| 维度     | 研究线 `unified_coverage.py`     | 生产本地模拟                                                        |
+| 维度     | 原15只研究线 `study_etf_fit_jq.py` | 生产本地模拟                                                        |
 | ------ | ------------------------------ | ------------------------------------------------------------- |
 | 决策价    | 10:40 分钟现价                    | 运行时刻实时报价；缺失回退当日 bar 收盘 / 最近收盘，并计数；cron 对齐 10:40               |
 | 复权     | 聚宽 `fq='pre'`                  | 新浪日线 + 份额折算前复权（仅 >25% 折算/拆分跳变），不处理现金分红                       |

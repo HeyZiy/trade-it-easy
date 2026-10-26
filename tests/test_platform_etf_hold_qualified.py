@@ -11,8 +11,8 @@ import numpy as np
 import pytest
 
 
-FOLDER = Path(__file__).resolve().parents[1] / 'research/studies/etf_rotation_reference'
-SCRIPT = FOLDER / 'new_unified_hold_qualified.py'
+FOLDER = Path(__file__).resolve().parents[1] / 'research/studies/etf_rotation'
+SCRIPT = FOLDER / 'unified_hold_qualified.py'
 
 
 @pytest.fixture
@@ -49,9 +49,24 @@ def world(monkeypatch):
                                  first=strategy.etf_pool[0], second=strategy.etf_pool[1])
 
 
-def test_only_change_is_qualified_holding_early_return():
-    original = ast.parse((FOLDER / 'new_unified_expanded.py').read_text(encoding='utf-8'))
+def test_only_rule_change_is_qualified_holding_early_return():
+    reference = ast.parse((FOLDER / 'study_etf_fit_jq.py').read_text(encoding='utf-8'))
     changed = ast.parse(SCRIPT.read_text(encoding='utf-8'))
+    original = ast.Module(body=reference.body[:len(changed.body)], type_ignores=[])
+
+    def pool_assignment(tree):
+        return next(node for node in ast.walk(tree) if isinstance(node, ast.Assign)
+                    and any(isinstance(t, ast.Attribute) and t.attr == 'etf_pool'
+                            for t in node.targets))
+
+    original_pool, hold_pool = pool_assignment(original), pool_assignment(changed)
+    # 历史11只对照仍保留；15只排名版仅额外加入这四只。
+    additions = {'512100.XSHG', '588000.XSHG', '159980.XSHE', '159985.XSHE'}
+    assert len(ast.literal_eval(original_pool.value)) == 15
+    assert len(ast.literal_eval(hold_pool.value)) == 11
+    assert ast.literal_eval(hold_pool.value) == [
+        code for code in ast.literal_eval(original_pool.value) if code not in additions]
+    original_pool.value = copy.deepcopy(hold_pool.value)
     normalized = copy.deepcopy(changed)
     method = next(node for node in ast.walk(normalized)
                   if isinstance(node, ast.FunctionDef) and node.name == 'execute_trade')

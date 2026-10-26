@@ -48,11 +48,16 @@ python portfolio_report.py --dry-run        # 只展示，不保存
 python portfolio_report.py --date 2026-10-09 # 重试或补采指定已收盘交易日（只采该日）
 ```
 
-基准规则和存储口径见 [台账规格第七节](docs/trade_ledger.md#七模拟报告与收盘成绩第一版)。
+基准与存储口径见 [src/trade_ledger/performance.py](src/trade_ledger/performance.py) 与 [ledger.py](src/trade_ledger/ledger.py)。
 
 ## 测试
 
+使用项目 Python 环境运行：
+
 ```bash
-pytest tests/
+python -m pytest tests/ -ra
 ```
+
+ETF 研究分析与测试统一使用 Python，无需安装 Node.js。研究入口和输出口径见
+[ETF 研究复现说明](research/studies/etf_rotation/IMPLEMENTATION.md)。
 

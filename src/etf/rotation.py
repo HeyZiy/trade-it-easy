@@ -4,7 +4,7 @@
 ETF 跨资产动量轮动 — 单只全仓引擎
 ===================================
 
-把研究线 `research/studies/etf_rotation/unified_coverage.py`（聚宽单文件策略）
+把原15只研究线 `research/studies/etf_rotation/study_etf_fit_jq.py`（聚宽单文件策略）
 移植为本地日频模拟账户的判定核，交易语义保持一致：
 
   1. 标的池：固定 15 只 ETF，跨国内权益 / 海外权益 / 商品 / 利率四类资产；
@@ -44,7 +44,7 @@ from src.mx.executor import floor_lot
 from src.sim_accounts import SimAccount
 from src.trading_calendar import latest_trading_day_on_or_before
 
-# ── 研究线参数（research/studies/etf_rotation/unified_coverage.py；
+# ── 研究线参数（research/studies/etf_rotation/study_etf_fit_jq.py；
 #    趋势分参数 SCORE_DAYS/DIVE_RATIO 居 src/etf/momentum.py 单点）──
 
 SCORE_LOW = 0.0          # 合格下限（严格大于）

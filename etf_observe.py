@@ -7,7 +7,7 @@ ETF 周度观察报告 — 估值导向
 定位：每周一次，自动执行统一调仓批次——对名义成交台账记账
 （影子成交，非真实下单；真实账户按报告百分比手动执行）。
 
-持仓/资金事实来源 = data/trade_ledger.jsonl（docs/trade_ledger.md），
+持仓/资金事实来源 = data/trade_ledger.jsonl，
 derive 供料与妙想持仓 dict 同形，rebalancer 决策核零改动。
 
 报告结构：
@@ -203,8 +203,7 @@ def _fetch_missing_prices(baseline: List, positions: List[dict], fm) -> dict:
 def _compute_allocation():
     """计算目标配比 + 再平衡 plan（供对照展示与自动执行复用）
 
-    持仓/资金读名义成交台账推导（docs/trade_ledger.md：
-    derive 供料与持仓 dict 同形）。
+    持仓/资金读名义成交台账推导（derive 供料与持仓 dict 同形）。
     目标 = 中性基准，无动态择时；**不读环境快照**（核心仓纯机械）。
     行情取数在此编排层一次取齐（prices），决策核 rebalancer 保持零 I/O。
 
@@ -393,7 +392,7 @@ def _execute_batch(alloc: dict, ledger_path=None, dry_run: bool = False) -> str:
     """执行核心调仓批次：批次语义（收敛/安全校验/先卖后买/逐单记账）
     全权委托 trade_ledger.execute_batch，本函数只装配指令与渲染结果。
 
-    只记名义台账（docs/trade_ledger.md），
+    只记名义台账，
     真实账户由用户按报告百分比手动执行。
     dry_run=True 时同渲染指令、零台账写入。
     """

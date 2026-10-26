@@ -1,148 +1,160 @@
-"""持仓段研究、固定期限边界与聚宽只读导出的语义验证。"""
+"""Holding segments, fixed-horizon boundaries and read-only JoinQuant exports."""
 import ast
 import importlib.util
 import json
-import subprocess
 import sys
 import types
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 from pathlib import Path
 
 import pandas as pd
 import pytest
 
+from research.studies.etf_rotation.study_etf_fit import episode_metrics, summarize
+from research.studies.etf_rotation.study_etf_fit_forward import evaluate
+from research.studies.etf_rotation.study_etf_fit_control import compare
+
 
 FOLDER = Path(__file__).resolve().parents[1] / 'research/studies/etf_rotation'
 
 
-def run_js(body):
-    imports = (f'import {{episodeMetrics,summarize}} from {json.dumps((FOLDER / "study_etf_fit.mjs").as_uri())};\n'
-               f'import {{evaluate}} from {json.dumps((FOLDER / "study_etf_fit_forward.mjs").as_uri())};\n'
-               'import assert from "node:assert/strict";\n')
-    result = subprocess.run(['node', '--input-type=module', '-'], input=imports + body,
-                            text=True, capture_output=True, encoding='utf-8')
-    assert result.returncode == 0, result.stdout + result.stderr
-
-
 def test_holding_metrics_and_open_segment_exclusion():
-    run_js('''
-const e=episodeMetrics({index:0,code:'A',name:'A',entry:'2020-01-01',exit:'2020-01-03',
-closed:true,entryDayIndex:0,exitDayIndex:2,closeHoldingDays:2,entryNotional:100,
-netPnl:-1,logContribution:0,path:[.02,.05,-.01].map(returnOnEntryNotional=>({returnOnEntryNotional}))});
-assert.equal(e.returnOnEntryNotional,-.01);
-assert.equal(e.observedMae,-.01);
-assert.equal(e.observedMfe,.05);
-assert.ok(Math.abs(e.observedMaxDrawdown-(1-.99/1.05))<1e-12);
-assert.ok(Math.abs(e.observedPeakGiveback-.06)<1e-12);
-const s=summarize([e,{...e,closed:false,returnOnEntryNotional:10}]);
-assert.equal(s.closedEpisodes,1);assert.equal(s.openEpisodes,1);
-assert.equal(s.meanReturn,-.01);assert.equal(s.quickLosingExitWithin3DaysRate,1);
-assert.equal(summarize([{...e,closed:false}]).medianReturn,null);
-''')
+    episode = episode_metrics(dict(
+        index=0, code='A', name='A', entry='2020-01-01', exit='2020-01-03',
+        closed=True, entryDayIndex=0, exitDayIndex=2, closeHoldingDays=2, entryNotional=100,
+        netPnl=-1, logContribution=0,
+        path=[dict(returnOnEntryNotional=value) for value in [.02, .05, -.01]]))
+    assert episode['returnOnEntryNotional'] == -.01
+    assert episode['observedMae'] == -.01
+    assert episode['observedMfe'] == .05
+    assert episode['observedMaxDrawdown'] == pytest.approx(1 - .99 / 1.05, abs=1e-12)
+    assert episode['observedPeakGiveback'] == pytest.approx(.06, abs=1e-12)
+    opened = {**episode, 'closed': False, 'returnOnEntryNotional': 10}
+    result = summarize([episode, opened])
+    assert result['closedEpisodes'] == 1 and result['openEpisodes'] == 1
+    assert result['meanReturn'] == -.01
+    assert result['quickLosingExitWithin3DaysRate'] == 1
+    assert summarize([opened])['medianReturn'] is None
 
 
-FORWARD_WORLD = '''
-const dates=Array.from({length:37},(_,i)=>new Date(Date.UTC(2015,11,1+i)).toISOString().slice(0,10));
-const calendar=dates.slice(25);
-const meta={schema_version:1,source:'JoinQuant strategy backtest export',export_complete:true,
-errors:[],codes:['A','B'],as_of:calendar.at(-1),expected_signal_dates:calendar};
-const signals=calendar.flatMap((date,i)=>['A','B'].map(code=>({date,code,
-decision_price:String(100+25+i+(25+i)%3*.2),eligible:'1',paused:'0',
-rank:String(i===0?(code==='A'?1:2):(code==='B'?1:2))})));
-const market=dates.flatMap((date,i)=>['A','B'].map(code=>({date,code,
-close_raw:String(100+i+i%3*.2),close_post:String(2*(100+i+i%3*.2)),
-volume:'10000',money:'1000000',paused:'0'})));
-'''
+def forward_world():
+    dates = [(date(2015, 12, 1) + timedelta(days=i)).isoformat() for i in range(37)]
+    calendar = dates[25:]
+    metadata = dict(schema_version=1, source='JoinQuant strategy backtest export', export_complete=True,
+                    errors=[], codes=['A', 'B'], as_of=calendar[-1], expected_signal_dates=calendar)
+    signals = [dict(date=day, code=code, decision_price=str(100 + 25 + i + (25 + i) % 3 * .2),
+                    eligible='1', paused='0', rank=str(1 if code == ('A' if i == 0 else 'B') else 2))
+               for i, day in enumerate(calendar) for code in ['A', 'B']]
+    market = [dict(date=day, code=code, close_raw=str(100 + i + i % 3 * .2),
+                   close_post=str(2 * (100 + i + i % 3 * .2)), volume='10000', money='1000000', paused='0')
+              for i, day in enumerate(dates) for code in ['A', 'B']]
+    return metadata, signals, market, calendar
 
 
 def test_fixed_ten_days_continues_after_rank_exit_and_adjustment_is_consistent():
-    run_js(FORWARD_WORLD + '''
-const r=evaluate(meta,signals,market);
-assert.equal(r.events.length,2);
-const a=r.events[0], b=r.events[1];
-assert.equal(a.observedRankDays,1);assert.equal(a.rankRunCensored,false);
-assert.equal(a.forwardStatus,'complete');assert.equal(b.forwardStatus,'complete');
-assert.equal(b.rankRunCensored,true);
-const expected=(100+35+35%3*.2)/(100+25+25%3*.2)-1;
-assert.ok(Math.abs(a.return10-expected)<1e-12);
-assert.ok(a.volatility20>0);
-const split=market.map(x=>({...x,close_raw:x.date>=calendar[5]?String(Number(x.close_raw)/2):x.close_raw}));
-assert.equal(evaluate(meta,signals,split).events[0].return10,a.return10);
-''')
+    meta, signals, market, calendar = forward_world()
+    result = evaluate(meta, signals, market)
+    assert len(result['events']) == 2
+    a, b = result['events']
+    assert a['observedRankDays'] == 1 and a['rankRunCensored'] is False
+    assert a['forwardStatus'] == b['forwardStatus'] == 'complete'
+    assert b['rankRunCensored'] is True
+    assert a['return10'] == pytest.approx((100 + 35 + 35 % 3 * .2) / (100 + 25 + 25 % 3 * .2) - 1, abs=1e-12)
+    assert a['volatility20'] > 0
+    split = [{**row, 'close_raw': str(float(row['close_raw']) / 2) if row['date'] >= calendar[5] else row['close_raw']}
+             for row in market]
+    assert evaluate(meta, signals, split)['events'][0]['return10'] == a['return10']
 
 
-@pytest.mark.parametrize('mutation,expected', [
-    ("const changed=market.filter(x=>!(x.code==='A'&&x.date===calendar[2]));", 'missing_price'),
-    ("const changed=market.map(x=>x.code==='A'&&x.date===calendar[2]?{...x,paused:'1'}:x);", 'paused_or_zero_activity'),
-])
+@pytest.mark.parametrize('mutation,expected', [('missing', 'missing_price'), ('paused', 'paused_or_zero_activity')])
 def test_forward_window_does_not_fill_missing_or_paused_days(mutation, expected):
-    run_js(FORWARD_WORLD + mutation + f"assert.equal(evaluate(meta,signals,changed).events[0].forwardStatus,'{expected}');")
+    meta, signals, market, calendar = forward_world()
+    if mutation == 'missing':
+        changed = [row for row in market if not (row['code'] == 'A' and row['date'] == calendar[2])]
+    else:
+        changed = [{**row, 'paused': '1'} if row['code'] == 'A' and row['date'] == calendar[2] else row for row in market]
+    assert evaluate(meta, signals, changed)['events'][0]['forwardStatus'] == expected
 
 
 def test_export_censoring_calendar_and_future_boundaries():
-    run_js(FORWARD_WORLD + '''
-const modified=signals.map(x=>x.date>=calendar[5]?{...x,rank:x.code==='A'?'1':'2'}:x);
-assert.equal(evaluate(meta,modified,market).events.at(-1).forwardStatus,'right_censored');
-assert.throws(()=>evaluate({...meta,export_complete:false},signals,market),/Incomplete/);
-assert.throws(()=>evaluate(meta,signals.slice(2),market),/calendar/);
-assert.throws(()=>evaluate(meta,signals,[...market,{...market[0],date:'2099-01-01'}]),/boundary/);
-assert.throws(()=>evaluate(meta,signals,[...market,market[0]]),/Duplicate/);
-''')
+    meta, signals, market, calendar = forward_world()
+    modified = [{**row, 'rank': '1' if row['code'] == 'A' else '2'} if row['date'] >= calendar[5] else row for row in signals]
+    assert evaluate(meta, modified, market)['events'][-1]['forwardStatus'] == 'right_censored'
+    with pytest.raises(ValueError, match='Incomplete'):
+        evaluate({**meta, 'export_complete': False}, signals, market)
+    with pytest.raises(ValueError, match='calendar'):
+        evaluate(meta, signals[2:], market)
+    with pytest.raises(ValueError, match='boundary'):
+        evaluate(meta, signals, [*market, {**market[0], 'date': '2099-01-01'}])
+    with pytest.raises(ValueError, match='Duplicate'):
+        evaluate(meta, signals, [*market, market[0]])
 
 
 def test_same_year_control_excludes_initial_state_and_matches_price_basis():
-    run_js(FORWARD_WORLD + '''
-const {compare}=await import('./research/studies/etf_rotation/study_etf_fit_control.mjs');
-const withScores=signals.map(x=>({...x,score:'1'}));
-const r=compare(meta,withScores,market);
-assert.equal(r.method.excludedInitialStates,1);
-assert.equal(r.method.completeTransitions,1);
-assert.equal(r.method.dailyStatusCounts.complete,4);
-const b=r.summary.find(x=>x.code==='B'&&x.control==='all_days');
-assert.equal(b.matchedSignals,1);assert.equal(b.controlDays,2);
-const a0=(100+35+35%3*.2)/(100+25+25%3*.2)-1;
-const a1=(100+36+36%3*.2)/(100+26+26%3*.2)-1;
-assert.ok(Math.abs(b.signalMeanReturn10-a1)<1e-12);
-assert.ok(Math.abs(b.matchedControlMeanReturn10-(a0+a1)/2)<1e-12);
-const non=r.summary.find(x=>x.code==='B'&&x.control==='not_rank1');
-assert.equal(non.controlDays,1);
-assert.ok(Math.abs(non.matchedControlMeanReturn10-a0)<1e-12);
-assert.equal(r.overall[0].matchedSignals,1);
-const missing=withScores.map(x=>x.code==='B'?{...x,score:''}:x);
-const unavailable=compare(meta,missing,market).summary.find(x=>x.code==='B'&&x.control==='all_days');
-assert.equal(unavailable.matchedSignals,0);assert.equal(unavailable.unmatchedSignals,1);
-assert.equal(unavailable.excessMeanReturn10,null);
-''')
+    meta, signals, market, _ = forward_world()
+    scored = [{**row, 'score': '1'} for row in signals]
+    result = compare(meta, scored, market)
+    assert result['method']['excludedInitialStates'] == 1
+    assert result['method']['completeTransitions'] == 1
+    assert result['method']['dailyStatusCounts']['complete'] == 4
+    b = next(row for row in result['summary'] if row['code'] == 'B' and row['control'] == 'all_days')
+    assert b['matchedSignals'] == 1 and b['controlDays'] == 2
+    a0 = (100 + 35 + 35 % 3 * .2) / (100 + 25 + 25 % 3 * .2) - 1
+    a1 = (100 + 36 + 36 % 3 * .2) / (100 + 26 + 26 % 3 * .2) - 1
+    assert b['signalMeanReturn10'] == pytest.approx(a1, abs=1e-12)
+    assert b['matchedControlMeanReturn10'] == pytest.approx((a0 + a1) / 2, abs=1e-12)
+    non = next(row for row in result['summary'] if row['code'] == 'B' and row['control'] == 'not_rank1')
+    assert non['controlDays'] == 1
+    assert non['matchedControlMeanReturn10'] == pytest.approx(a0, abs=1e-12)
+    assert result['overall'][0]['matchedSignals'] == 1
+    missing = [{**row, 'score': ''} if row['code'] == 'B' else row for row in scored]
+    unavailable = next(row for row in compare(meta, missing, market)['summary'] if row['code'] == 'B' and row['control'] == 'all_days')
+    assert unavailable['matchedSignals'] == 0 and unavailable['unmatchedSignals'] == 1
+    assert unavailable['excessMeanReturn10'] is None
 
 
 def test_control_weights_years_by_signal_count_and_preserves_missing_windows():
-    run_js('''
-const {compare}=await import('./research/studies/etf_rotation/study_etf_fit_control.mjs');
-const dates=Array.from({length:40},(_,i)=>`${i<20?'2020':'2021'}-01-${String(i%20+1).padStart(2,'0')}`);
-const meta={schema_version:1,source:'JoinQuant strategy backtest export',export_complete:true,
-errors:[],codes:['A','B'],as_of:dates.at(-1),expected_signal_dates:dates};
-const signals=dates.flatMap((date,i)=>['A','B'].map(code=>({date,code,score:'1',eligible:'1',paused:'0',
-decision_price:String(i<20?100:200+i),rank:String((i===1||i===3||i>=20)===(code==='B')?1:2)})));
-const market=signals.map(x=>({...x,close_raw:x.decision_price,close_post:x.decision_price,
-volume:'1000',money:'100000'}));
-const r=compare(meta,signals,market);
-const b=r.summary.find(x=>x.code==='B'&&x.control==='all_days');
-const y=r.byYear.filter(x=>x.code==='B'&&x.control==='all_days');
-assert.equal(y.length,2);assert.equal(y[0].signalCount,2);assert.equal(y[1].signalCount,1);
-assert.equal(y[0].controlDays,20);assert.equal(y[1].controlDays,10);
-assert.ok(Math.abs(b.matchedControlMeanReturn10-(2*y[0].controlMeanReturn10+y[1].controlMeanReturn10)/3)<1e-12);
-assert.equal(b.sampleYears,2);
-assert.equal(b.minLeaveOneYearExcessMean,Math.min(...y.map(x=>x.excessMeanReturn10)));
-const broken=market.filter(x=>!(x.code==='B'&&x.date===dates[5]));
-const changed=compare(meta,signals,broken);
-assert.ok(changed.method.dailyStatusCounts.missing_price>0);
-assert.equal(changed.method.completeTransitions,r.method.completeTransitions-2);
-''')
+    dates = [f"{'2020' if i < 20 else '2021'}-01-{i % 20 + 1:02d}" for i in range(40)]
+    meta = dict(schema_version=1, source='JoinQuant strategy backtest export', export_complete=True,
+                errors=[], codes=['A', 'B'], as_of=dates[-1], expected_signal_dates=dates)
+    signals = [dict(date=day, code=code, score='1', eligible='1', paused='0',
+                    decision_price=str(100 if i < 20 else 200 + i),
+                    rank='1' if (i in (1, 3) or i >= 20) == (code == 'B') else '2')
+               for i, day in enumerate(dates) for code in ['A', 'B']]
+    market = [{**row, 'close_raw': row['decision_price'], 'close_post': row['decision_price'],
+               'volume': '1000', 'money': '100000'} for row in signals]
+    result = compare(meta, signals, market)
+    b = next(row for row in result['summary'] if row['code'] == 'B' and row['control'] == 'all_days')
+    years = [row for row in result['byYear'] if row['code'] == 'B' and row['control'] == 'all_days']
+    assert len(years) == 2 and [row['signalCount'] for row in years] == [2, 1]
+    assert [row['controlDays'] for row in years] == [20, 10]
+    assert b['matchedControlMeanReturn10'] == pytest.approx(
+        (2 * years[0]['controlMeanReturn10'] + years[1]['controlMeanReturn10']) / 3, abs=1e-12)
+    assert b['sampleYears'] == 2
+    assert b['minLeaveOneYearExcessMean'] == min(row['excessMeanReturn10'] for row in years)
+    broken = [row for row in market if not (row['code'] == 'B' and row['date'] == dates[5])]
+    changed = compare(meta, signals, broken)
+    assert changed['method']['dailyStatusCounts']['missing_price'] > 0
+    assert changed['method']['completeTransitions'] == result['method']['completeTransitions'] - 2
 
 
-def test_exporter_preserves_original_strategy_definitions():
+def test_exporter_preserves_strategy_definitions_with_original15_pool():
     original = ast.parse((FOLDER / 'unified_coverage.py').read_text(encoding='utf-8'))
     exporter = ast.parse((FOLDER / 'study_etf_fit_jq.py').read_text(encoding='utf-8'))
+    industry = ast.parse((FOLDER / 'unified_industry22.py').read_text(encoding='utf-8'))
+
+    def pool_assignment(tree):
+        return next(node for node in ast.walk(tree) if isinstance(node, ast.Assign)
+                    and any(isinstance(t, ast.Attribute) and t.attr == 'etf_pool'
+                            for t in node.targets))
+
+    mixed_pool, export_pool = pool_assignment(original), pool_assignment(exporter)
+    assert len(ast.literal_eval(export_pool.value)) == 15
+    assert len(ast.literal_eval(pool_assignment(industry).value)) == 22
+    assert ast.literal_eval(mixed_pool.value) == (
+        ast.literal_eval(export_pool.value) + ast.literal_eval(pool_assignment(industry).value))
+    # 研究线扩为37只，导出仍冻结原15只；只有池名单允许不同。
+    mixed_pool.value = export_pool.value
     assert ast.dump(original) == ast.dump(ast.Module(body=exporter.body[:len(original.body)], type_ignores=[]))
 
 

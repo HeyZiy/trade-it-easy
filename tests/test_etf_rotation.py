@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 """ETF 跨资产动量轮动：判定核纯函数 + 研究池一致性 + 入口台账闭环。
 
-规则单点（src/etf/rotation.py，研究线 unified_coverage.py）：
+规则单点（src/etf/rotation.py，原15只研究线 study_etf_fit_jq.py）：
 - 打分 = 25 根已完成日线收盘 + 当日现价共 26 点的对数价格加权回归
   （w=linspace(1,2)）→ 年化 = exp(slope×250)−1，score = 年化 × 加权 R²；
 - 合格候选 0 < score < 5（严格两端）；近 3 个日环比任一 <0.95 记 0；
@@ -354,11 +354,11 @@ class TestBuildRows:
             assert top_candidate(rows) is None
 
 
-# ══════════════ 研究池一致性（ast 解析 unified_coverage.py） ══════════════
+# ══════════════ 固定15只研究池一致性（ast 解析原池导出版） ══════════════
 
-def test_pool_matches_research_unified_coverage():
+def test_pool_matches_research_original15():
     study = (Path(__file__).resolve().parents[1]
-             / "research/studies/etf_rotation/unified_coverage.py")
+             / "research/studies/etf_rotation/study_etf_fit_jq.py")
     tree = ast.parse(study.read_text(encoding="utf-8"))
 
     values = None
@@ -368,7 +368,7 @@ def test_pool_matches_research_unified_coverage():
                         for t in node.targets)):
             values = ast.literal_eval(node.value)
             break
-    assert values, "研究线 unified_coverage.py 中未找到 self.etf_pool 列表"
+    assert values, "原15只导出版 study_etf_fit_jq.py 中未找到 self.etf_pool 列表"
 
     research_codes = [str(code).split(".")[0] for code in values]
     engine_codes = [code for code, _, _ in POOL]

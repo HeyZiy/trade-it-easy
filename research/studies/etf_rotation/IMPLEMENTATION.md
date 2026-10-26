@@ -119,12 +119,14 @@
 
 生产侧每日模拟账户入口为仓库根 [`etf_rotation.py`](../../../etf_rotation.py)，判定核为 [`src/etf/rotation.py`](../../../src/etf/rotation.py)；研究池与生产池分别维护，本地模拟与聚宽研究线的口径差（实时价回退、复权、费用记账）见 [strategy/etf_rotation.md](../../../strategy/etf_rotation.md)。
 
-持仓归因：[analyze\_positions.mjs](analyze_positions.mjs)只读分析[position.csv](position.csv)；从仓库根运行 `node research/studies/etf_rotation/analyze_positions.mjs`。资金与费率使用本轮10万元、万二和最低5元设置；换用其他回测前先匹配这些输入。
+持仓归因：[analyze\_positions.py](analyze_positions.py)只读分析[position.csv](position.csv)；从仓库根运行 `python research/studies/etf_rotation/analyze_positions.py`。资金与费率使用本轮10万元、万二和最低5元设置；换用其他回测前先匹配这些输入。
 
-实际持仓段研究：[study\_etf\_fit.mjs](study_etf_fit.mjs)，从仓库根运行 `node research/studies/etf_rotation/study_etf_fit.mjs`，结果写入本目录 `results/fit_*.csv` 与口径文件 `results/fit_method.json`。
+实际持仓段研究：[study\_etf\_fit.py](study_etf_fit.py)，从仓库根运行 `python research/studies/etf_rotation/study_etf_fit.py`，结果写入本目录 `results/fit_*.csv` 与口径文件 `results/fit_method.json`。
 
-同ETF同年对照：[study\_etf\_fit\_control.mjs](study_etf_fit_control.mjs)，运行 `node research/studies/etf_rotation/study_etf_fit_control.mjs`，读取本目录三个聚宽导出，结果写入 `results/fit_control_*.csv` 和口径JSON；也可传入其他导出目录及结果目录。
+同ETF同年对照：[study\_etf\_fit\_control.py](study_etf_fit_control.py)，运行 `python research/studies/etf_rotation/study_etf_fit_control.py`，读取本目录三个聚宽导出，结果写入 `results/fit_control_*.csv` 和口径JSON；也可传入其他导出目录及结果目录。
 
-原15只池固定10日研究的数据入口：[study\_etf\_fit\_jq.py](study_etf_fit_jq.py)。把整个文件粘贴到聚宽，使用2016-01-01至2026-10-01、10万元、每天频率运行；它保留原15只池交易逻辑并增加观测导出，当前不包含新增22只行业。下载 `fit_signals.csv`、`fit_market.csv`、`fit_metadata.json` 放到同一目录，然后运行 `node research/studies/etf_rotation/study_etf_fit_forward.mjs <导出目录>`。结果写入 `results/fit_forward_*.csv`，输入不完整时拒绝计算。当前真实聚宽导出已跑通本地分析，期末净值与原回测一致；这仍不是分钟成交或实盘验证。
+温度计面板与条件检验：面板构建 [temperature\_build.py](temperature_build.py)，从仓库根运行 `python research/studies/etf_rotation/temperature_build.py`（首次运行从 TGW 拉申万时点成分与约 3600 只成分股日线，缓存在本目录 `_cache/`，断点续拉）；条件检验 [study\_temperature\_gauge.py](study_temperature_gauge.py) 连接 `results/mixed37_comparison/fixed_forward_events.csv`，结果写入 `results/temperature/`。完整账户温度闸重放 [temperature\_gate\_replay.py](temperature_gate_replay.py) 用六账户信号本地重放排名轮动并做闸对照，结果写入 `results/temperature/gate/`；纯行业22池版本 [temperature\_industry22\_replay.py](temperature_industry22_replay.py) 写入 `results/temperature/industry22/`。口径与结论见[实验记录](EXPERIMENTS.md)温度计一节。
+
+原15只池固定10日研究的数据入口：[study\_etf\_fit\_jq.py](study_etf_fit_jq.py)。把整个文件粘贴到聚宽，使用2016-01-01至2026-10-01、10万元、每天频率运行；它保留原15只池交易逻辑并增加观测导出，当前不包含新增22只行业。下载 `fit_signals.csv`、`fit_market.csv`、`fit_metadata.json` 放到同一目录，然后运行 `python research/studies/etf_rotation/study_etf_fit_forward.py <导出目录>`。结果写入 `results/fit_forward_*.csv`，输入不完整时拒绝计算。当前真实聚宽导出已跑通本地分析，期末净值与原回测一致；这仍不是分钟成交或实盘验证。
 
 在聚宽新建策略，粘贴整个文件。复现时记录日期、初始资金、运行频率、费用和代码版本；分钟结果与已有日频记录分开。规则发生变化时，更新本文对应设置；结果与结论记入[实验记录](EXPERIMENTS.md)。只有策略信念或取舍改变时，才改写[策略主张](README.md)。
