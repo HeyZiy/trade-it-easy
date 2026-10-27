@@ -371,6 +371,12 @@ class TestHeldExitFacts:
         f = self._facts(_up_closes(10), 10.0, 10.0)
         assert f["evaluated"] is False
 
+    def test_exactly_25_completed_closes_can_score(self):
+        closes = _up_closes(25)
+        f = self._facts(closes, closes[-1] * 1.001, closes[0])
+        assert f["evaluated"] is True
+        assert f["score"] == momentum_score(closes, closes[-1] * 1.001)
+
     def test_latch_set_by_historical_high(self):
         closes = _up_closes(30, step=1.005)        # 末值 ≈ 成本×1.128 → 置位
         f = self._facts(closes, price=closes[-1] * 0.95, cost=10.0)
@@ -426,9 +432,9 @@ def _hist(closes):
 
 
 class TestSellOrders:
-    def _run(self, pos, bars, entry=None):
+    def _run(self, pos, bars, entry=None, as_of=None):
         em = {pos["code"]: entry} if entry else None
-        return build_sell_orders([], [pos], bars, {}, em)
+        return build_sell_orders([], [pos], bars, {}, em, as_of=as_of)
 
     def test_healthy_holding_no_exit(self):
         hist = _up_closes(40, step=1.001)
@@ -458,6 +464,55 @@ class TestSellOrders:
         pos = _sat(price=9.0, cost=hist[0])        # 现价 9.0 ≤ 成本×0.92
         orders, _ = self._run(pos, {"510001": _hist(hist)})
         assert len(orders) == 1 and "跌破成本-8%" in orders[0].reason
+
+    def test_new_holding_cost_stop(self):
+        df = _hist([10.0] * 80)
+        pos = _sat(price=9.0, cost=10.0)
+        orders, _ = self._run(pos, {"510001": df}, entry=df.index[-13])
+        assert len(orders) == 1
+        assert orders[0].reason == "跌破成本-8%"
+
+    def test_cost_stop_does_not_require_score_history(self):
+        df = _hist([10.0] * 10)
+        orders, _ = self._run(_sat(price=9.0, cost=10.0), {"510001": df},
+                              entry=df.index[-1])
+        assert len(orders) == 1 and orders[0].reason == "跌破成本-8%"
+
+    def test_cost_stop_does_not_require_bars(self):
+        orders, _ = self._run(_sat(price=9.0, cost=10.0), {})
+        assert len(orders) == 1 and orders[0].reason == "跌破成本-8%"
+
+    @pytest.mark.parametrize("held_closes,expected_sells", [(1, 0), (2, 1)])
+    def test_new_holding_score_confirmation_starts_at_entry(self, held_closes,
+                                                            expected_sells):
+        """入场前日线供评分，但入场前负分不计入连续退出天数。"""
+        df = _hist([10.5 - 0.01 * k for k in range(50)])
+        pos = _sat(price=10.0, cost=10.02)
+        orders, _ = self._run(pos, {"510001": df}, entry=df.index[-held_closes])
+        assert len(orders) == expected_sells
+        if orders:
+            assert orders[0].reason == "score转负x3日"
+
+    def test_pre_entry_high_does_not_latch_breakeven(self):
+        df = _hist([20.0] * 40 + [10.0])
+        orders, _ = self._run(_sat(price=10.0, cost=10.0), {"510001": df},
+                              entry=df.index[-1])
+        assert orders == []
+
+    def test_new_holding_can_latch_breakeven(self):
+        df = _hist([10.0] * 40 + [11.3])
+        orders, _ = self._run(_sat(price=10.05, cost=10.0), {"510001": df},
+                              entry=df.index[-2])
+        assert len(orders) == 1 and orders[0].reason == "保本损"
+
+    def test_unfinished_today_bar_is_not_replayed(self):
+        df = _hist([10.5 - 0.01 * k for k in range(50)])
+        entry = df.index[-1]
+        # 仅 1 根持仓期已完成日线 + 今日现价：只有 2 日，不能借今日日线凑 3 日。
+        df.loc["2026-09-23"] = [10.0, 60_000_000.0]
+        orders, _ = self._run(_sat(price=10.0, cost=10.02), {"510001": df},
+                              entry=entry, as_of="2026-09-23")
+        assert orders == []
 
     def test_breakeven_exit(self):
         up = _up_closes(25, step=1.005)            # 峰 ≈ +12.8% → 置位

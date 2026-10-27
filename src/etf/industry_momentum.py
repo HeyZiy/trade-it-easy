@@ -35,8 +35,8 @@
 设计：
 - 判定核（momentum_score / filter_by_name / build_pool / build_rows /
   held_exit_facts / build_sell_orders / build_buy_orders）零 I/O、无状态——
-  退出判定从持仓期收盘序列**无状态重算**（neg_run 逐日重放、保本置位由
-  入场以来收盘比值导出），不维护跨日可变状态，自愈且可测；
+  退出判定从完整收盘序列**无状态重算**（neg_run 逐日重放只数持仓期、
+  保本置位由入场以来收盘比值导出），不维护跨日可变状态，自愈且可测；
 - 取数收在编排层（fetch_universe / fetch_bars / fetch_prices /
   rotation_snapshot）：全市场名单与带 amount 日线走 data_provider 新浪单源，
   当日现价走实时报价（缺数据回退最新收盘并在 diag 计数）；卫星持仓的 K 线
@@ -313,10 +313,11 @@ def build_rows(pool: List[dict], bars: Dict[str, pd.DataFrame],
 
 
 def held_exit_facts(close_hist: Sequence[float], price: float,
-                    avg_cost: float) -> dict:
+                    avg_cost: float, *, entry_index: int = 0) -> dict:
     """持仓退出判定事实（v3_3_2 口径，无状态重算——不维护跨日可变状态）。
 
-    close_hist = 持仓期内的 qfq 收盘序列（入场日含，今日现价不含，升序）。
+    close_hist = 完整 qfq 收盘序列（含入场前历史，今日现价不含，升序）；
+    entry_index = 入场日在完整序列中的起始位置，默认 0（整段均为持仓期）。
     - latched：持仓期内任一日收盘 ≥ 入场日收盘×(1+BREAKEVEN_TRIGGER)，或今日
       现价 ≥ 成本×(1+BREAKEVEN_TRIGGER)。用 qfq 比值表达（对份额折算不变，
       无 v3_5 式水位 bug）；入场日收盘 ≈ 成本（尾盘全仓建仓）。
@@ -324,29 +325,34 @@ def held_exit_facts(close_hist: Sequence[float], price: float,
     - below_stop：现价 ≤ 成本×stop_ratio。
     - neg_run：score≤0 连续天数，逐日重放（t 日 score = 前 25 根收盘 + t 日
       收盘），只数持仓期内交易日，自今日往前数到首个正分为止。
-    数据不足（收盘历史 <SCORE_DAYS+1）或价格/成本非法 → evaluated=False
-    （不评估，仍持有——与回测"数据不足按持有"同口径）。
+    evaluated 表示趋势是否可评估（至少 SCORE_DAYS 根历史收盘）。成本限亏与
+    保本损不受趋势历史长度限制；价格/成本非法时所有退出均不评估。
     """
     facts = {"evaluated": False, "score": None, "neg_run": 0, "latched": False,
              "stop_ratio": 1.0 - STOP_COST_PCT, "below_stop": False}
-    if avg_cost <= 0 or price <= 0:
+    if (not math.isfinite(avg_cost) or not math.isfinite(price)
+            or avg_cost <= 0 or price <= 0):
         return facts
-    hist = [float(c) for c in close_hist if c == c and c > 0]
-    if len(hist) < SCORE_DAYS + 1:
-        return facts
-    facts["evaluated"] = True
-    entry_ref = hist[0]
-    facts["latched"] = (any(c >= entry_ref * (1.0 + BREAKEVEN_TRIGGER)
-                            for c in hist)
+    hist = [float(c) for c in close_hist if math.isfinite(c) and c > 0]
+    held_hist = [float(c) for c in close_hist[entry_index:]
+                 if math.isfinite(c) and c > 0]
+    historical_trigger = bool(held_hist) and any(
+        c >= held_hist[0] * (1.0 + BREAKEVEN_TRIGGER) for c in held_hist)
+    facts["latched"] = (historical_trigger
                         or price >= avg_cost * (1.0 + BREAKEVEN_TRIGGER))
     facts["stop_ratio"] = ((1.0 + BREAKEVEN_STOP) if facts["latched"]
                            else (1.0 - STOP_COST_PCT))
     facts["below_stop"] = price <= avg_cost * facts["stop_ratio"]
+    if len(hist) < SCORE_DAYS:
+        return facts
+    facts["evaluated"] = True
     full = hist + [price]
+    # 持仓期首根有效收盘在 hist/full 中的下标 = 两侧有效收盘计数之差。
+    holding_start = len(hist) - len(held_hist)
     neg = 0
     for back in range(SCORE_EXIT_CONFIRM):
         i = len(full) - 1 - back
-        if i < SCORE_DAYS:
+        if i < SCORE_DAYS or i < holding_start:
             break
         if momentum_score(full[i - SCORE_DAYS:i], full[i]) > 0:
             break
@@ -359,12 +365,13 @@ def held_exit_facts(close_hist: Sequence[float], price: float,
 def build_sell_orders(rows: List[RotationRow], positions: List[dict],
                       bars: Dict[str, pd.DataFrame],
                       prices: Dict[str, float],
-                      entry_map: Optional[Dict[str, str]] = None
+                      entry_map: Optional[Dict[str, str]] = None, *,
+                      as_of: Optional[str] = None
                       ) -> Tuple[List[EtfOrder], List[str]]:
     """生成卫星卖出订单（v3_3_2 出场，只管 account=satellite 持仓）。
 
     退出规则（出池持仓直评——池洞结构性消失，池只管买入侧）：
-    ① score ≤ 0 连续 SCORE_EXIT_CONFIRM 日（逐日重放，数据不足不评估）；
+    ① score ≤ 0 连续 SCORE_EXIT_CONFIRM 日（完整历史逐日重放，仅持仓期计数）；
     ② 限亏线：现价 ≤ 成本×0.92；浮盈曾达 +12% 后抬至 成本×1.01（保本损）。
 
     Args:
@@ -376,6 +383,8 @@ def build_sell_orders(rows: List[RotationRow], positions: List[dict],
         prices: {code: 现价}（current_price 缺失时回退）；
         entry_map: {code: 入场日 YYYY-MM-DD}；缺失时以 K 线首日近似
             （单笔全仓建仓下等价；顶加仓情形未定义，本策略不产生）。
+        as_of: 判定日 YYYY-MM-DD，排除当日及未来日线；不传时调用方须只提供
+            已完成日线。日期由编排层传入，判定核不读取系统时间。
     """
     entry_map = entry_map or {}
     orders: List[EtfOrder] = []
@@ -389,28 +398,34 @@ def build_sell_orders(rows: List[RotationRow], positions: List[dict],
         code = p.get("code", "")
         name = p.get("name", "") or code
         df = bars.get(code)
-        if df is None or df.empty:
-            notes.append(f"{name}({code}) 无K线数据，退出不评估（仍持有）")
-            continue
         price = float(p.get("current_price", 0) or 0) or prices.get(code, 0.0)
         avg_cost = float(p.get("cost_price", 0) or 0)
-        entry = entry_map.get(code) or str(df.index[0])
-        hist = df["close"][df.index >= entry]
-        facts = held_exit_facts(list(hist.values), price, avg_cost)
-        if not facts["evaluated"]:
-            notes.append(f"{name}({code}) 数据不足，退出不评估（仍持有）")
-            continue
+        no_bars = df is None or df.empty
+        if no_bars:
+            hist, entry_index = [], 0
+        else:
+            # 今日未完成日线不进入历史，今日只使用一次现价。
+            completed = df if as_of is None else df[df.index < as_of]
+            entry = entry_map.get(code) or str(df.index[0])
+            hist = completed["close"].tolist()
+            entry_index = int((completed.index < entry).sum())
+        facts = held_exit_facts(hist, price, avg_cost, entry_index=entry_index)
         if not (facts["below_stop"] or facts["neg_run"] >= SCORE_EXIT_CONFIRM):
+            if not facts["evaluated"]:
+                missing = "无K线数据" if no_bars else "数据不足"
+                notes.append(f"{name}({code}) {missing}，退出不评估（仍持有）")
             continue
         if facts["below_stop"]:
             reason = "保本损" if facts["latched"] else "跌破成本-8%"
         else:
             reason = f"score转负x{facts['neg_run']}日"
         orders.append(EtfOrder(code=code, name=name, action="sell",
-                                    shares=count, price=price,
-                                    amount=count * price, reason=reason))
+                               shares=count, price=price,
+                               amount=count * price, reason=reason))
+        score = facts["score"]
+        score_text = f"{score:+.4f}" if score is not None else "—"
         notes.append(f"{name}({code}) {reason}"
-                     f"（score={facts['score']:+.4f}，neg_run={facts['neg_run']}，"
+                     f"（score={score_text}，neg_run={facts['neg_run']}，"
                      f"限亏线=成本×{facts['stop_ratio']:.2f}）")
     return orders, notes
 
@@ -457,8 +472,8 @@ def build_buy_orders(rows: List[RotationRow], held_codes: set, total_assets: flo
         reason = (f"动量评分第{r.rank}/{r.n}名（score={r.score:+.4f}），"
                   f"量价热度 {heat_txt}")
         orders.append(EtfOrder(code=r.code, name=r.name, action="buy",
-                                    shares=shares, price=r.price,
-                                    amount=shares * r.price, reason=reason))
+                               shares=shares, price=r.price,
+                               amount=shares * r.price, reason=reason))
         notes.append(f"{r.name}({r.code}) {reason}")
     return orders, notes
 
@@ -632,7 +647,8 @@ def analyze_rotation(positions: List[dict], total_assets: float,
     held_prices = fetch_prices(sorted(held_codes))
 
     sells, sell_notes = build_sell_orders(rows, sat_positions, held_bars,
-                                          held_prices, entry_map)
+                                          held_prices, entry_map,
+                                          as_of=date.today().isoformat())
     sell_amount = sum(o.amount for o in sells)
     buys, buy_notes = build_buy_orders(rows, held_codes, total_assets,
                                        satellite_mv - sell_amount,
