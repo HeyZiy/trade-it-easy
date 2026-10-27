@@ -28,7 +28,7 @@ Tushare 的基金日线和复权因子有权限要求，本工具不需要它的
 东财连接失败时，可用独立入口，不覆盖东财缓存：
 
 ```powershell
-.conda/python.exe -m research.tools.etf_data.fetch_tencent --codes 515880 159611 --start-date 2015-10-01 --end-date 2026-09-30 --cache-dir research/studies/etf_rotation/_cache/pool37_tencent_20260930 --direct --allow-day-response --history-floor-file research/tools/etf_data/_cache/etf_securities.csv
+.conda/python.exe -m research.tools.etf_data.fetch_tencent --codes 515880 159611 --start-date 2015-10-01 --end-date 2026-09-30 --cache-dir research/studies/industry_momentum/_cache/pool37_tencent_20260930 --direct --allow-day-response --history-floor-file research/tools/etf_data/_cache/etf_securities.csv
 ```
 
 `fetch_tencent.py` 分段获取腾讯公开接口的原始OHLC与后复权请求结果，保存每段日期、端点、响应字段及文件SHA256，支持断点重取。备用 `newfqkline` 返回截至终点的最多640条，只有确定覆盖请求起点时才裁去多余早期记录，未覆盖则拒绝截断数据。`--history-floor-file` 只利用已有首根行情日期跳过上市前空请求，不参与选池。
@@ -44,7 +44,7 @@ Tushare 的基金日线和复权因子有权限要求，本工具不需要它的
 `event_adjustment.py` 读取明确的分红/折算记录构建价格，不按价格跳变猜事件：现金分红以除息前收盘计算乘法因子，公开份额折算登记日在下一交易日作用于交易价格。SDK授权区间可获取精确折算因子时，保留公开比例并使用SDK精确价格乘数与生效日，避免比例舍入和日期错位。
 
 ```powershell
-.conda/python.exe -m research.tools.etf_data.event_adjustment --source-cache research/studies/etf_rotation/_cache/pool37_tencent_20260930 --output research/studies/etf_rotation/_cache/pool37_event_adjusted_20260930 --jq-market research/studies/etf_rotation/fit_market.csv --jq-sdk-market research/studies/etf_rotation/_cache/pool37_joinquant_20250711_20260718/market.csv
+.conda/python.exe -m research.tools.etf_data.event_adjustment --source-cache research/studies/industry_momentum/_cache/pool37_tencent_20260930 --output research/studies/industry_momentum/_cache/pool37_event_adjusted_20260930 --jq-market research/studies/etf_rotation/fit_market.csv --jq-sdk-market research/studies/industry_momentum/_cache/pool37_joinquant_20250711_20260718/market.csv
 ```
 
 本次SDK账号只允许2025-07-11至2026-07-18，已合法取得实际交易日2025-07-11至2026-07-17的37只原始/后复权行情共9139行；与已有平台导出3705行重叠，差异仅为旧导出的三位小数舍入。修正后37只均通过该区间核验，日收益差最大约0.000396个百分点。

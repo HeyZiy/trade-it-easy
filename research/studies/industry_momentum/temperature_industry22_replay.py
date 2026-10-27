@@ -8,16 +8,20 @@ status=='eligible'，行业池内排名由 score 降序现算（先对 37 只全
 score 序与平台 rank37 序一致），乘法复权空间、万二最低 5 元、整手、
 决策价缺失继续持有/持币；温度缺失视为被闸；全行业被闸或无合格时持币。
 
-从仓库根运行：python research/studies/etf_rotation/temperature_industry22_replay.py
+从仓库根运行：python research/studies/industry_momentum/temperature_industry22_replay.py
 """
 from __future__ import annotations
 
 import json
+import sys
 from pathlib import Path
 
 import pandas as pd
 
-from temperature_gate_replay import (
+if not __package__:
+    sys.path.insert(0, str(Path(__file__).resolve().parents[3]))
+
+from research.studies.industry_momentum.temperature_gate_replay import (
     INDUSTRY22, load_inputs, metrics, replay, yearly)
 
 HERE = Path(__file__).resolve().parent

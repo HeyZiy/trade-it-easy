@@ -2,7 +2,7 @@
 """生成两个聚宽单文件脚本：时序全套规则 × {固定22行业池, 动态池}。
 
 温度闸无法在平台内复算（需成分股时点成交面板），以"≥0.9 交易日区间表"
-离线嵌入（源 research/studies/etf_rotation/_cache/temperature_panel.pkl，
+离线嵌入（源 research/studies/industry_momentum/_cache/temperature_panel.pkl，
 生成物 _cache/temp_hot_ranges.py）。本生成器从仓库根运行：
 python research/studies/etf_timing/make_jq_scripts.py
 """
@@ -49,7 +49,7 @@ VOL_TARGET, VOL_BAND, VOL_WIN = 0.20, 0.2, 20
 __POOL_DEF__
 
 # 温度高温区间：ETF/成分股成交额比 20 日均值的自身 expanding 分位 ≥0.9 的
-# 交易日（区间含端点；离线生成，源见本仓库 etf_rotation/temperature_build.py）
+# 交易日（区间含端点；离线生成，源见本仓库 industry_momentum/temperature_build.py）
 TEMP_HOT = __TEMP_HOT__
 
 
@@ -249,7 +249,7 @@ def build_variant(kind: str) -> str:
         txt = txt.replace('__TITLE__',
                           'jq_timing_industry22 —— 时序全套规则 × 固定22只行业池（聚客单文件）')
         txt = txt.replace('__VARIANT__',
-                          '#   池 = 固定 22 只行业 ETF（名单同 etf_rotation/unified_industry22.py），'
+                          '#   池 = 固定 22 只行业 ETF（名单同 industry_momentum/unified_industry22.py），'
                           '无重建；\n#   成员不足 25 根收盘时自然跳过。')
         txt = txt.replace('__TEMP_COVER__',
                           '#   本版 22 只全覆盖（温度面板即按此 22 只建）。')

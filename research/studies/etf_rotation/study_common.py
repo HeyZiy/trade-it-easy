@@ -5,6 +5,7 @@ import csv
 import hashlib
 import json
 import math
+import os
 from collections import defaultdict
 from pathlib import Path
 
@@ -104,8 +105,8 @@ def write_json(file, value):
     Path(file).write_text(json_text(value), encoding='utf-8')
 
 
-def source_hashes(files):
-    return [{'file': Path(file).relative_to(HERE).as_posix(),
+def source_hashes(files, *, base=HERE):
+    return [{'file': Path(os.path.relpath(file, base)).as_posix(),
              'sha256': hashlib.sha256(Path(file).read_bytes()).hexdigest()} for file in files]
 
 

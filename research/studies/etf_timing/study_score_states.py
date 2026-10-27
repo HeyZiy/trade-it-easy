@@ -30,7 +30,7 @@ sys.path.insert(0, str(ROOT))
 
 from src.etf.momentum import momentum_score  # noqa: E402
 
-MARKET = ROOT / 'research' / 'studies' / 'etf_rotation' / '_cache' \
+MARKET = ROOT / 'research' / 'studies' / 'industry_momentum' / '_cache' \
     / 'pool37_event_adjusted_20260930' / 'market.csv'
 RESULTS = HERE / 'results' / 'score_states'
 

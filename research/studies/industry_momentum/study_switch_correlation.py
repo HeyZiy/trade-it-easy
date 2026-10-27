@@ -1,6 +1,6 @@
 """Diagnose actual single-position switches; no filtered-account simulation.
 
-Run: python research/studies/etf_rotation/study_switch_correlation.py [output-dir]
+Run: python research/studies/industry_momentum/study_switch_correlation.py [output-dir]
 """
 from __future__ import annotations
 
@@ -13,10 +13,13 @@ if not __package__:
     sys.path.insert(0, str(Path(__file__).resolve().parents[3]))
 
 from research.studies.etf_rotation.study_common import (
-    HERE, counts_by, groups, json_text, mean, number, quantile, read_csv, read_json,
+    counts_by, groups, json_text, mean, number, quantile, read_csv, read_json,
     source_hashes, write_csv, write_json,
 )
-from research.studies.etf_rotation.study_entry_volatility import reconstruct_mixed, snapshots, usable
+from research.studies.industry_momentum.study_entry_volatility import reconstruct_mixed, snapshots, usable
+
+HERE = Path(__file__).resolve().parent
+CROSS_ASSET = HERE.parent / 'etf_rotation'
 
 
 HORIZONS, LOOKBACKS = [5, 10, 20], [120, 60]
@@ -199,13 +202,13 @@ def run(output=HERE / 'results/switch_correlation'):
         if key in market:
             raise ValueError('Duplicate market observation')
         market[key] = row
-    metadata = read_json(HERE / 'fit_metadata.json')
+    metadata = read_json(CROSS_ASSET / 'fit_metadata.json')
     if metadata['export_complete'] is not True or metadata.get('errors'):
         raise ValueError('Incomplete original signal export')
     originals = {code[:6] for code in metadata['codes']}
     if len(originals) != 15:
         raise ValueError('Original reference universe changed')
-    signal_file, signals = HERE / 'fit_signals.csv', {}
+    signal_file, signals = CROSS_ASSET / 'fit_signals.csv', {}
     for row in read_csv(signal_file):
         key = row['date'], row['code'][:6]
         if key in signals:
@@ -213,7 +216,7 @@ def run(output=HERE / 'results/switch_correlation'):
         signals[key] = row
     all_events, forwards, boundaries, reconciliations = [], [], {}, {}
     for account, filename in [('mixed37', 'position_mixed37.csv'), ('original15', 'position.csv')]:
-        days = snapshots(HERE / filename)
+        days = snapshots((CROSS_ASSET if account == 'original15' else HERE) / filename)
         rebuilt = reconstruct_mixed(days)
         if any(day['date'] not in calendar for day in days):
             raise ValueError('Account date missing from market calendar')
@@ -260,7 +263,7 @@ def run(output=HERE / 'results/switch_correlation'):
     robust = {f'{account}|{lookback}': [robustness([row for row in forwards if row['account'] == account and row['lookback'] == lookback], horizon)
               for horizon in HORIZONS] for account in ['mixed37', 'original15'] for lookback in LOOKBACKS}
     structures = pool_snapshots(calendar, market, sorted({row['code'][:6] for row in market_rows}), originals)
-    sources = [market_file, manifest_file, signal_file, HERE / 'fit_metadata.json', HERE / 'position.csv', HERE / 'position_mixed37.csv']
+    sources = [market_file, manifest_file, signal_file, CROSS_ASSET / 'fit_metadata.json', CROSS_ASSET / 'position.csv', HERE / 'position_mixed37.csv']
     result = dict(method=dict(
         primary_lookback=120, sensitivity_lookback=60, horizons=HORIZONS,
         correlation='Pearson of aligned adjusted daily log returns ending strictly before switch; exact 121/61 exchange closes, no fill or skipping',
@@ -269,7 +272,7 @@ def run(output=HERE / 'results/switch_correlation'):
         cost='Sell and buy at 0.02% each; new terminal value scaled by .9998/1.0002; no end liquidation, no spread/slippage; price-path reference, not actual fills',
         reentry='Old ETF appears in any actual closing holding within next 5/10 account trading days, potentially via other assets/cash; right censoring is unknown',
         partial_exit_reasons='Exact exported signals only for original15; industry exits unknown; zero score combines flat/nonpositive momentum and drop filter',
-        sources=source_hashes(sources),
+        sources=source_hashes(sources, base=HERE),
         limits=['Selected historical switches only; high vs low correlations have different assets, dates and scores',
                 'Overlapping windows and repeated pairs; no independence/significance or causal ETF-filter effect',
                 'Closing snapshots miss same-day round trips and cannot verify exact 10:40 exits or prices',

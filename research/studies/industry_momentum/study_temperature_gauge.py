@@ -13,7 +13,7 @@ ETF 间常数性偏差——横截只用自身历史分位；涨停为收盘=最
 近似（ST 5% 漏计）；事件窗口重叠、时间聚集，本检验为描述性条件对照，不做
 显著性断言，稳定性用逐年剔除与分期呈现。
 
-从仓库根运行：python research/studies/etf_rotation/study_temperature_gauge.py
+从仓库根运行：python research/studies/industry_momentum/study_temperature_gauge.py
 """
 from __future__ import annotations
 

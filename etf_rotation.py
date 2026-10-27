@@ -18,15 +18,15 @@ ETF 跨资产动量轮动 — 每日模拟账户入口
 5. 渲染报告 → reports/ 落盘 + 推送。
 
 执行约定：
-- 决策时点与聚宽研究线一致为 10:40（cron 对齐）；现价缺失回退最新收盘并在
-  报告计数。运行时刻不同只影响当次决策价，不改变规则；
+- 决策时点与聚宽研究线一致为 10:40（cron 对齐）；现价缺失时收盘价只供展示，
+  本次不调仓。运行时刻不同只影响当次决策价，不改变规则；
 - 独立策略账户 = 独立流水文件（单池名义期初 100 万），与主台账 core/satellite
   互不可见；account 标签只做复盘归因；
 - 通用批次安全校验（卖出 ≤ 台账持仓、买入额 ≤ 现金 + 卖出回款）单点在
   execute_batch；本入口额外 fail-closed：无截面数据或持仓缺价时整次不调仓，
   避免把取数故障记成"清仓"；
-- 买侧股数由引擎按万二佣金/最低 5 元做资金可行性预检，台账本身按名义口径
-  不记手续费。
+- 买侧股数由引擎按万二佣金/最低 5 元做资金可行性预检，新成交台账按相同口径
+  扣费；现金分红按登记日份额确认，发放日前记应收。
 
 运行：
     python etf_rotation.py            # 记账 + 推送
@@ -47,11 +47,12 @@ from src.logging_config import setup_logging
 setup_env()
 
 from src.etf.rotation import (                    # noqa: E402
-    ACCOUNT, LEDGER_PATH, EtfOrder, plan_rotation, rotation_snapshot,
+    ACCOUNT, LEDGER_PATH, COMMISSION, MIN_COMMISSION, EtfOrder,
+    dividend_records, plan_rotation, rotation_snapshot,
 )
 from src.task_io import notify, save_report       # noqa: E402
 from src.trade_ledger import (                    # noqa: E402
-    derive, load_trades, resolve_prices,
+    append_trade, derive, load_trades,
 )
 from src.trade_ledger.performance import (        # noqa: E402
     execution_summary, render_summary,
@@ -73,7 +74,8 @@ def _execute(orders: List[EtfOrder], trade_date: str, *,
                                qty=o.shares, price=o.price, reason=o.reason)
                     for o in orders]
     res = execute_batch(batch_orders, account=ACCOUNT, trade_date=trade_date,
-                        path=ledger_path or LEDGER_PATH)
+                        path=ledger_path or LEDGER_PATH,
+                        commission_rate=COMMISSION, min_commission=MIN_COMMISSION)
     return res.abort, [oc.outcome_line for oc in res.outcomes]
 
 
@@ -109,12 +111,16 @@ def run(dry_run: bool = False, trade_date: Optional[str] = None) -> str:
     rows, prices, diag = rotation_snapshot(decision_date=decision_date)
 
     trades = load_trades(LEDGER_PATH)
+    distributions = dividend_records(trades, diag.get("dividends", {}), trade_date)
+    if not dry_run:
+        for record in distributions:
+            append_trade(record, path=LEDGER_PATH)
+        trades = load_trades(LEDGER_PATH)
+    else:
+        trades = sorted(trades + distributions, key=lambda t: t.date)
     unpriced = derive(trades, trade_date)
     held_codes = [p["code"] for p in unpriced.positions]
     missing_quotes = [code for code in held_codes if code not in prices]
-    if missing_quotes:
-        # 持仓不在当日池截面里（正常不会发生）：用最新收盘兜底，仍失败则缺价。
-        prices.update(resolve_prices(missing_quotes))
     snap = derive(trades, trade_date, prices)
     positions = snap.positions
     total_assets = snap.total_assets
@@ -137,7 +143,11 @@ def run(dry_run: bool = False, trade_date: Optional[str] = None) -> str:
         f"池内可用 {diag['n']}/{diag['pool']} 只，合格候选 {diag['eligible']} 只",
     ]
     if diag["realtime_missing"]:
-        lines.append(f"- 实时价缺失 {diag['realtime_missing']}/{diag['n']} 只，回退最新收盘")
+        lines.append(f"- 实时价缺失 {diag['realtime_missing']}/{diag['n']} 只，收盘价仅供展示，本次不执行")
+    if distributions:
+        lines.append(f"- {'拟登记' if dry_run else '已登记'}分红权益 {len(distributions)} 项，按公告发放日转为可用现金")
+    if snap.receivables:
+        lines.append(f"- 尚未到账的应收红利：{snap.receivables:,.2f}元（不用于买入）")
     lines += ["", "## 今日截面（15 只池）", ""]
     lines += _cross_section_table(rows)
     lines += [""]
@@ -147,6 +157,12 @@ def run(dry_run: bool = False, trade_date: Optional[str] = None) -> str:
     if not rows:
         guard = ("池内 15 只全部无可用日线数据，按 fail-closed 本次不调仓"
                  "（不清仓、不动持仓）")
+    elif missing_quotes:
+        guard = "持仓现价缺失，本次不执行；收盘价不得用作盘中成交价"
+    elif diag["realtime_missing"]:
+        guard = "实时价不完整，本次不执行；收盘价不得用作盘中成交价"
+    elif any(diag.get("skipped", {}).get(k, 0) for k in ("no_bars", "stale", "bad_close", "duplicate")):
+        guard = "候选池行情或分红数据不完整，本次不执行"
     elif total_assets <= 0:
         guard = "策略账户净值不可用，本次不调仓"
     elif positions and any(float(p.get("current_price") or 0) <= 0 for p in positions):

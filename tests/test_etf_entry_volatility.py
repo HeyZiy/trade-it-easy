@@ -4,7 +4,7 @@ from datetime import date, timedelta
 
 import pytest
 
-from research.studies.etf_rotation.study_entry_volatility import (
+from research.studies.industry_momentum.study_entry_volatility import (
     features_before_entry, reconstruct_mixed, summarize, volatility_band,
 )
 

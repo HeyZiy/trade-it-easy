@@ -4,7 +4,7 @@
 # 导出fit_signals.csv、fit_market.csv、fit_metadata.json。
 # 市场行情使用同一聚宽来源的原始价和后复权价，不取回测结束日之后的数据。
 # 下载到本目录后，用study_etf_fit_forward.py做固定10日与排名持续性研究。
-# 导出尚未经过平台运行验证；若数据不齐，metadata和日志明确记录，不能视为完整。
+# 已有原15只平台导出；新运行若数据不齐，metadata和日志明确记录，不能视为完整。
 
 from jqdata import *
 import numpy as np

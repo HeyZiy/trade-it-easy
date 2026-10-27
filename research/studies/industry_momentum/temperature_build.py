@@ -14,7 +14,7 @@ study_temperature_gauge.py）。
 - ratio_20 = 近 20 个交易日比值均值；pct = 截至 t-1 的 expanding 分位
   （min_obs=120，不足为 NaN，供事件连接时自然剔除早期事件）。
 
-从仓库根运行：python research/studies/etf_rotation/temperature_build.py [--no-cache]
+从仓库根运行：python research/studies/industry_momentum/temperature_build.py [--no-cache]
 """
 from __future__ import annotations
 

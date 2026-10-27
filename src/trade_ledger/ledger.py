@@ -15,7 +15,8 @@ profit/profit_pct/pos_pct，另附归因用的 account）+ entry_map + 组合敞
 - 单池名义期初 NOMINAL_EQUITY，真实资金数字在系统内不存在；呈现全百分比；
 - T+1：date < as_of 的买入才计 avail_count；
 - 整手：qty 必为 100 整数倍，append 处校验收敛（判定口径单点仍在 mx/executor）;
-- 现金 = 名义期初 − Σ买 + Σ卖，无手续费、无调入调出条目；
+- 现金 = 名义期初 − Σ买 + Σ卖 − 已记费用 + 到账分红；旧流水费用默认为0；
+- 分红date为除息日，到账前单列应收，pay_date起转为可用现金；无外部调入调出条目；
 - account 标签（core/satellite/quality_pool/etf_rotation）仅服务复盘归因与
   持仓归属拆分，不分账；独立策略账户用独立流水文件（如质量池、跨资产动量轮动）。
 """
@@ -24,6 +25,7 @@ from __future__ import annotations
 
 import json
 import logging
+import math
 import re
 from dataclasses import asdict, dataclass, field
 from datetime import datetime
@@ -40,7 +42,7 @@ NOMINAL_EQUITY = 1_000_000.0          # 单池名义期初（元，纯名义）
 LOT = 100                              # A 股一手
 DEFAULT_LEDGER_PATH = Path("data/trade_ledger.jsonl")
 
-SIDES = ("buy", "sell")
+SIDES = ("buy", "sell", "dividend")
 ACCOUNTS = ("core", "satellite", "quality_pool", "etf_rotation")
 _DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
 
@@ -57,13 +59,16 @@ class TradeRecord:
     date: str                 # YYYY-MM-DD 交易日
     code: str                 # canonical 归一后的代码
     name: str
-    side: str                 # buy | sell
+    side: str                 # buy | sell | dividend
     qty: int                  # 名义股数，100 整数倍
     price: float              # 名义成交价（影子成交=判定时点现价）
     account: str = "core"     # 归因标签：core/satellite/quality_pool
     reasons: List[str] = field(default_factory=list)
     source: str = "cron"      # cron | book
     manual: bool = False      # True=实盘底仓补记（入场日=该日，不追溯）
+    fee: float = 0.0          # 实际模拟费用；旧流水默认0，不追溯补扣
+    event_id: str = ""        # 分红事件唯一标识，防止重复入账
+    pay_date: str = ""        # 分红到账日；date为除息日，到账前记应收
 
     def __post_init__(self):
         if self.side not in SIDES:
@@ -74,8 +79,18 @@ class TradeRecord:
             raise LedgerError(f"date 须为 YYYY-MM-DD，收到 {self.date!r}")
         if int(self.qty) != self.qty or self.qty <= 0 or self.qty % LOT != 0:
             raise LedgerError(f"qty 须为正 100 整数倍，收到 {self.qty!r}")
-        if self.price <= 0:
+        if not math.isfinite(self.price) or self.price <= 0:
             raise LedgerError(f"price 须为正，收到 {self.price!r}")
+        if not math.isfinite(self.fee) or self.fee < 0:
+            raise LedgerError("fee 须为有限非负数")
+        if self.side == "dividend":
+            if not self.event_id or not self.pay_date or self.pay_date < self.date:
+                raise LedgerError("分红须有唯一事件标识及不早于除息日的到账日")
+            datetime.strptime(self.pay_date, "%Y-%m-%d")
+            if self.fee:
+                raise LedgerError("分红不得记成交费用")
+        elif self.event_id or self.pay_date:
+            raise LedgerError("买卖成交不得附带分红字段")
 
 
 # ── 写侧 ──
@@ -86,6 +101,12 @@ def append_trade(record: TradeRecord,
     record = TradeRecord(**{**asdict(record),
                             "code": canonical_stock_code(record.code)})
     p = Path(path)
+    if record.event_id:
+        for existing in load_trades(p):
+            if existing.event_id == record.event_id:
+                if existing != record:
+                    raise LedgerError("同一分红事件内容不一致，须核对后处理")
+                return existing
     p.parent.mkdir(parents=True, exist_ok=True)
     line = json.dumps(asdict(record), ensure_ascii=False)
     with p.open("a", encoding="utf-8") as f:
@@ -144,6 +165,7 @@ class LedgerSnapshot:
     cash: float
     invested: float
     total_assets: float
+    receivables: float = 0.0
 
 
 def _empty(code: str, name: str) -> dict:
@@ -166,14 +188,26 @@ def derive(trades: List[TradeRecord], as_of: str,
 
     state: Dict[str, dict] = {}
     cash = NOMINAL_EQUITY
+    receivables = 0.0
+    seen_events = set()
     for t in sorted(trades, key=lambda x: x.date):
         if t.date > as_of:
+            continue
+        if t.side == "dividend":
+            if t.event_id in seen_events:
+                raise LedgerError("分红事件重复，流水不自洽")
+            seen_events.add(t.event_id)
+            amount = round(t.qty * t.price, 2)
+            if t.pay_date <= as_of:
+                cash += amount
+            else:
+                receivables += amount
             continue
         s = state.setdefault(t.code, _empty(t.code, t.name))
         if t.name:
             s["name"] = t.name
         if t.side == "buy":
-            avg = s["cost"] * s["count"] + t.price * t.qty
+            avg = s["cost"] * s["count"] + t.price * t.qty + t.fee
             s["count"] += t.qty
             s["cost"] = avg / s["count"]
             if t.date < as_of:
@@ -183,14 +217,14 @@ def derive(trades: List[TradeRecord], as_of: str,
             s["account"] = t.account
             s["last_buy"] = t.date if (s["last_buy"] is None
                                        or t.date >= s["last_buy"]) else s["last_buy"]
-            cash -= t.price * t.qty
+            cash -= t.price * t.qty + t.fee
         else:  # sell
             if t.qty > s["count"]:
                 raise LedgerError(
                     f"卖出 {t.code} {t.date} {t.qty}股 > 台账持仓 {s['count']}股，流水不自洽")
             s["count"] -= t.qty
             s["avail"] = max(0, s["avail"] - t.qty)
-            cash += t.price * t.qty
+            cash += t.price * t.qty - t.fee
         if s["count"] == 0:
             s["avail"] = 0
             s["cost"] = 0.0
@@ -219,14 +253,14 @@ def derive(trades: List[TradeRecord], as_of: str,
         if s["last_buy"]:
             entry_map[code] = s["last_buy"]
 
-    total_assets = cash + invested
+    total_assets = cash + invested + receivables
     if total_assets > 0:
         for pos in positions:
             pos["pos_pct"] = pos["market_value"] / total_assets * 100
     positions.sort(key=lambda p: -p["market_value"])
     return LedgerSnapshot(positions=positions, entry_map=entry_map,
                           cash=cash, invested=invested,
-                          total_assets=total_assets)
+                          total_assets=total_assets, receivables=receivables)
 
 
 def derive_from_file(as_of: str, prices: Optional[Dict[str, float]] = None,

@@ -5,7 +5,7 @@ import pytest
 
 from research.studies.etf_rotation.analyze_positions import analyze
 from research.studies.etf_rotation.study_common import read_csv, read_json, write_csv
-from research.studies.etf_rotation.study_entry_volatility import reconstruct_mixed, snapshots
+from research.studies.industry_momentum.study_entry_volatility import reconstruct_mixed, snapshots
 from research.studies.etf_rotation.study_etf_fit import run
 
 

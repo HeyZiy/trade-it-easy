@@ -2,7 +2,10 @@
 
 生产规则见 [`strategy/industry_momentum.md`](../../../strategy/industry_momentum.md)；
 生产引擎是 [`src/etf/industry_momentum.py`](../../../src/etf/industry_momentum.py)。
-本目录只保留现行研究基线和仍能支撑当前规则判断的证据，历史版本不再保留脚本。
+本目录保留现行研究基线和仍能支撑当前规则判断的证据，lM历史版本不再保留脚本。
+
+2026-10-27将跨资产目录中的行业相关材料合并至本目录。行业与跨资产作为独立
+子策略维护；37只混排及其温度/盈利广度闸条件研究已结束，不再作为跨资产实现方向。
 
 ## 当前基线
 
@@ -29,6 +32,12 @@
 供报告复核。
 
 ## 相关研究
+
+- 转入的[行业比较与诊断](EXPERIMENTS.md)及[材料入口](IMPLEMENTATION.md)：
+  固定22只行业池、温度/盈利广度/估值面板、既有15/37只账户比较及原始数据。
+  这些结果来自固定池单仓排名规则，不替代上面的lM动态池多仓基线，不直接修改生产。
+- [跨资产轮动](../etf_rotation/README.md)：维护15只基线与17只能源扩充，
+  细分行业不参与其单一持仓排名。
 
 - 质量池线：[`../quality_momentum/`](../quality_momentum/README.md)。
 - 时序信号线：[`../etf_timing/`](../etf_timing/README.md)（score 门作为单资产

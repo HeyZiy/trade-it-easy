@@ -1,6 +1,8 @@
 # -*- coding: utf-8 -*-
 """温度闸完整账户重放：混合 37 只排名轮动的条件行业准入对照。
 
+2026-10-27混排研究已结束；本文件仅用于复核既有结果。
+
 问题：事件级已证行业入场亏损集中在温度高位（见 EXPERIMENTS.md 温度计一节）。
 本脚本在本地重放混合 37 只排名轮动账户，单变量加"行业 ETF 仅在温度分位低于
 阈值时有资格参与第一名竞争"，对照无闸基线与原 15 只真实账户。
@@ -18,7 +20,7 @@
   视为被闸（fail-closed）。
 - 执行失败（决策价缺失/停牌）：卖出失败继续持有，买入失败持币，次日重试。
 
-从仓库根运行：python research/studies/etf_rotation/temperature_gate_replay.py
+从仓库根运行：python research/studies/industry_momentum/temperature_gate_replay.py
 """
 from __future__ import annotations
 

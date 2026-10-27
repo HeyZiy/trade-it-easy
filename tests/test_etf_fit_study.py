@@ -141,20 +141,16 @@ def test_control_weights_years_by_signal_count_and_preserves_missing_windows():
 def test_exporter_preserves_strategy_definitions_with_original15_pool():
     original = ast.parse((FOLDER / 'unified_coverage.py').read_text(encoding='utf-8'))
     exporter = ast.parse((FOLDER / 'study_etf_fit_jq.py').read_text(encoding='utf-8'))
-    industry = ast.parse((FOLDER / 'unified_industry22.py').read_text(encoding='utf-8'))
 
     def pool_assignment(tree):
         return next(node for node in ast.walk(tree) if isinstance(node, ast.Assign)
                     and any(isinstance(t, ast.Attribute) and t.attr == 'etf_pool'
                             for t in node.targets))
 
-    mixed_pool, export_pool = pool_assignment(original), pool_assignment(exporter)
+    original_pool, export_pool = pool_assignment(original), pool_assignment(exporter)
     assert len(ast.literal_eval(export_pool.value)) == 15
-    assert len(ast.literal_eval(pool_assignment(industry).value)) == 22
-    assert ast.literal_eval(mixed_pool.value) == (
-        ast.literal_eval(export_pool.value) + ast.literal_eval(pool_assignment(industry).value))
-    # 研究线扩为37只，导出仍冻结原15只；只有池名单允许不同。
-    mixed_pool.value = export_pool.value
+    assert ast.literal_eval(original_pool.value) == ast.literal_eval(export_pool.value)
+    # 平台主入口与观测导出均冻结原15只；交易逻辑必须一致。
     assert ast.dump(original) == ast.dump(ast.Module(body=exporter.body[:len(original.body)], type_ignores=[]))
 
 

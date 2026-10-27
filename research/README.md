@@ -21,8 +21,8 @@ single\_factor 只保留可复用的因子诊断引擎（`single_factor_test.py`
 | [value_revenue](studies/value_revenue/README.md) | 价值因子EP × 营收同比加速 | 第一轮独立研究；EP有收益关联，营收加速增量偏弱，交互缺乏充分支持 |
 | [expectations](studies/expectations/README.md) | 低预期 × 已披露盈利维持 | 低预期＋历史盈利维持全期核查完成，未显示稳定增量；60日控制系数HAC t=−0.37 |
 | [trend](studies/trend/README.md)                                     | 个股趋势策略                        | 已收线（v3证伪）；保留版本链、尸检与失败证据 |
-| [industry\_momentum](studies/industry_momentum/README.md)            | 行业 ETF 动量轮动                   | 现行研究基线 v3\_3\_2 / v3\_3\_4；证据与去重对照见 README；生产规则见 ../strategy/industry\_momentum.md |
-| [etf\_rotation](studies/etf_rotation/README.md) | ETF跨资产趋势与相对强弱轮动 | 原15只与37只混合池研究；收益假设、交易规则、已有对照及后续主线见README |
+| [industry\_momentum](studies/industry_momentum/README.md)            | 行业 ETF 动量轮动                   | 现行lM基线；并入固定22只及行业条件诊断材料，37只混排研究已结束 |
+| [etf\_rotation](studies/etf_rotation/README.md) | ETF跨资产趋势与相对强弱轮动 | 独立维护15只基线与17只能源扩充；行业材料见industry_momentum |
 | [broad\_index\_strategies](studies/broad_index_strategies/README.md) | 宽基ETF长期配置的持有体验与择时 | 一级比较12只ETF；二级固定参数单跑恒生科技，20/10及ATR通道改善当前样本体验，结论按标的区分 |
 
 ## 研究如何形成积累

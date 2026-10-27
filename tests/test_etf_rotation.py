@@ -557,8 +557,6 @@ def entry_env(monkeypatch, tmp_path):
     """入口运行环境：独立 tmp 台账 + 固定截面（不触网）。"""
     ledger = tmp_path / "trade_ledger_etf_rotation.jsonl"
     monkeypatch.setattr(entry, "LEDGER_PATH", ledger)
-    # run() 仅在持仓缺价时才调用 resolve_prices（真实实现会取数）——测试里禁网
-    monkeypatch.setattr(entry, "resolve_prices", lambda codes: {})
 
     state = {"rows": _entry_rows(),
              "prices": {"510300": 4.0, "513100": 2.0}}
@@ -652,7 +650,7 @@ class TestEntryIntegration:
         append_trade(old, path=entry_env.ledger)
         before = load_trades(entry_env.ledger)
 
-        # 持仓码不在截面现价里，resolve_prices 兜底也被禁用 → 持仓现价缺失
+        # 持仓没有实时报价，入口不允许用收盘价代替成交价。
         entry_env.state["prices"] = {}
         report = entry.run(dry_run=False, trade_date=DECISION_STR)
 

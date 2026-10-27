@@ -19,11 +19,11 @@ ETF 跨资产动量轮动 — 单只全仓引擎
 
 与聚宽版的已知口径差（实现即事实，写进策略文档）：
   - 决策时点：研究线在聚宽 10:40 用分钟现价决策；本地入口按运行时刻取实时报价，
-    部署在 10:40 即为同一口径，回退最新收盘时会在报告里计数。
+    部署在10:40即为同一口径；报价缺失时收盘仅展示，整轮不调仓。
   - 复权：研究线用聚宽 fq='pre'；本地用 data_provider 新浪日线 + 份额折算前复权
-    （`adjust_series` 只处理 >25% 的折算/拆分跳变），不处理现金分红。
-  - 成交：本地是名义影子成交台账（无手续费、无滑点纪录），买侧下单量按
-    万二佣金/最低 5 元做资金可行性预检，保证报告里的指令在真实账户可执行。
+    （`adjust_series`处理>25%的折算/拆分跳变），另按明确分红事件调整历史价格。
+  - 成交：本地是名义影子成交台账，新成交按万二/最低5元计费；
+    卖出净回款用于买入资金预检，未模拟滑点。
 
 判定核（momentum_score / build_rows / plan_rotation）零 I/O、无状态：
 每天从日线与现价重算，跨日只依赖台账流水（持仓与现金的唯一事实来源）。
@@ -58,8 +58,8 @@ LEDGER_PATH = "data/trade_ledger_etf_rotation.jsonl"   # 独立流水，与主�
 SIM_ACCOUNT = SimAccount(                      # 收盘成绩消费方经 src/sim_accounts 枚举
     ledger_path=LEDGER_PATH, label="ETF跨资产动量轮动",
     benchmark={"name": "沪深300价格指数", "index": "000300"})
-COMMISSION = 0.0002      # 资金可行性预检用：佣金万二（台账本身不记费用）
-MIN_COMMISSION = 5.0     # 资金可行性预检用：最低佣金 5 元
+COMMISSION = 0.0002      # 新成交佣金万二，规划与台账执行使用同一口径
+MIN_COMMISSION = 5.0     # 新成交最低佣金5元
 SCORE_HINT = "10:40"     # 研究线的决策时点；部署 cron 应对齐（报告里展示）
 
 # 15 只池成员：(代码, 名称, 资产类别)。名称用短名，报告可读；代码为 6 位裸码。
@@ -94,7 +94,7 @@ class RotationRow:
     name: str
     group: str
     close: float          # 最近一根已完成日线的前复权收盘
-    price: float          # 当日现价（实时报价；缺失回退最新收盘并计数）
+    price: float          # 实时报价；缺失时收盘价仅供截面展示，入口不执行
     score: float          # 动量评分；数据不足/非法为 nan，跳水为 0
     eligible: bool = False
     rank: int = 0         # 合格候选内排名（1 = 最强）；不合格为 0
@@ -111,7 +111,7 @@ def is_eligible(score: float) -> bool:
 def affordable_shares(cash: float, price: float) -> int:
     """资金可行性预检：在扣除佣金（万二、最低 5 元）后能买的最大整手股数。
 
-    台账本身不记费用，这里只保证报告里的买入指令在真实账户不会因费用被拒。
+    台账执行会扣除同口径费用；此处保证计划金额包含买入费用。
     """
     if not (math.isfinite(cash) and math.isfinite(price)) or cash <= 0 or price <= 0:
         return 0
@@ -175,7 +175,7 @@ def build_rows(bars: Dict[str, pd.DataFrame], prices: Dict[str, float], *,
     """当日截面：打分 + 合格判定 + 排名（合格候选按 score 降序，1 = 最强）。
 
     prices[code] = 当日现价（实时报价）；缺失回退决策日 bar 收盘，再退最近
-    已完成收盘，并计入 diag["realtime_missing"]。
+    已完成收盘，仅供展示，并计入diag["realtime_missing"]；入口据此暂停执行。
     """
     rows: List[RotationRow] = []
     skipped = {"no_bars": 0, "short": 0, "stale": 0, "bad_close": 0,
@@ -287,7 +287,9 @@ def plan_rotation(rows: Sequence[RotationRow], positions: List[dict],
             # 旧持仓无法卖出时不得再买入，否则会同时持有两只（违反单只全仓）
             notes.append("存在无法估价的持仓，本次不买入（避免与旧持仓重叠）")
         else:
-            buy_cash = float(avail_cash) + sum(o.amount for o in sells)
+            buy_cash = float(avail_cash) + sum(
+                o.amount - round(max(MIN_COMMISSION, o.amount * COMMISSION), 2)
+                for o in sells)
             shares = affordable_shares(buy_cash, target.price)
             if shares <= 0:
                 notes.append(f"{target.name}({target.code}) 可用资金不足一手，未买入")
@@ -305,35 +307,38 @@ def plan_rotation(rows: Sequence[RotationRow], positions: List[dict],
 
 # ── 编排（取数 + 决策组装，不执行交易）──
 
-def fetch_bars(codes: Sequence[str]) -> Dict[str, pd.DataFrame]:
-    """拉 ETF 日线全历史并逐只做份额折算前复权（data_provider 单点取数）。
+def fetch_bars(codes: Sequence[str], decision_date: Optional[date] = None) -> Dict[str, pd.DataFrame]:
+    """新浪原始日线+明确现金分红，调整至决策日价格单位。
 
-    与行业动量轮动使用同一价格口径：新浪日线原始价 + `adjust_series`
-    （>25% 折算/拆分跳变前复权）；不处理现金分红（策略文档记为已知口径差）。
+    份额折算沿用adjust_series；分红表获取失败不回退为“没有分红”。
     """
     from data_provider.bars import get_etf_daily
+    from data_provider.fund_actions import adjusted_close, get_fund_events
 
+    decision_date = decision_date or date.today()
     frames: Dict[str, pd.DataFrame] = {}
     for code in codes:
         try:
-            df = get_etf_daily(code, adjust="qfq")
+            df = get_etf_daily(code, adjust=None)
+            events = get_fund_events(code, decision_date.isoformat())
+            if df is None or df.empty:
+                continue
+            frame = df[["date", "close"]].copy()
+            frame["date"] = pd.to_datetime(frame["date"], errors="coerce")
+            frame = frame.dropna(subset=["date"]).sort_values("date").set_index("date")
+            frame["close"] = adjusted_close(frame["close"], events, decision_date)
+            frame = frame.loc[frame.index <= pd.Timestamp(decision_date)]
+            frame.attrs["dividends"] = [e for e in events if e["cash_per_share"] > 0]
+            frames[code] = frame
         except Exception:
             import logging
             logging.getLogger(__name__).warning("ETF 日线获取失败 %s", code,
                                                 exc_info=True)
-            df = None
-        if df is None or df.empty:
-            continue
-        frame = df[["date", "close"]].copy()
-        frame["date"] = pd.to_datetime(frame["date"], errors="coerce")
-        frame = frame.dropna(subset=["date"]).sort_values("date")
-        frame["close"] = pd.to_numeric(frame["close"], errors="coerce")
-        frames[code] = frame.set_index("date")
     return frames
 
 
 def fetch_prices(codes: Sequence[str]) -> Dict[str, float]:
-    """池成员当日现价（实时报价逐只拉取；单只失败静默跳过，由调用方回退）。"""
+    """池成员当日现价（实时报价逐只拉取；单只失败跳过，由入口阻止当次执行）。"""
     from data_provider import get_fetcher
 
     fetcher = get_fetcher()
@@ -360,8 +365,40 @@ def rotation_snapshot(decision_date: Optional[date] = None
     previous = latest_trading_day_on_or_before(decision_date - timedelta(days=1),
                                                fallback=None)
     codes = [code for code, _, _ in POOL]
-    bars = fetch_bars(codes)
+    bars = fetch_bars(codes, decision_date=decision_date)
     prices = fetch_prices([code for code in codes if code in bars])
     rows, diag = build_rows(bars, prices, decision_date=decision_date,
                             prev_trading_day=previous)
+    diag["dividends"] = {code: frame.attrs.get("dividends", []) for code, frame in bars.items()}
     return rows, prices, diag
+
+
+def dividend_records(trades, events_by_code, as_of):
+    """登记日收盘份额确定权益；除息日记应收，发放日才转为可用现金。"""
+    from src.trade_ledger import TradeRecord, derive
+
+    existing = {t.event_id: t for t in trades if t.event_id}
+    records = []
+    for code, events in events_by_code.items():
+        for event in events:
+            if event["date"] > as_of:
+                continue
+            amount = float(event["cash_per_share"])
+            if amount <= 0:
+                continue
+            registered = event["record_date"]
+            entitled = derive(trades, registered).held_counts().get(code, 0)
+            if not entitled:
+                continue
+            event_id = f"fund-dividend:{code}:{event['date']}"
+            record = TradeRecord(event["date"], code, NAME_BY_CODE.get(code, code),
+                                 "dividend", entitled, amount, account=ACCOUNT,
+                                 event_id=event_id, pay_date=event["pay_date"],
+                                 reasons=[f"权益登记日 {registered}，红利发放日 {event['pay_date']}"])
+            if event_id in existing:
+                if existing[event_id] != record:
+                    raise ValueError(f"{code}分红公告与已记权益不一致，须核对")
+                continue
+            existing[event_id] = record
+            records.append(record)
+    return records

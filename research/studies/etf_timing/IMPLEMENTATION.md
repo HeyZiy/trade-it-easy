@@ -5,7 +5,7 @@
 
 | 用途 | 入口 | 池 |
 | --- | --- | --- |
-| 固定行业池版 | [jq_timing_industry22.py](jq_timing_industry22.py) | 固定 22 只行业 ETF（同 etf_rotation 名单），温度闸全覆盖 |
+| 固定行业池版 | [jq_timing_industry22.py](jq_timing_industry22.py) | 固定 22 只行业 ETF（同 industry_momentum 固定行业名单），温度闸全覆盖 |
 | 动态池版 | [jq_timing_dynamic_pool.py](jq_timing_dynamic_pool.py) | lM 规则动态池（20 日重建六关，相关性 0.90 研究基线），温度表仅覆盖 22 只，表外成员默认无闸（`STRICT_TEMP=True` 切 fail-closed） |
 
 两版由 [make_jq_scripts.py](make_jq_scripts.py) 从同一模板生成（改模板后重跑生成器，
@@ -15,10 +15,10 @@
 ## 温度闸的嵌入方式
 
 平台无法复算温度（需申万时点成分×全成分股成交额面板），以"temp_pct ≥0.9 的
-交易日区间表"离线嵌入：源 `etf_rotation/_cache/temperature_panel.pkl` → 压缩为
+交易日区间表"离线嵌入：源 `industry_momentum/_cache/temperature_panel.pkl` → 压缩为
 `_cache/temp_hot_ranges.py`（734 段区间）→ 生成器注入两个脚本的 `TEMP_HOT`。
 区间端点含端；表冻结至 2026-09-30，跑更长窗口或实盘前须重建
-（重建入口 `etf_rotation/temperature_build.py`）。温度口径与 etf_rotation 线全部
+（重建入口 `industry_momentum/temperature_build.py`）。温度口径与行业目录保留的既有
 温度实验一致（20 日均值比的自身 expanding 分位，min_obs=120）。
 
 ## 与相邻策略的关系

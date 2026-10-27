@@ -1,6 +1,6 @@
 """核对聚宽六账户导出，汇总净收益、回撤、年度表现与实际决策。
 
-从仓库根运行：python research/studies/etf_rotation/analyze_pool_controls.py
+从仓库根运行：python research/studies/industry_momentum/analyze_pool_controls.py
 """
 from __future__ import annotations
 

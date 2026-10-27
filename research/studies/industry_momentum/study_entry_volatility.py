@@ -1,6 +1,6 @@
 """Diagnose observed entry volatility without changing the pool or trading rules.
 
-Run: python research/studies/etf_rotation/study_entry_volatility.py [output-dir]
+Run: python research/studies/industry_momentum/study_entry_volatility.py [output-dir]
 """
 from __future__ import annotations
 
@@ -15,9 +15,12 @@ if not __package__:
 
 from research.studies.etf_rotation.analyze_positions import analyze
 from research.studies.etf_rotation.study_common import (
-    HERE, counts_by, csv_fields, fee, groups, json_text, mean, number, positive, quantile,
+    counts_by, csv_fields, fee, groups, json_text, mean, number, positive, quantile,
     read_csv, read_json, source_hashes, write_csv, write_json,
 )
+
+HERE = Path(__file__).resolve().parent
+CROSS_ASSET = HERE.parent / 'etf_rotation'
 
 
 BANDS = ['below_1pct', '1_to_2pct', 'at_least_2pct']
@@ -227,7 +230,7 @@ def segment_inputs():
             raise ValueError(f'Mixed segment differs from previous independent study: {row["entry"]} {row["code"]}')
         mixed.append({**{key: value for key, value in row.items() if key != 'path'}, 'account': 'mixed37',
                       'group': old['group'], 'net_return': row['net_pnl'] / row['entry_notional'], **path_metrics(row['path'])})
-    original = analyze(HERE / 'position.csv', include_episodes=True)
+    original = analyze(CROSS_ASSET / 'position.csv', include_episodes=True)
     originals = [dict(account='original15', group='original15', code=row['code'][:6], name=row['name'],
                       entry=row['entry'], exit=row.get('exit', ''), closed=row['closed'], complete_pnl=True,
                       holding_days=row['closeHoldingDays'], entry_notional=row['entryNotional'], net_pnl=row['netPnl'],
@@ -284,7 +287,7 @@ def run(output=HERE / 'results/entry_volatility'):
                                 if orig and industry else None,
                                 equal_weight_year_gap=mean(row['industry_minus_original_mean'] for row in years
                                                            if row['original_n'] >= 3 and row['industry_n'] >= 3), by_year=years))
-    sources = [market_file, inputs['mixedFile'], HERE / 'position.csv', HERE / 'position_mixed37.csv', cache / 'manifest.json']
+    sources = [market_file, inputs['mixedFile'], CROSS_ASSET / 'position.csv', HERE / 'position_mixed37.csv', cache / 'manifest.json']
     result = dict(method=dict(
         volatility='Sample std of 20 adjusted log returns from 21 closes ending BEFORE entry; 25 exact exchange closes required',
         common_bands_daily={'below_1pct': '[0, .01)', '1_to_2pct': '[.01, .02)', 'at_least_2pct': '[.02, infinity)'},
@@ -295,7 +298,7 @@ def run(output=HERE / 'results/entry_volatility'):
         quick_loss='Closed net-losing segment with at most 3 observed closing days',
         jump='Top 3 positive adjusted log returns / sum of all positive log returns in 24 pre-entry returns; concentration >= 50%',
         robustness='High minus medium volatility; year/code strata each need >=5 entries per band; omit-one diagnostics are descriptive',
-        sources=source_hashes(sources),
+        sources=source_hashes(sources, base=HERE),
         limits=['Observed selected entries only; no causal filter effect or alternative account return',
                 'Segment returns are not additive or compound account returns; calendar-year risk is not entry-year mean return',
                 'Group dates/scores/exposures differ; volatility conditioning does not eliminate selection bias',

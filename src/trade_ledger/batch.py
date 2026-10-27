@@ -56,6 +56,7 @@ class OrderOutcome:
     qty: int           # 实际记账股数（skipped 为 0）
     status: str        # ok | failed | skipped
     message: str = ""
+    fee: float = 0.0
 
     @property
     def amount(self) -> float:
@@ -69,7 +70,8 @@ class OrderOutcome:
         if self.status == ST_SKIPPED:
             return f"⚠️ 跳过 {head}：{self.message}"
         if self.status == ST_OK:
-            return f"✅ {head} {self.qty}股 ≈ {self.amount:,.0f}元 —— 已记账（{o.reason}）"
+            fee = f"；佣金 {self.fee:.2f}元" if self.fee else ""
+            return f"✅ {head} {self.qty}股 ≈ {self.amount:,.0f}元 —— 已记账（{o.reason}）{fee}"
         return f"❌ {head} {self.qty}股 —— 记账失败: {self.message}"
 
 
@@ -86,7 +88,9 @@ def _converge(order: BatchOrder) -> int:
 
 def execute_batch(orders: List[BatchOrder], *, account: str,
                   trade_date: Optional[str] = None,
-                  path: Optional[Path | str] = None) -> BatchResult:
+                  path: Optional[Path | str] = None,
+                  commission_rate: float = 0.0,
+                  min_commission: float = 0.0) -> BatchResult:
     """执行一批台账指令：收敛 → 安全校验 → 先卖后买逐笔记账。
 
     持仓/现金只从 path 派生，不接受调用方快照；account 仅归因不分账。
@@ -94,6 +98,8 @@ def execute_batch(orders: List[BatchOrder], *, account: str,
     """
     path = DEFAULT_LEDGER_PATH if path is None else path
     trade_date = trade_date or date.today().isoformat()
+    if any(not math.isfinite(v) or v < 0 for v in (commission_rate, min_commission)):
+        raise LedgerError("佣金参数须为有限非负数")
 
     # 整手收敛（先收敛后校验，校验数字即真实记账数字）
     plan: List[tuple] = []      # (归一后的指令, 最终记账记录)
@@ -101,6 +107,8 @@ def execute_batch(orders: List[BatchOrder], *, account: str,
     for o in orders:
         qty = 0
         try:
+            if o.side not in ("buy", "sell"):
+                raise LedgerError("批次只接受买入和卖出指令")
             qty = _converge(o) if o.qty > 0 else 0
             if qty <= 0:
                 outcomes.append(OrderOutcome(
@@ -114,7 +122,8 @@ def execute_batch(orders: List[BatchOrder], *, account: str,
             record = TradeRecord(
                 date=trade_date, code=normalized.code, name=o.name, side=o.side,
                 qty=qty, price=normalized.price,
-                account=account, reasons=[o.reason] if o.reason else [])
+                account=account, reasons=[o.reason] if o.reason else [],
+                fee=round(max(min_commission, qty * normalized.price * commission_rate), 2))
             if not math.isfinite(record.qty * record.price):
                 raise LedgerError("成交金额非有限数，拒绝记账")
             plan.append((normalized, record))
@@ -144,10 +153,10 @@ def execute_batch(orders: List[BatchOrder], *, account: str,
             return BatchResult(
                 abort=f"{o.name}({o.code}) 累计卖出 {sold_counts[o.code]} 股 > 持仓 {held} 股")
 
-    # 初始计划预检：买入总额不得超过台账现金 + 计划卖出回款（费用盲检；
-    # 计划侧 affordable_shares 已按费用从严预检，严口径在前，见 quality_pool/execution）
-    sell_amount = sum(r.qty * r.price for _, r in sells)
-    buy_amount = sum(r.qty * r.price for _, r in buys)
+    # 初始计划预检：买入总额不得超过台账现金 + 计划卖出回款（含本批次显式费用；
+    # 默认费用为0，现有其他策略维持原口径）
+    sell_amount = sum(r.qty * r.price - r.fee for _, r in sells)
+    buy_amount = sum(r.qty * r.price + r.fee for _, r in buys)
     if not all(math.isfinite(value) for value in (sell_amount, buy_amount, cash + sell_amount)):
         return BatchResult(abort="批次累计成交金额或资金非有限数，拒绝记账")
     if _cash_short(buy_amount, cash + sell_amount):
@@ -163,10 +172,10 @@ def execute_batch(orders: List[BatchOrder], *, account: str,
         message = ""
         if o.side == "sell" and record.qty > current.held_counts().get(o.code, 0):
             message = f"卖出 {record.qty} 股 > 当前台账持仓 {current.held_counts().get(o.code, 0)} 股"
-        elif o.side == "buy" and _cash_short(record.qty * record.price, current.cash):
+        elif o.side == "buy" and _cash_short(record.qty * record.price + record.fee, current.cash):
             message = (f"买入额 {record.qty * record.price:,.2f} 元 > "
                        f"实际台账现金 {current.cash:,.2f} 元，本笔零记账")
-        change = record.qty * record.price * (1 if o.side == "sell" else -1)
+        change = record.qty * record.price * (1 if o.side == "sell" else -1) - record.fee
         if not math.isfinite(current.cash + change):
             message = "记账后现金非有限数，本笔零记账"
         if message:
@@ -175,7 +184,7 @@ def execute_batch(orders: List[BatchOrder], *, account: str,
             continue
         try:
             append_trade(record, path=path)
-            outcomes.append(OrderOutcome(order=o, qty=record.qty, status=ST_OK))
+            outcomes.append(OrderOutcome(order=o, qty=record.qty, status=ST_OK, fee=record.fee))
         except (LedgerError, OSError) as e:
             logger.warning(f"批次记账失败 {o.side} {o.code} {record.qty}股: {e}")
             outcomes.append(OrderOutcome(order=o, qty=record.qty, status=ST_FAILED,
@@ -184,6 +193,6 @@ def execute_batch(orders: List[BatchOrder], *, account: str,
 
 
 def _cash_short(amount: float, available: float) -> bool:
-    """只容忍浮点累加误差；台账名义额保持原无费用口径。"""
+    """只容忍浮点累加误差；允许费用后的现金校验只容忍浮点误差。"""
     return amount > available and not math.isclose(
         amount, available, rel_tol=0.0, abs_tol=1e-7)

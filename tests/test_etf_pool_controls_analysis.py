@@ -7,7 +7,7 @@ import pytest
 
 
 SCRIPT = (Path(__file__).resolve().parents[1] /
-          'research/studies/etf_rotation/analyze_pool_controls.py')
+          'research/studies/industry_momentum/analyze_pool_controls.py')
 SPEC = importlib.util.spec_from_file_location('pool_controls_analysis_test', SCRIPT)
 analysis = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(analysis)

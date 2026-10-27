@@ -4,7 +4,7 @@ from datetime import date, timedelta
 
 import pytest
 
-from research.studies.etf_rotation.study_switch_correlation import (
+from research.studies.industry_momentum.study_switch_correlation import (
     correlation_before, forward_pair, pearson, reentry_within,
 )
 

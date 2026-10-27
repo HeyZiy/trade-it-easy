@@ -31,6 +31,11 @@ def load_performance(ledger_path):
 
 def _fingerprint(trades, asof):
     payload = [asdict(t) for t in trades if t.date <= asof]
+    # Preserve fingerprints for old fee-free records after adding optional fields.
+    for row in payload:
+        for key in ("fee", "event_id", "pay_date"):
+            if not row.get(key):
+                row.pop(key, None)
     return hashlib.sha256(json.dumps(payload, sort_keys=True, ensure_ascii=False)
                           .encode("utf-8")).hexdigest()
 
@@ -132,6 +137,7 @@ def collect_close(ledger_path, asof, benchmark, *, close_prices, index_prices,
     row = {"date": asof, "nav": snapshot.total_assets / NOMINAL_EQUITY if valid else None,
            "equity": snapshot.total_assets if valid else None,
            "cash": snapshot.cash, "invested": snapshot.invested if valid else None,
+           "receivables": snapshot.receivables,
            "holding_count": len(codes), "trading_days": len(days) if days else None,
            "benchmark_nav": benchmark_nav, "issues": issues,
            "fingerprint": _fingerprint(trades, asof)}
@@ -173,6 +179,8 @@ def render_summary(ledger_path=DEFAULT_LEDGER_PATH, *, today=None, label="组合
                       f"仓位 {latest['invested'] / latest['equity'] * 100:.1f}%｜"
                       f"现金 {latest['cash'] / latest['equity'] * 100:.1f}%｜持仓 {latest['holding_count']} 只", "",
                       f"基准：{state['benchmark']['name']}；起点 {state['baseline_date']} 收盘。"]
+            if latest.get("receivables", 0):
+                lines.append(f"应收红利 {latest['receivables'] / latest['equity'] * 100:.2f}%（未计入可用现金）。")
             if rows and latest["date"] != rows[-1]["date"]:
                 lines.append(f"⚠️ {rows[-1]['date']} 的成绩不完整，以上保留最近完整估值。")
         if rows:
@@ -181,7 +189,10 @@ def render_summary(ledger_path=DEFAULT_LEDGER_PATH, *, today=None, label="组合
         if rows:
             if rows[-1]["fingerprint"] != _fingerprint(trades, rows[-1]["date"]):
                 lines.append("⚠️ 台账补记后历史估值已失效，须重新采集对应日期。")
-        lines.append("名义模拟口径；未计手续费、分红和份额变更，不代表实盘收益。")
+        if Path(ledger_path).name == "trade_ledger_etf_rotation.jsonl":
+            lines.append("名义模拟口径；新成交计佣金、已登记分红计应收/到账，旧成交不追溯补扣；未计滑点和份额变更。")
+        else:
+            lines.append("名义模拟口径；未计手续费、分红和份额变更，不代表实盘收益。")
     except Exception:
         logger.exception("模拟成绩读取失败")
         lines.append("⚠️ 模拟成绩暂不可用，本次信号与执行结果见下文。")

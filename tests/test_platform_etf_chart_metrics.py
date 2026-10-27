@@ -12,7 +12,7 @@ import pytest
 
 
 FOLDER = Path(__file__).resolve().parents[1] / 'research/studies/etf_rotation'
-SCRIPTS = ['unified_coverage.py', 'unified_industry22.py', 'unified_energy17.py',
+SCRIPTS = ['unified_coverage.py', '../industry_momentum/unified_industry22.py', 'unified_energy17.py',
            'unified_hold_qualified.py', 'study_etf_fit_jq.py',
            'same_pool_baseline.py']
 

@@ -14,7 +14,7 @@ import pandas as pd
 import pytest
 
 
-FOLDER = Path(__file__).resolve().parents[1] / 'research/studies/etf_rotation'
+FOLDER = Path(__file__).resolve().parents[1] / 'research/studies/industry_momentum'
 
 
 def load(name, filename):
@@ -132,8 +132,8 @@ def test_six_isolated_accounts_and_pools_match_existing_versions(world):
     assert [a['label'] for a in w.module.g.accounts] == [
         '15等权', '15合格持有', '15排名', '37等权', '37合格持有', '37排名']
     assert all(p.available_cash == 100000 for p in w.ctx.subportfolios)
-    for filename, expected in (('unified_coverage.py', w.module.MIXED37),
-                               ('study_etf_fit_jq.py', w.module.ORIGINAL15)):
+    for filename, expected in (('mixed37_reference.py', w.module.MIXED37),
+                               ('../etf_rotation/study_etf_fit_jq.py', w.module.ORIGINAL15)):
         tree = ast.parse((FOLDER / filename).read_text(encoding='utf-8'))
         pool = next(node.value for node in ast.walk(tree) if isinstance(node, ast.Assign)
                     and any(isinstance(t, ast.Attribute) and t.attr == 'etf_pool'
@@ -152,7 +152,7 @@ def test_signal_numerically_matches_original_and_uses_only_past_history(world, d
     code = w.module.ORIGINAL15[0]
     w.histories[code] = np.exp(np.arange(25) * daily_slope)
     w.prices[code] = math.exp(25 * daily_slope) * last_ratio
-    original = load('original_rotation_test', 'unified_coverage.py')
+    original = load('original_rotation_test', '../etf_rotation/unified_coverage.py')
     original.attribute_history = w.module.attribute_history
     original.get_current_data = w.module.get_current_data
     strategy = original.EtfRotationStrategy(w.ctx)
