@@ -120,61 +120,25 @@ _realtime_cache = TtlSnapshotCache(ttl=600, label="实时行情(efinance)")
 _etf_realtime_cache = TtlSnapshotCache(ttl=600, label="ETF实时行情(efinance)")
 
 
-# 列名映射：efinance 可能返回中英两种列名（中英别名并列）
-_EFINANCE_COLS = {
-    '股票名称': 'name', 'name': 'name',
-    '最新价': 'price', 'price': 'price',
-    '涨跌幅': 'change_pct', 'change_pct': 'change_pct',
-    '涨跌额': 'change_amount', 'change_amount': 'change_amount',
-    '成交量': 'volume', 'volume': 'volume',
-    '成交额': 'amount', 'amount': 'amount',
-    '换手率': 'turnover_rate', 'turnover_rate': 'turnover_rate',
-    '振幅': 'amplitude', 'amplitude': 'amplitude',
-    '最高': 'high', 'high': 'high',
-    '最低': 'low', 'low': 'low',
-    '开盘': 'open_price', 'open': 'open_price',
-    '量比': 'volume_ratio', 'volume_ratio': 'volume_ratio',
-    '市盈率': 'pe_ratio', 'pe_ratio': 'pe_ratio',
-    '总市值': 'total_mv', 'total_mv': 'total_mv',
-    '流通市值': 'circ_mv', 'circ_mv': 'circ_mv',
-}
-
-# ETF 快照列较少：无量比/估值
-_EFINANCE_ETF_COLS = {
-    '股票名称': 'name', 'name': 'name',
-    '最新价': 'price', 'price': 'price',
-    '涨跌幅': 'change_pct', 'change_pct': 'change_pct',
-    '涨跌额': 'change_amount', 'change_amount': 'change_amount',
-    '成交量': 'volume', 'volume': 'volume',
-    '成交额': 'amount', 'amount': 'amount',
-    '换手率': 'turnover_rate', 'turnover_rate': 'turnover_rate',
-    '振幅': 'amplitude', 'amplitude': 'amplitude',
-    '最高': 'high', 'high': 'high',
-    '最低': 'low', 'low': 'low',
-    '开盘': 'open_price', 'open': 'open_price',
-}
-
-
 def _build_efinance_quote(row: pd.Series, stock_code: str) -> UnifiedRealtimeQuote:
-    """efinance A 股快照一行 → 统一报价（列映射为该端点本地数据）。"""
+    """efinance A 股快照一行 → 统一报价（列名为 efinance 中文列，0.5.8/0.5.9 一致）。"""
     quote = UnifiedRealtimeQuote(
         code=stock_code,
-        name=str(row.get(_EFINANCE_COLS['股票名称'], '')),
+        name=str(row.get('股票名称', '')),
         source="efinance",
-        price=safe_float(row.get(_EFINANCE_COLS['最新价'])),
-        change_pct=safe_float(row.get(_EFINANCE_COLS['涨跌幅'])),
-        change_amount=safe_float(row.get(_EFINANCE_COLS['涨跌额'])),
-        volume=safe_int(row.get(_EFINANCE_COLS['成交量'])),
-        amount=safe_float(row.get(_EFINANCE_COLS['成交额'])),
-        turnover_rate=safe_float(row.get(_EFINANCE_COLS['换手率'])),
-        amplitude=safe_float(row.get(_EFINANCE_COLS['振幅'])),
-        high=safe_float(row.get(_EFINANCE_COLS['最高'])),
-        low=safe_float(row.get(_EFINANCE_COLS['最低'])),
-        open_price=safe_float(row.get(_EFINANCE_COLS['开盘'])),
-        volume_ratio=safe_float(row.get(_EFINANCE_COLS['量比'])),
-        pe_ratio=safe_float(row.get(_EFINANCE_COLS['市盈率'])),
-        total_mv=safe_float(row.get(_EFINANCE_COLS['总市值'])),
-        circ_mv=safe_float(row.get(_EFINANCE_COLS['流通市值'])),
+        price=safe_float(row.get('最新价')),
+        change_pct=safe_float(row.get('涨跌幅')),
+        change_amount=safe_float(row.get('涨跌额')),
+        volume=safe_int(row.get('成交量')),
+        amount=safe_float(row.get('成交额')),
+        turnover_rate=safe_float(row.get('换手率')),
+        high=safe_float(row.get('最高')),
+        low=safe_float(row.get('最低')),
+        open_price=safe_float(row.get('今开')),
+        volume_ratio=safe_float(row.get('量比')),
+        pe_ratio=safe_float(row.get('动态市盈率')),
+        total_mv=safe_float(row.get('总市值')),
+        circ_mv=safe_float(row.get('流通市值')),
     )
     logger.info(f"[实时行情-efinance] {stock_code} {quote.name}: 价格={quote.price}, "
                 f"涨跌={quote.change_pct}%, 量比={quote.volume_ratio}, "
@@ -183,21 +147,24 @@ def _build_efinance_quote(row: pd.Series, stock_code: str) -> UnifiedRealtimeQuo
 
 
 def _build_efinance_etf_quote(row: pd.Series, stock_code: str) -> UnifiedRealtimeQuote:
-    """efinance ETF 快照一行 → 统一报价（列名同股票但缺量比/估值列）。"""
+    """efinance ETF 快照一行 → 统一报价（列名与 A 股快照相同，含 20 列）。"""
     quote = UnifiedRealtimeQuote(
         code=stock_code,
-        name=str(row.get(_EFINANCE_ETF_COLS['股票名称'], '')),
+        name=str(row.get('股票名称', '')),
         source="efinance",
-        price=safe_float(row.get(_EFINANCE_ETF_COLS['最新价'])),
-        change_pct=safe_float(row.get(_EFINANCE_ETF_COLS['涨跌幅'])),
-        change_amount=safe_float(row.get(_EFINANCE_ETF_COLS['涨跌额'])),
-        volume=safe_int(row.get(_EFINANCE_ETF_COLS['成交量'])),
-        amount=safe_float(row.get(_EFINANCE_ETF_COLS['成交额'])),
-        turnover_rate=safe_float(row.get(_EFINANCE_ETF_COLS['换手率'])),
-        amplitude=safe_float(row.get(_EFINANCE_ETF_COLS['振幅'])),
-        high=safe_float(row.get(_EFINANCE_ETF_COLS['最高'])),
-        low=safe_float(row.get(_EFINANCE_ETF_COLS['最低'])),
-        open_price=safe_float(row.get(_EFINANCE_ETF_COLS['开盘'])),
+        price=safe_float(row.get('最新价')),
+        change_pct=safe_float(row.get('涨跌幅')),
+        change_amount=safe_float(row.get('涨跌额')),
+        volume=safe_int(row.get('成交量')),
+        amount=safe_float(row.get('成交额')),
+        turnover_rate=safe_float(row.get('换手率')),
+        high=safe_float(row.get('最高')),
+        low=safe_float(row.get('最低')),
+        open_price=safe_float(row.get('今开')),
+        volume_ratio=safe_float(row.get('量比')),
+        pe_ratio=safe_float(row.get('动态市盈率')),
+        total_mv=safe_float(row.get('总市值')),
+        circ_mv=safe_float(row.get('流通市值')),
     )
     logger.info(f"[ETF实时行情-efinance] {stock_code} {quote.name}: "
                 f"价格={quote.price}, 涨跌={quote.change_pct}%, 换手率={quote.turnover_rate}%")
