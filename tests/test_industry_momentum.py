@@ -618,6 +618,21 @@ class TestBuyOrders:
         orders, _ = build_buy_orders(rows, set(), 1_000_000, 100_000, 200_000)
         assert orders == []
 
+    def test_existing_overweight_shrinks_buys_within_cap(self):
+        """存续持仓超出均分份额时，补槽按剩余额度缩量，买入后总额不超上限。
+
+        入口的整批预算校验会连卖出一起否决，所以补槽金额必须自己落在上限内
+        （40k 存续 + 2 槽 × 上限/3 会到 106k → 缩到 2 槽 × 30k = 100k）。
+        """
+        rows = _rows(10)
+        orders, _ = build_buy_orders(rows, {rows[0].code}, 1_000_000,
+                                     40_000, 200_000)
+        cap = 100_000
+        per = (cap - 40_000) / 2
+        assert [o.code for o in orders] == [rows[1].code, rows[2].code]
+        assert all(o.shares == round_lot(per / o.price) for o in orders)
+        assert 40_000 + sum(o.amount for o in orders) <= cap
+
     def test_sizing_capped_by_avail_cash(self):
         """可用现金 < 预算/3 时按现金均分。"""
         rows = _rows(10)

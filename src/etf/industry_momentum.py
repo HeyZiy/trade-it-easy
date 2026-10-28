@@ -438,8 +438,10 @@ def build_buy_orders(rows: List[RotationRow], held_codes: set, total_assets: flo
     - 准入 = score>0（负分=下降趋势/跳水清零，不买）且量价热度 < CROWD_PCT_MAX
       （闸常开=101，缺数据放行），已持有不重复买；
     - 全部卫星持仓占槽（出池持仓受管，出池不释放槽位）；
-    - 每只金额 = min(可用现金/空槽数, 卫星账户总值/TOPN)，卫星账户总值口径 =
-      min(总资产 × 预算上限, 卫星市值 + 可用现金)；卫星市值已触及预算上限则不买；
+    - 每只金额 = min(可用现金/新槽数, 剩余额度/新槽数, 卫星账户总值/TOPN)；
+      剩余额度 = max(0, 预算上限 − 存续卫星市值)，卫星账户总值口径 =
+      min(总资产 × 预算上限, 卫星市值 + 可用现金)；卫星市值已触及预算上限则不买。
+      存续持仓超出均分份额时，补槽按剩余额度缩量，买入后总额不超预算上限；
     - 成交价口径 = 当日现价（实时报价，尾盘≈收盘）。
     """
     budget_cap = total_assets * SATELLITE_BUDGET_RATIO
@@ -458,7 +460,8 @@ def build_buy_orders(rows: List[RotationRow], held_codes: set, total_assets: flo
         return [], []
 
     sleeve = min(budget_cap, satellite_mv + avail_cash)
-    per = min(avail_cash / len(selected), sleeve / TOPN)
+    room = max(0.0, sleeve - satellite_mv)
+    per = min(avail_cash / len(selected), room / len(selected), sleeve / TOPN)
     if per <= 0:
         return [], []
 
