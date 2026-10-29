@@ -102,6 +102,28 @@ class TestDegrade:
             assert merge_realtime_quotes("600000", [a], ["s1"]) is None
         assert "所有数据源均失败" in caplog.text
 
+    def test_single_source_failure_is_info_only(self, caplog):
+        """单源失败是 failover 的一步：只记 INFO，后续源拿到就不告警。"""
+        a = _fetcher_a(RuntimeError("超时"))
+        b = _fetcher_b(_full("600000", "s2"))
+        with caplog.at_level(logging.INFO):
+            q = merge_realtime_quotes("600000", [a, b], ["s1", "s2"])
+        assert q.source == "s2"
+        assert not [r for r in caplog.records if r.levelno >= logging.WARNING]
+        assert any("[s1] 取数失败" in r.getMessage() for r in caplog.records)
+
+    def test_all_missed_warns_once_with_reasons(self, caplog):
+        """全部源都没给可用报价：只发一条 WARNING，并带上各源原因。"""
+        a = _fetcher_a(None)
+        b = _fetcher_b(UnifiedRealtimeQuote(code="600000", source="s2"))  # price=None
+        with caplog.at_level(logging.INFO):
+            assert merge_realtime_quotes("600000", [a, b], ["s1", "s2"]) is None
+        warns = [r for r in caplog.records if r.levelno == logging.WARNING]
+        assert len(warns) == 1
+        msg = warns[0].getMessage()
+        assert "所有数据源均失败" in msg
+        assert "[s1] 无此标的" in msg and "[s2] 报价缺基础数据" in msg
+
 
 class TestPriorityConsistency:
     def test_undeclared_source_name_warns_once(self, caplog):

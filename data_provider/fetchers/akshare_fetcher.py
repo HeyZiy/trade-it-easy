@@ -579,7 +579,7 @@ class AkshareFetcher(BaseFetcher):
         else:
             source_key = "akshare_etf" if is_etf_code(stock_code) else "akshare_em"
         if not circuit_breaker.is_available(source_key):
-            logger.warning(f"[熔断] 数据源 {source_key} 处于熔断状态，跳过")
+            logger.info(f"[熔断] 数据源 {source_key} 处于熔断状态，跳过")
             return None
         if source == "sina":
             return self._get_stock_realtime_quote_sina(stock_code)

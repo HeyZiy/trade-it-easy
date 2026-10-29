@@ -16,6 +16,10 @@ akshare 与 efinance 的全量快照端点共用一个形状：
 
 约定：抓取成功即记熔断成功（空结果也是成功的空市场，存哨兵）；
 重试耗尽记失败并存哨兵——TTL 内同端点不再反复请求。
+
+日志口径：本模块只记单源遥测（INFO），不发 WARNING——单源失败是正常
+failover 的一步，最终是否有行情由调用方（realtime.merge_realtime_quotes
+汇总 / 策略入口的降级汇总）判一次。
 """
 
 import json
@@ -80,7 +84,7 @@ def snapshot_realtime_quote(
     """
     cb = circuit_breaker if circuit_breaker is not None else get_realtime_circuit_breaker()
     if not cb.is_available(source_key):
-        logger.warning(f"[熔断] 数据源 {source_key} 处于熔断状态，跳过")
+        logger.info(f"[熔断] 数据源 {source_key} 处于熔断状态，跳过")
         return None
     if backoff is None:
         backoff = lambda attempt: min(2 ** attempt, 5.0)
@@ -92,11 +96,11 @@ def snapshot_realtime_quote(
             df = _refresh_snapshot(cache, cb, source_key, throttle,
                                    fetch, attempts, backoff, now)
         if df is None or df.empty:
-            logger.warning(f"[实时行情] {cache.label} 快照为空，跳过 {stock_code}")
+            logger.info(f"[实时行情] {cache.label} 快照为空，跳过 {stock_code}")
             return None
         row = _locate_row(df, code_columns, stock_code, code_zfill)
         if row is None:
-            logger.warning(f"[API返回] {source_label} 未找到 {stock_code} 的实时行情")
+            logger.info(f"[API返回] {source_label} 未找到 {stock_code} 的实时行情")
             return None
         return row_builder(row, stock_code)
     except Exception as e:
@@ -134,12 +138,10 @@ def _refresh_snapshot(cache: TtlSnapshotCache, cb, source_key: str,
             time.sleep(backoff(attempt))
 
     if df is None:
-        # 设计内降级（返回空表 → 多源合并/调用方回退收盘，diag 计数），
-        # 单源失败只进日志；是否影响策略由调用方汇总实际缺失行情后告警。
-        logger.warning(f"[API错误] {cache.label} 最终失败（共 {attempts} 次尝试）; "
-                       f"{_snapshot_failure_detail(last_error)}; "
-                       "该数据源本轮不可用，返回空快照，由调用方尝试其他数据源；"
-                       "最终行情是否缺失以调用方汇总为准")
+        # 单源失败只进 INFO 遥测；是否影响策略由调用方（多源合并/入口汇总）告警一次。
+        logger.info(f"[API错误] {cache.label} 最终失败（共 {attempts} 次尝试）; "
+                    f"{_snapshot_failure_detail(last_error)}; "
+                    "该数据源本轮不可用，返回空快照，由调用方尝试其他数据源")
         cb.record_failure(source_key, str(last_error))
         df = pd.DataFrame()
     cache.store(df, now)

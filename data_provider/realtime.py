@@ -83,6 +83,9 @@ def merge_realtime_quotes(
     Returns:
         合并后的 UnifiedRealtimeQuote：首个有效源为 primary，后续源最多补充一次
         缺失字段；全部失败返回 None。
+
+    日志口径：单源失败/缺价只记 INFO（failover 的一步），循环末尾若没拿到
+    任何可用报价，才发一条 WARNING 汇总各源原因。
     """
     index = _variant_index(fetchers)
     unknown = [s.strip().lower() for s in source_priority
@@ -94,7 +97,7 @@ def merge_realtime_quotes(
 
     primary_quote = None
     supplement_attempts = 0
-    errors = []
+    misses = []
 
     for source in source_priority:
         source = source.strip().lower()
@@ -105,11 +108,15 @@ def merge_realtime_quotes(
         try:
             quote = fetcher.get_realtime_quote(stock_code, **kwargs)
         except Exception as e:
-            logger.warning(f"[实时合并] {stock_code} [{source}] 失败: {e}")
-            errors.append(f"[{source}] {e}")
+            logger.info(f"[实时合并] {stock_code} [{source}] 取数失败: {e}")
+            misses.append(f"[{source}] 取数失败")
             continue
 
-        if quote is None or not quote.has_basic_data():
+        if quote is None:
+            misses.append(f"[{source}] 无此标的")
+            continue
+        if not quote.has_basic_data():
+            misses.append(f"[{source}] 报价缺基础数据")
             continue
 
         if primary_quote is None:
@@ -133,8 +140,7 @@ def merge_realtime_quotes(
     if primary_quote is not None:
         return primary_quote
 
-    if errors:
-        logger.warning(f"[实时合并] {stock_code} 所有数据源均失败，降级处理: {'; '.join(errors)}")
-    else:
-        logger.warning(f"[实时合并] {stock_code} 无可用数据源")
+    logger.warning(
+        f"[实时合并] {stock_code} 所有数据源均失败，调用方按设计降级: "
+        f"{'; '.join(misses) if misses else '无可尝试的数据源'}")
     return None

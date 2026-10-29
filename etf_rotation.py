@@ -168,6 +168,8 @@ def run(dry_run: bool = False, trade_date: Optional[str] = None) -> str:
     elif positions and any(float(p.get("current_price") or 0) <= 0 for p in positions):
         guard = "持仓现价缺失，无法确定卖出金额，本次不调仓"
     if guard:
+        # 单源缺失在行情层只记 INFO；到这里才是真正影响策略的行情故障，汇总成一条 WARNING
+        logger.warning(f"[行情降级] 轮动本次不执行: {guard}")
         lines += ["## ⛔ 本次不执行", "", f"- {guard}", ""]
         return "\n".join(lines)
 

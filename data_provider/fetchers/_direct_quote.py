@@ -16,6 +16,9 @@
   本模块不做重复检查。
 
 与 _snapshot_quote（全量快照形）并列：那是「拉全表查行」，这是「一票一请求」。
+
+日志口径：单源失败只记 INFO 遥测（failover 的一步），是否真的取不到行情
+由调用方（realtime.merge_realtime_quotes 汇总 / 策略入口降级汇总）判一次。
 """
 
 import logging
@@ -74,12 +77,11 @@ def direct_realtime_quote(
     cb = circuit_breaker if circuit_breaker is not None else get_realtime_circuit_breaker()
     api_start = time.time()
 
-    def _fail(category: str, detail: str, error_type: str, elapsed: float,
-              level=logging.WARNING) -> None:
+    def _fail(category: str, detail: str, error_type: str, elapsed: float) -> None:
         message = build_direct_failure_message(
             source_name, endpoint, stock_code, symbol,
             category, detail, elapsed, error_type)
-        logger.log(level, message)
+        logger.info(message)
         cb.record_failure(source_key, message)
 
     try:
@@ -120,5 +122,5 @@ def direct_realtime_quote(
     except Exception as e:
         elapsed = time.time() - api_start
         category, detail = classify_http_error(e)
-        _fail(category, detail, type(e).__name__, elapsed, level=logging.ERROR)
+        _fail(category, detail, type(e).__name__, elapsed)
         return None

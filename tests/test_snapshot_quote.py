@@ -120,11 +120,15 @@ def test_empty_market_stores_sentinel_without_failure():
     assert cache.saved == 1
 
 
-def test_row_missing_returns_none_without_failure():
+def test_row_missing_returns_none_without_failure(caplog):
     cache = _FakeCache()
     breaker = _FakeBreaker()
-    assert _seam(cache, lambda: _df(["600002"]), breaker) is None
+    with caplog.at_level(logging.INFO):
+        assert _seam(cache, lambda: _df(["600002"]), breaker) is None
     assert breaker.failures == []
+    # 「本源没有这只标的」是正常 failover，不发 WARNING，只留 INFO 遥测
+    assert not [r for r in caplog.records if r.levelno >= logging.WARNING]
+    assert any("未找到" in r.getMessage() for r in caplog.records)
 
 
 def test_fused_breaker_skips_fetch():
@@ -188,9 +192,10 @@ def test_invalid_json_explains_failure_and_fallback(caplog, body, reason):
     assert "将重试" in retries[0].getMessage()
     assert "重试已耗尽" in retries[1].getMessage()
     final = [r for r in records if "最终失败" in r.getMessage()]
-    assert len(final) == 1 and final[0].levelno == logging.WARNING
+    assert len(final) == 1 and final[0].levelno == logging.INFO
     assert "该数据源本轮不可用" in final[0].getMessage()
     assert "其他数据源" in final[0].getMessage()
+    assert not [r for r in records if r.levelno >= logging.WARNING]  # 单源失败不发 WARNING
     assert "secret-value" not in caplog.text
     assert breaker.successes == [] and len(breaker.failures) == 1
 
