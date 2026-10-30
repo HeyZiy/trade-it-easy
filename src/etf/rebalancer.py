@@ -7,9 +7,9 @@ ETF 再平衡引擎
 职责（纯计算核，零 I/O）：
 1. 中性基准 → 目标配比（无偏移，不做动态择时，见 strategy/etf_allocation.md）
 2. 比较实际持仓 vs 目标 → 生成调仓指令（旧钱唯一动作）；行情价格经
-   compare(prices=...) 参数注入，取价由入口编排层（etf_observe）完成
+   compare(prices=...) 参数注入，取价由周度批次编排层（src/etf/allocation）完成
 3. 触发判定（should_rebalance）与订单一起装配为 RebalancePlan 纯值产物，
-   执行由 etf_observe 统一批次完成（本模块只出指令）
+   执行由周度批次统一完成（src/etf/allocation.run，本模块只出指令）
 
 **与市场状态完全无关**（不读环境参数，防护腿同规则减仓）。
 依据：组合层面 trending_down 无前瞻信息（后 20 日胜率
@@ -17,7 +17,7 @@ ETF 再平衡引擎
 
 整手口径单点在 src/mx/executor：买侧 round_lot（向下取整后强凑≥100）、
 卖侧 floor_lot(min(应卖, 持仓))（不足一手跳过该笔，残腿进 odd_lots 供报告列手动待办）。
-新钱投放参考（全市场估值分位）由 etf_observe 报告生成，仅建议不自动执行。
+新钱投放参考（全市场估值分位）由 src/etf/allocation 周报生成，仅建议不自动执行。
 """
 
 import logging
@@ -245,7 +245,7 @@ class ETFRebalancer:
         """compare + 触发层 + 执行层结论 一次装配为纯值 RebalancePlan。
 
         口径：
-        - **执行门 = 有指令即执行**（消费方 etf_observe 读 `orders` 非空）；
+        - **执行门 = 有指令即执行**（消费方 src/etf/allocation 读 `orders` 非空）；
         - `should`/触发层结论只作报告分级，不拦执行；
         - `reason` 描述**执行层事实**，与实际动作逐字一致。
         待决（未决）：是否把执行门改为 `should`（即 5%/15% 真的拦执行）——

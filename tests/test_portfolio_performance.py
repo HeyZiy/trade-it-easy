@@ -7,7 +7,10 @@ import pandas as pd
 import pytest
 
 from src.trade_ledger.ledger import TradeRecord, append_trade, derive, load_trades
-from src.trade_ledger.performance import collect_close, performance_path, render_summary, execution_summary
+from src.trade_ledger.performance import (
+    _fingerprint, collect_close, execution_summary, performance_path,
+    render_summary, valid_records,
+)
 
 
 def calendar(start, end):
@@ -46,15 +49,35 @@ def test_realized_and_floating_profit_are_both_in_nav(ledger):
     assert "现金 100.0%" in render_summary(ledger, today=date(2026, 9, 23))
 
 
+def test_valid_records_filters_by_date_fingerprint_and_positive_nav(ledger):
+    trades = load_trades(ledger)
+    good = {"date": "2026-09-22", "nav": 1.0,
+            "fingerprint": _fingerprint(trades, "2026-09-22"), "issues": []}
+    stale = dict(good, date="2026-09-23", fingerprint="bad")   # 流水已变更
+    empty = dict(good, date="2026-09-23", nav=None)            # 估值不完整
+    future = dict(good, date="2026-09-30")                     # 未到日期
+    rows, valid = valid_records(trades, [good, stale, empty, future], "2026-09-23")
+    assert [r["date"] for r in rows] == ["2026-09-22", "2026-09-23", "2026-09-23"]
+    assert valid == [good]
+
+
 @pytest.mark.parametrize("price", [None, 0, -1, float("nan"), float("inf")])
 def test_missing_or_invalid_quote_never_becomes_loss(ledger, price):
     collect(ledger)
     state = collect(ledger, "2026-09-24", prices={"600001": price})
     assert state["records"][-1]["nav"] is None
+    assert "positions" not in state["records"][-1]
     text = render_summary(ledger, today=date(2026, 9, 24))
     assert "收盘截至 2026-09-23" in text
     assert "估值不完整" in text and "600001" in text
     assert "-100.00%" not in text
+
+
+def test_valid_close_snapshot_keeps_each_position(ledger):
+    (position,) = collect(ledger, prices={"600001": 11.0})["records"][-1]["positions"]
+    assert position == {"code": "600001", "name": "测试股", "count": 100,
+                        "cost_price": 10.0, "close": 11.0,
+                        "market_value": 1100.0, "pos_pct": 0.11}
 
 
 def test_missing_benchmark_keeps_valid_account_return(ledger):
@@ -189,7 +212,7 @@ def test_two_account_collector_keeps_ledgers_untouched(tmp_path, monkeypatch):
     monkeypatch.setattr(ClosingPrices, "index_prices", lambda self, codes, asof: {c: 100 if asof == "2026-09-21" else 102 for c in codes})
     now = datetime(2026, 9, 23, 15, 30, tzinfo=timezone(timedelta(hours=8)))
     report, errors = entry.run(now=now)
-    assert errors == 0 and "ETF共享组合" in report and "质量池轮动" in report
+    assert errors == 0 and "核心配置" in report and "质量池轮动" in report
     assert all(performance_path(p).exists() for p in (main, pool))
     assert [p.read_bytes() for p in (main, pool)] == before
     # 补采更早日期失败时，也要报告该日期的失败，不被已存在的最新记录掩盖。

@@ -1,0 +1,18 @@
+[Unit]
+Description=Trade it easy read-only dashboard
+After=network.target
+
+[Service]
+Type=simple
+WorkingDirectory=/root/trade-it-easy
+Environment=TRADE_DASHBOARD_ROOT=/root/trade-it-easy
+Environment=PYTHONPATH=/root/trade-it-easy
+EnvironmentFile=/etc/trade-dashboard.env
+ExecStart=/root/miniconda/envs/rt/bin/python /opt/trade-dashboard/dashboard.py
+Restart=on-failure
+RestartSec=5
+NoNewPrivileges=true
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target

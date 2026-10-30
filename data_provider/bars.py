@@ -110,7 +110,7 @@ def get_etf_daily_em(code: str, end_date: str) -> pd.DataFrame:
     """东财双线日线：原始 OHLC + 供应商后复权 OHLC（hfq_ 前缀同表），禁止猜复权。
 
     与 get_etf_daily（新浪单源）是同一 ETF 日线缝上的第二适配器：本线为
-    供应商后复权口径，消费方是唐奇安通道观察（etf_observe/trend）与研究
+    供应商后复权口径，消费方是唐奇安通道观察（src/etf/allocation、src/etf/trend）与研究
     缓存（research/tools/etf_data）。价格两条线来自同一供应商；成交额为元，
     成交量由手转换为份。失败抛错（区别于 get_etf_daily 返 None 的
     fail-soft），让缓存构建方保留旧缓存并记录失败，不回退到猜测复权。

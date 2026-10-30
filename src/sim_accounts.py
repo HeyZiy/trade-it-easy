@@ -6,13 +6,14 @@
 CONTEXT.md「单池」：独立策略账户 = 独立台账文件。本模块只回答"现在有哪几个
 模拟账户"，各账户的台账路径、标签与收盘基准定义在各自家里：
 
-- src/etf/config.py         ETF 共享组合（主台账，含 core/satellite 两标签）
+- src/etf/config.py         核心配置（主台账）
+- src/etf/industry_account.py 行业动量（独立模拟台账）
 - src/quality_pool/config.py 质量池轮动（独立台账）
 - src/etf/rotation.py        ETF 跨资产动量轮动（独立台账）
 
 与 src/trade_ledger/ledger.ACCOUNTS 的分工：那是流水行 account 标签的
-合法集合（一个台账文件可含多个标签，主台账即如此）；本表是台账文件级的
-模拟账户枚举，供收盘成绩（portfolio_report）等报告消费方读取——消费方
+合法集合；本表是台账文件级的
+模拟账户枚举，供收盘成绩（portfolio_report）、dashboard 等消费方读取——消费方
 不再逐家 import 台账路径。all_accounts() 调用时才 import 各家（注册表
 顺序 = 报告章节顺序）；新增账户 = 在其家里定义描述符 + 此处加一行。
 """
@@ -35,9 +36,10 @@ class SimAccount:
 
 
 def all_accounts():
-    """全部模拟账户，报告章节顺序（共享 → 质量池 → 跨资产轮动）。"""
-    from src.etf.config import SIM_ACCOUNT as etf_shared
+    """全部模拟账户，报告章节顺序（核心 → 行业 → 质量池 → 跨资产轮动）。"""
+    from src.etf.config import SIM_ACCOUNT as core
+    from src.etf.industry_account import SIM_ACCOUNT as industry
     from src.etf.rotation import SIM_ACCOUNT as rotation
     from src.quality_pool.config import SIM_ACCOUNT as quality_pool
 
-    return [etf_shared, quality_pool, rotation]
+    return [core, industry, quality_pool, rotation]

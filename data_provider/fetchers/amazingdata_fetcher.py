@@ -104,6 +104,16 @@ def _code_to_tgw_format(code: str) -> str:
     return f"{code}.{suffix}"
 
 
+def _flatten_snapshot(raw):
+    """query_snapshot 按日期嵌套返回 {20261030: {tgw: df}}，合并一层供按代码取值。"""
+    if isinstance(raw, dict) and raw and all(isinstance(v, dict) for v in raw.values()):
+        merged: Dict[str, Any] = {}
+        for inner in raw.values():
+            merged.update(inner)
+        return merged
+    return raw
+
+
 # 项目根目录：本文件位于 <repo>/data_provider/fetchers/ 下，故 parents[2] 是仓库根
 _PROJECT_ROOT = Path(__file__).resolve().parents[2]
 
@@ -484,9 +494,10 @@ class AmazingDataFetcher(BaseFetcher):
         day_int = int(day.strftime("%Y%m%d"))
 
         try:
-            snapshot_dict = self._market_data.query_snapshot(
+            raw_snapshot = self._market_data.query_snapshot(
                 [tgw_code], begin_date=day_int, end_date=day_int,
             )
+            snapshot_dict = _flatten_snapshot(raw_snapshot)
         except SystemExit:
             raise DataFetchError("AmazingData 查询被中断")
         except Exception as e:

@@ -95,12 +95,11 @@ def _status_text(row) -> str:
 
 def _cross_section_table(rows) -> List[str]:
     """当日截面表（合格候选在前、按名次；不合格按分数降序）。"""
-    lines = ["| 名次 | 标的 | 类别 | 现价 | 评分 | 状态 |",
-             "| --- | --- | --- | ---: | ---: | --- |"]
+    lines = ["| 标的 | 类别 | 评分 | 状态 |",
+             "| --- | --- | ---: | --- |"]
     for row in rows:
-        rank = str(row.rank) if row.rank else "—"
-        lines.append(f"| {rank} | {row.name}({row.code}) | {row.group} | "
-                     f"{row.price:.3f} | {_fmt_score(row)} | {_status_text(row)} |")
+        lines.append(f"| {row.name}({row.code}) | {row.group} | "
+                     f"{_fmt_score(row)} | {_status_text(row)} |")
     return lines
 
 

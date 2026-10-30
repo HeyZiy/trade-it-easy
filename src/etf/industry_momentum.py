@@ -562,20 +562,11 @@ def fetch_bars(codes: List[str]) -> Dict[str, pd.DataFrame]:
 
 
 def fetch_prices(codes: List[str]) -> Dict[str, float]:
-    """池成员当日现价（实时报价逐只拉取；单只失败静默跳过，由调用方回退）。"""
-    from data_provider import get_fetcher
+    """池成员当日现价（批量实时口径见 data_provider.manager.realtime_quotes；
+    单只失败/缺价不入结果，调用方按缺失回退收盘价）。"""
+    from data_provider.manager import realtime_quotes
 
-    fm = get_fetcher()
-    out: Dict[str, float] = {}
-    for code in codes:
-        try:
-            q = fm.get_realtime_quote(code)
-        except Exception:
-            logger.warning(f"实时报价获取失败 {code}", exc_info=True)
-            continue
-        if q is not None and q.has_basic_data():
-            out[code] = float(q.price)
-    return out
+    return realtime_quotes(codes)[0]
 
 
 def rotation_snapshot() -> Tuple[List[RotationRow], dict]:

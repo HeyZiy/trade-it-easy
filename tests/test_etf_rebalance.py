@@ -40,7 +40,7 @@ def test_unheld_target_buys_with_injected_price():
     orders, dev, odd = R.compare(TARGET, [], 100_000,
                                  prices={"563360": 1.0})
     o = _orders_by_code(orders)["563360"]
-    assert o.action == "buy" and o.quantity == round_lot(17000)  # 0.17 × 10万
+    assert o.action == "buy" and o.quantity == round_lot(8500)  # 0.085 × 10万
     assert dev > 0 and odd == []
 
 
@@ -52,7 +52,7 @@ def test_missing_price_skips_buy_silently():
 
 def test_position_price_wins_over_injection():
     """持仓自带价格优先，prices 不覆盖。"""
-    positions = [_pos("515180", "红利ETF", 10000, 1.0)]  # 市值 1 万，占 20% > 目标 14%
+    positions = [_pos("515180", "红利ETF", 10000, 1.0)]  # 市值 1 万，占 20% > 目标 7%
     orders, _, _ = R.compare(TARGET, positions, 50_000,
                              prices={"515180": 99.0})
     o = _orders_by_code(orders)["515180"]
@@ -70,11 +70,11 @@ def test_odd_lot_leg_becomes_todo_not_abort_order():
 
 
 def test_sell_clamped_to_held_and_floored():
-    """应卖 280 股、持仓 350 → 整手 200（向下取整，不多卖）。"""
+    """应卖 315 股、持仓 350 → 整手 300（向下取整，不多卖）。"""
     positions = [_pos("515180", "红利ETF", 350, 1.0, mv=350)]
     orders, _, odd = R.compare(TARGET, positions, 500)
     o = _orders_by_code(orders)["515180"]
-    assert o.action == "sell" and o.quantity == 200
+    assert o.action == "sell" and o.quantity == 300
     assert odd == []
 
 
@@ -133,8 +133,8 @@ def test_reason_matches_execution_decision():
     """文案与执行一致：有指令时 reason 不得说"无指令/无需"，
     单类 2%~5% 的批次照样执行（执行门＝有指令即执行），reason 如实写触发层未达线。
     """
-    # 红利 17% vs 目标 14% → 单类偏离 3%（> 2% 出指令，≤ 5% 触发层不达线）
-    plan = R.build_plan(TARGET, _at_target(**{"515180": 0.17}), 50_000)
+    # 红利 10% vs 目标 7% → 单类偏离 3%（> 2% 出指令，≤ 5% 触发层不达线）
+    plan = R.build_plan(TARGET, _at_target(**{"515180": 0.10}), 50_000)
     assert plan.orders, plan.reason
     assert plan.should is False, plan.reason
     assert "无指令" not in plan.reason and "无需" not in plan.reason, plan.reason
@@ -145,7 +145,7 @@ def test_reason_matches_execution_decision():
 def test_trigger_layer_does_not_block_execution():
     """契约：触发层只分级、不拦执行——plan.should 为 False 时 orders 仍非空，
     消费方按 orders 执行（改执行门到 should 属策略语义变更，需先裁决）。"""
-    plan = R.build_plan(TARGET, _at_target(**{"515180": 0.17}), 50_000)
+    plan = R.build_plan(TARGET, _at_target(**{"515180": 0.10}), 50_000)
     assert plan.should is False and len(plan.orders) > 0
 
 
@@ -158,7 +158,7 @@ def test_trigger_fires_on_magnitude_not_on_executability():
 
 def test_no_orders_reason_is_about_the_order_filter_not_absence_of_deviation():
     """无指令时也不能说"无偏离"：偏离存在但都 < 2%（碎股噪声）。"""
-    plan = R.build_plan(TARGET, _at_target(**{"515180": 0.145}), 50_000)
+    plan = R.build_plan(TARGET, _at_target(**{"515180": 0.075}), 50_000)
     assert plan.orders == [], plan.reason
     assert "无指令" in plan.reason and "2%" in plan.reason, plan.reason
     assert "无偏离" not in plan.reason, plan.reason

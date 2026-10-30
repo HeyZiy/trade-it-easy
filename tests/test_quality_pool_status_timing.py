@@ -51,6 +51,20 @@ def test_execution_status_does_not_use_history_table(monkeypatch):
     assert result.at['600001', 'high_limit'] == 11.
 
 
+def test_blank_risk_flag_still_yields_tradable_row(monkeypatch):
+    """生产形态：正常股 security_status 为空串，当天快照仍须给出可交易行与涨跌停。"""
+    monkeypatch.setattr(feeds, '_execution_now', lambda: pd.Timestamp('2026-10-30 09:31:00'))
+    info = pd.DataFrame({'security_status': ['']}, index=['002293.SZ'])
+    raw = pd.DataFrame({'trade_time': ['2026-10-30 09:30:59'],
+                        'trading_phase_code': ['T0      '],
+                        'high_limited': [13.04], 'low_limited': [10.67]})
+    monkeypatch.setattr(feeds, '_raw_execution_data', lambda *a: (info, {'002293': raw}))
+    result = feeds.fetch_execution_status(['002293'], '2026-10-30')
+    assert pd.notna(result.at['002293', 'is_st']) and not result.at['002293', 'is_st']
+    assert not result.at['002293', 'is_suspended']
+    assert feeds.day_limits(['002293'], '2026-10-30', {}, status=result)['002293'] == (13.04, 10.67)
+
+
 @pytest.mark.parametrize('phase,stamp', [
     ('P011    ', '2026-10-15 09:30:59'),
     ('T111    ', '2026-10-14 09:30:59'),
@@ -68,9 +82,15 @@ def test_execution_unknown_stale_or_paused_never_passes(monkeypatch, phase, stam
     assert result.empty or pd.isna(result.at['600001', 'is_suspended']) or result.at['600001', 'is_suspended']
 
 
-@pytest.mark.parametrize('flag', [None, '', 'unknown', '0001000000000000'])
+@pytest.mark.parametrize('flag', [None, 'unknown', '0001000000000000'])
 def test_unknown_risk_warning_never_means_normal(flag):
     assert pd.isna(feeds._risk_warning(flag))
+
+
+@pytest.mark.parametrize('flag', ['', '  ', [], '0'])
+def test_blank_risk_warning_means_no_warning(flag):
+    """SDK 对正常股返回空串（生产 5010/5223 行）；空串是无标志，不是未知。"""
+    assert feeds._risk_warning(flag) is False
 
 
 @pytest.mark.parametrize('flag', ['4', '2,4', [2, 4]])

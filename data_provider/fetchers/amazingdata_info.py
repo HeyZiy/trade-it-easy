@@ -35,7 +35,7 @@ import pandas as pd
 
 from data_provider.fetchers.amazingdata_fetcher import (
     AMAZINGDATA_CACHE_DIR, AmazingDataFetcher, DataFetchError,
-    _code_to_tgw_format, _resolve_cache_dir,
+    _code_to_tgw_format, _flatten_snapshot, _resolve_cache_dir,
 )
 
 logger = logging.getLogger(__name__)
@@ -146,13 +146,15 @@ def _plain_code(tgw_code) -> str:
 
 
 def _normalize_map(raw, batch: List[str]) -> Dict[str, pd.DataFrame]:
-    """SDK 返回形态归一：dict[code, df] 或单 DataFrame（含 MARKET_CODE 列）。"""
+    """SDK 返回形态归一：dict[code, df]、按日期嵌套的 dict[date][code]、或含 MARKET_CODE 的单表。"""
     out: Dict[str, pd.DataFrame] = {}
     requested = {_plain_code(c) for c in batch}
+    raw = _flatten_snapshot(raw)
     if isinstance(raw, dict):
         for tgw, df in raw.items():
-            if _plain_code(tgw) in requested and df is not None and len(df):
-                out[_plain_code(tgw)] = df
+            code = _plain_code(tgw)
+            if code in requested and df is not None and len(df):
+                out[code] = df
     elif isinstance(raw, pd.DataFrame) and not raw.empty:
         if "MARKET_CODE" in raw.columns:
             for tgw in batch:

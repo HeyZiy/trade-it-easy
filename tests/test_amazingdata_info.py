@@ -6,10 +6,13 @@ import os
 from pathlib import Path
 
 from data_provider.fetchers import amazingdata_info as info
+from data_provider.fetchers.amazingdata_fetcher import AmazingDataFetcher
 
 
-def test_execution_data_uses_daily_info_and_bounded_market_query(monkeypatch):
+@pytest.mark.parametrize('nested', [False, True])
+def test_execution_data_uses_daily_info_and_bounded_market_query(monkeypatch, nested):
     expected = pd.DataFrame({'security_status': ['0']}, index=['600001.SH'])
+    frame = pd.DataFrame({'last': [10.]})
 
     class SDK:
         def get_code_info(self, security_type):
@@ -20,7 +23,8 @@ def test_execution_data_uses_daily_info_and_bounded_market_query(monkeypatch):
             assert codes == ['600001.SH']
             assert kwargs == dict(begin_date=20261015, end_date=20261015,
                                   begin_time=92900000, end_time=93100000)
-            return {'600001.SH': pd.DataFrame({'last': [10.]})}
+            # 真实 SDK 按日期嵌套返回；扁平形态也须继续兼容。
+            return {20261015: {'600001.SH': frame}} if nested else {'600001.SH': frame}
 
     monkeypatch.setattr(info.AmazingDataFetcher, 'get_base_data', lambda: SDK())
     monkeypatch.setattr(info.AmazingDataFetcher, '_market_data', SDK())
@@ -29,6 +33,29 @@ def test_execution_data_uses_daily_info_and_bounded_market_query(monkeypatch):
         ['600001'], pd.Timestamp('2026-10-15 09:29'), pd.Timestamp('2026-10-15 09:31'))
     pd.testing.assert_frame_equal(daily, expected)
     assert snapshots['600001'].iloc[0]['last'] == 10.
+
+
+def test_index_snapshot_unwraps_daily_nested_result(monkeypatch):
+    import datetime as dt
+
+    frame = pd.DataFrame({
+        'open': [10.], 'high': [11.], 'low': [9.5], 'close': [10.5],
+        'last': [10.4], 'volume': [100.], 'amount': [1000.],
+        'trade_time': ['2026-10-30 15:00:00'],
+    })
+
+    class SDK:
+        def query_snapshot(self, codes, begin_date, end_date):
+            assert codes == ['399317.SZ']
+            assert begin_date == end_date == 20261030
+            return {20261030: {'399317.SZ': frame}}
+
+    fetcher = object.__new__(AmazingDataFetcher)
+    monkeypatch.setattr(AmazingDataFetcher, '_ensure_login', lambda self: None)
+    monkeypatch.setattr(AmazingDataFetcher, '_market_data', SDK())
+    snap = fetcher.get_index_snapshot('sz399317', dt.date(2026, 10, 30))
+    assert snap['close'] == 10.5
+    assert snap['trade_time'] == '2026-10-30 15:00:00'
 
 
 def test_signal_universe_uses_exact_date_and_cleans_sdk_cache(monkeypatch, tmp_path):

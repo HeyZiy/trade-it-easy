@@ -141,11 +141,32 @@ def collect_close(ledger_path, asof, benchmark, *, close_prices, index_prices,
            "holding_count": len(codes), "trading_days": len(days) if days else None,
            "benchmark_nav": benchmark_nav, "issues": issues,
            "fingerprint": _fingerprint(trades, asof)}
+    if valid:
+        # 每只持仓的收盘市值快照：供展示层给收盘价与权重，不参与收益计算。
+        row["positions"] = [{"code": p["code"], "name": p["name"], "count": p["count"],
+                             "cost_price": p["cost_price"], "close": p["current_price"],
+                             "market_value": round(p["market_value"], 2),
+                             "pos_pct": round(p["pos_pct"], 4)}
+                            for p in snapshot.positions]
     state["records"] = sorted([r for r in state["records"] if r["date"] != asof] + [row],
                               key=lambda r: r["date"])
     if not dry_run:
         _save(ledger_path, state)
     return state
+
+
+def valid_records(trades, records, asof):
+    """成绩行有效性过滤（唯一口径）：按日期截断后，nav 为正且 fingerprint
+    与台账流水一致的行才算有效。
+
+    Returns:
+        (rows, valid)——rows 为截断后全部行（供"最近成绩不完整"判定），
+        valid 为其中有效行；warning 文案归各消费方自行渲染。
+    """
+    rows = [r for r in records if r["date"] <= asof]
+    valid = [r for r in rows if _positive(r.get("nav"))
+             and r.get("fingerprint") == _fingerprint(trades, r["date"])]
+    return rows, valid
 
 
 def render_summary(ledger_path=DEFAULT_LEDGER_PATH, *, today=None, label="组合", state=None):
@@ -163,9 +184,7 @@ def render_summary(ledger_path=DEFAULT_LEDGER_PATH, *, today=None, label="组合
         lines.append("")
         if state and state["start_date"] != start:
             return "\n".join(lines + ["⚠️ 模拟起点已变化，历史成绩待重新核对。"])
-        rows = [r for r in state.get("records", []) if r["date"] <= today.isoformat()]
-        valid = [r for r in rows if _positive(r["nav"])
-                 and r["fingerprint"] == _fingerprint(trades, r["date"])]
+        rows, valid = valid_records(trades, state.get("records", []), today.isoformat())
         if not valid:
             lines.append("收盘成绩尚未生成或估值不完整，累计收益、基准收益和仓位暂缺。")
         else:
@@ -189,10 +208,6 @@ def render_summary(ledger_path=DEFAULT_LEDGER_PATH, *, today=None, label="组合
         if rows:
             if rows[-1]["fingerprint"] != _fingerprint(trades, rows[-1]["date"]):
                 lines.append("⚠️ 台账补记后历史估值已失效，须重新采集对应日期。")
-        if Path(ledger_path).name == "trade_ledger_etf_rotation.jsonl":
-            lines.append("名义模拟口径；新成交计佣金、已登记分红计应收/到账，旧成交不追溯补扣；未计滑点和份额变更。")
-        else:
-            lines.append("名义模拟口径；未计手续费、分红和份额变更，不代表实盘收益。")
     except Exception:
         logger.exception("模拟成绩读取失败")
         lines.append("⚠️ 模拟成绩暂不可用，本次信号与执行结果见下文。")

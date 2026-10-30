@@ -132,10 +132,10 @@ def test_every_equity_leg_has_a_valuation_exit():
     半年人工对齐基准时新增权益 ETF 若忘了配 TRACKED_INDEX，不会报错只会少一行数字，
     故在此钉住（黄金/现金按设计不适用估值锚，不在断言范围）。
     """
-    from src.etf.config import CORE_BASELINE, TRACKED_INDEX
+    from src.etf.config import CORE_BASELINE, NO_VALUATION_ANCHOR, TRACKED_INDEX
     equity = {a.code for a in CORE_BASELINE if a.asset_type == "equity"}
-    assert equity <= (set(TRACKED_INDEX) | set(af._OVERSEAS_CODES)), \
-        f"无估值出口（既无跟踪指数锚也非海外）: {sorted(equity - set(TRACKED_INDEX) - set(af._OVERSEAS_CODES))}"
+    declared = set(TRACKED_INDEX) | set(af._OVERSEAS_CODES) | set(NO_VALUATION_ANCHOR)
+    assert equity <= declared, f"无估值出口（无锚、非海外、未显式声明）: {sorted(equity - declared)}"
 
 
 def test_no_orphan_tracked_anchor():
@@ -144,6 +144,14 @@ def test_no_orphan_tracked_anchor():
     baseline = {a.code for a in CORE_BASELINE}
     assert set(TRACKED_INDEX) <= baseline, \
         f"锚指向已不在基准里的标的: {sorted(set(TRACKED_INDEX) - baseline)}"
+
+
+def test_no_valuation_anchor_codes_are_in_baseline():
+    """显式"无锚"声明不留孤儿：标的移出基准后该声明应一并撤下。"""
+    from src.etf.config import CORE_BASELINE, NO_VALUATION_ANCHOR
+    baseline = {a.code for a in CORE_BASELINE}
+    assert set(NO_VALUATION_ANCHOR) <= baseline, \
+        f"无锚声明指向已不在基准里的标的: {sorted(set(NO_VALUATION_ANCHOR) - baseline)}"
 
 
 def test_anchor_value_looks_like_index_code():

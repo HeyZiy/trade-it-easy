@@ -1,0 +1,36 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>交易工作台</title>
+  <link rel="stylesheet" href="/assets/styles.css">
+  <script src="/assets/app.js" defer></script>
+</head>
+<body>
+  <header class="masthead"><div class="masthead-inner">
+    <div><div class="eyebrow">TRADE IT EASY</div><h1>交易工作台</h1></div>
+    <span class="private-label"><span></span> 个人账户</span>
+  </div></header>
+  <main>
+    <div class="intro"><p>四个账户独立记账，当前为模拟口径。收益按收盘成绩更新。</p><p id="status" role="status">正在读取数据…</p></div>
+    <div id="app" hidden>
+      <nav class="tabs" id="tabs" aria-label="账户"></nav>
+      <div id="account"></div>
+      <section class="section reports-section" aria-labelledby="reports-title">
+        <div class="section-heading"><div><div class="eyebrow">DAILY BRIEF</div><h2 id="reports-title">最新报告</h2></div><span class="subtle">在这里阅读，按需展开</span></div>
+        <div class="report-shell">
+          <div id="report-list" class="report-list" role="tablist" aria-label="选择报告"></div>
+          <div id="report-panel" class="report-panel" role="tabpanel" aria-label="报告正文">
+            <div class="report-heading"><div><span id="report-kind" class="report-kind">报告</span><h3 id="report-name">正在准备报告</h3></div><time id="report-date"></time></div>
+            <div id="report-reader" class="report-reader"><article id="report-content" class="report-prose" aria-busy="false"></article></div>
+            <div id="report-actions" class="report-actions" hidden><button id="report-expand" type="button" class="text-button" aria-expanded="false" aria-controls="report-reader">展开全文 ↓</button></div>
+          </div>
+        </div>
+      </section>
+      <details class="state-section"><summary>策略运行状态</summary><div id="states"></div></details>
+      <footer>账户数据仅供记录与观察，页面不执行交易。</footer>
+    </div>
+  </main>
+</body>
+</html>

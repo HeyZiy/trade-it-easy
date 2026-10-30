@@ -248,7 +248,7 @@ def _raw_execution_data(codes, begin, end):
 
 
 def _risk_warning(value):
-    """产品状态标志 4 为风险警示；未知编码不猜成正常。"""
+    """产品状态标志 4 为风险警示，空表示无标志；未知编码不猜成正常。"""
     import re
     if isinstance(value, (list, tuple, set, np.ndarray)):
         values = list(value)
@@ -267,7 +267,7 @@ def _risk_warning(value):
         if not math.isfinite(number) or not number.is_integer() or not 0 <= number <= 13:
             return pd.NA
         flags.add(int(number))
-    return 4 in flags if flags else pd.NA
+    return 4 in flags
 
 
 def _snapshot_suspended(code: str, phase):
@@ -521,25 +521,11 @@ def _latest_total_shares(structure: Optional[pd.DataFrame],
 
 
 def fetch_realtime_quotes(codes: List[str]) -> Tuple[Dict[str, float], Dict[str, str]]:
-    """执行时实时价与简称：单只跨源合并，失败/无效价不入结果（fail-soft）。"""
-    prices: Dict[str, float] = {}
-    names: Dict[str, str] = {}
-    from data_provider import get_fetcher
-    manager = get_fetcher()
-    for code in codes:
-        try:
-            quote = manager.get_realtime_quote(code)
-        except Exception as e:
-            logger.warning(f"[quality_pool] 实时行情失败 {code}: {e}")
-            continue
-        if quote is None:
-            continue
-        if quote.name:
-            names[code] = quote.name
-        px = getattr(quote, "price", None)
-        if px is not None and math.isfinite(px) and px > 0:
-            prices[code] = float(px)
-    return prices, names
+    """执行时实时价与简称（批量实时口径见 data_provider.manager.realtime_quotes；
+    失败/无效价不入结果，fail-soft）。"""
+    from data_provider.manager import realtime_quotes
+
+    return realtime_quotes(codes)
 
 
 def raw_closes_at(codes: List[str], asof: str) -> Dict[str, float]:

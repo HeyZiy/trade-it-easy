@@ -1,0 +1,16 @@
+[Unit]
+Description=Cloudflare quick tunnel for the trade dashboard
+After=network-online.target trade-dashboard.service
+Wants=network-online.target trade-dashboard.service
+
+[Service]
+Type=simple
+ExecStart=/usr/local/bin/cloudflared tunnel --no-autoupdate --url http://127.0.0.1:8765
+Restart=always
+RestartSec=5
+DynamicUser=yes
+NoNewPrivileges=true
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target

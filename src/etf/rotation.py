@@ -338,24 +338,11 @@ def fetch_bars(codes: Sequence[str], decision_date: Optional[date] = None) -> Di
 
 
 def fetch_prices(codes: Sequence[str]) -> Dict[str, float]:
-    """池成员当日现价（实时报价逐只拉取；单只失败跳过，由入口阻止当次执行）。"""
-    from data_provider import get_fetcher
+    """池成员当日现价（批量实时口径见 data_provider.manager.realtime_quotes；
+    单只失败/缺价不入结果，由入口阻止当次执行）。"""
+    from data_provider.manager import realtime_quotes
 
-    fetcher = get_fetcher()
-    prices: Dict[str, float] = {}
-    for code in codes:
-        try:
-            quote = fetcher.get_realtime_quote(code)
-        except Exception:
-            import logging
-            logging.getLogger(__name__).warning("实时报价获取失败 %s", code,
-                                                exc_info=True)
-            continue
-        if quote is not None and quote.has_basic_data():
-            value = float(quote.price)
-            if math.isfinite(value) and value > 0:
-                prices[code] = value
-    return prices
+    return realtime_quotes(list(codes))[0]
 
 
 def rotation_snapshot(decision_date: Optional[date] = None

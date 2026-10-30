@@ -17,7 +17,8 @@ realtime 开关/优先级在构造时读一次 src.config；交易日历谓词�
 src.trading_calendar 供料给 daily 管道。其余模块（daily/bars/各 fetcher）零 src 依赖。
 """
 import logging
-from typing import Any, Callable, Dict, List, Optional
+import math
+from typing import Any, Callable, Dict, List, Optional, Tuple
 
 import pandas as pd
 
@@ -44,6 +45,34 @@ def get_fetcher():
     except Exception:
         return None
 
+
+def realtime_quotes(codes: List[str],
+                    manager: Optional["DataFetcherManager"] = None
+                    ) -> Tuple[Dict[str, float], Dict[str, str]]:
+    """批量实时报价 → ({code: 现价}, {code: 简称})。
+
+    批量实时取数的唯一口径：循环逐只拉取 + 有效性校验（quote 非空、价格
+    非 None、有限、正数）+ 单只失败 warning（fail-soft，不中断整批）；
+    取不到的代码不出现在结果里。回退 policy（阻止当次执行 / 沿用旧值 /
+    日线优先兜底）归调用方。manager 缺省时经 get_fetcher() 本调用内构造一次。
+    """
+    fm = manager or get_fetcher()
+    prices: Dict[str, float] = {}
+    names: Dict[str, str] = {}
+    for code in codes:
+        try:
+            quote = fm.get_realtime_quote(code)
+        except Exception:
+            logger.warning("实时报价获取失败 %s", code, exc_info=True)
+            continue
+        if quote is None:
+            continue
+        if quote.name:
+            names[code] = quote.name
+        px = getattr(quote, "price", None)
+        if px is not None and math.isfinite(px) and px > 0:
+            prices[code] = float(px)
+    return prices, names
 
 
 class DataFetcherManager:

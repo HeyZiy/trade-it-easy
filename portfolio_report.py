@@ -121,7 +121,7 @@ def run(*, asof=None, dry_run=False, now=None, backfill=False):
 
 
 def main():
-    parser = argparse.ArgumentParser(description="采集三个模拟资金池的完整收盘成绩")
+    parser = argparse.ArgumentParser(description="采集各独立模拟资金池的完整收盘成绩")
     parser.add_argument("--date", help="补采已收盘交易日，YYYY-MM-DD（只采指定日）")
     parser.add_argument("--dry-run", action="store_true", help="仅展示，不保存记录")
     args = parser.parse_args()

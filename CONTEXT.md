@@ -55,6 +55,11 @@ Avoid: 拥挤度、拥挤度百分比
 唯一权威是 codes 的码族表，消费方只调判定、不私建前缀表；码族外 fail-closed
 拒查，不默认市场。
 
+**周度批次**:
+每周一尾盘运行的核心仓统一调仓闭环：名义台账快照 → 阈值再平衡计划 →
+名义记账 → 周报一次完成（src/etf/allocation，规格 strategy/etf_allocation.md）；
+报告的市场估值与标的估值仅展示，不进自动决策。 Avoid: ETF周报、周度轮动
+
 **环境快照**:
 由 env_report 统一产出并落盘的市场状态判定事实（data/environment.json）；
 消费方只读不判，CAN_OPEN 的 policy 归各策略层。

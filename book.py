@@ -33,6 +33,15 @@ setup_env()
 logger = logging.getLogger(__name__)
 
 
+def _ledger_path(args):
+    if args.path is not None:
+        return args.path
+    if args.account == "satellite":
+        from src.etf.industry_account import LEDGER_PATH
+        return LEDGER_PATH
+    return DEFAULT_LEDGER_PATH
+
+
 def cmd_open(args) -> int:
     weight_pct = args.weight
     if not 0 < weight_pct <= 100:
@@ -48,14 +57,14 @@ def cmd_open(args) -> int:
         price=args.price, account=args.account,
         reasons=["manual_base"], source="book", manual=True,
     )
-    append_trade(rec, path=args.path)
+    append_trade(rec, path=_ledger_path(args))
     print(f"✅ 建仓 {rec.name}({rec.code}) {qty}股 @ {rec.price} "
           f"≈ 权重 {weight_pct}%（名义），account={rec.account}")
     return 0
 
 
 def cmd_view(args) -> int:
-    trades = load_trades(args.path)
+    trades = load_trades(_ledger_path(args))
     as_of = args.as_of or date.today().isoformat()
     snap = derive(trades, as_of=as_of)  # 无现价：市值按 0，权重列按成本口径
     acct_filter = args.account
@@ -99,8 +108,8 @@ def main() -> int:
     # Windows 控制台 GBK 兜底（同 etf_observe 先例）：CLI 输出含中文与符号
     sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8')
     parser = argparse.ArgumentParser(description="名义影子成交台账 CLI")
-    parser.add_argument("--path", default=str(DEFAULT_LEDGER_PATH),
-                        help="流水 JSONL 路径（默认 data/trade_ledger.jsonl）")
+    parser.add_argument("--path", default=None,
+                        help="流水 JSONL 路径（默认核心配置台账；satellite 使用行业独立台账）")
     sub = parser.add_subparsers(dest="cmd", required=True)
 
     po = sub.add_parser("open", help="手动记建仓（实盘底仓补记）")

@@ -7,6 +7,7 @@ fake fetcher 只带 REALTIME_VARIANTS 声明——merge 索引从声明现场构
 
 import logging
 
+from data_provider.manager import realtime_quotes
 from data_provider.realtime import merge_realtime_quotes
 from data_provider.types import UnifiedRealtimeQuote
 
@@ -141,3 +142,62 @@ class TestPriorityConsistency:
                          {"any_src": _full("600000", "any_src")})
         q = merge_realtime_quotes("600000", [a], ["any_src"])
         assert q.source == "any_src"
+
+
+# ── manager.realtime_quotes：批量实时取数唯一口径 ──
+
+class _FakeManager:
+    """get_realtime_quote(code) → quote / None / raise（无 kwargs，与生产调用形状同构）。"""
+
+    def __init__(self, results):
+        self._results = results  # code → quote / None / Exception
+
+    def get_realtime_quote(self, code):
+        r = self._results.get(code)
+        if isinstance(r, Exception):
+            raise r
+        return r
+
+
+def _rt_quote(code, price, name="测试股"):
+    return UnifiedRealtimeQuote(code=code, name=name, source="s1", price=price)
+
+
+class TestRealtimeQuotes:
+    def test_valid_prices_and_names_collected(self):
+        fm = _FakeManager({"600000": _rt_quote("600000", 10.0),
+                           "000001": _rt_quote("000001", 3.5, name="平安银行")})
+        prices, names = realtime_quotes(["600000", "000001"], manager=fm)
+        assert prices == {"600000": 10.0, "000001": 3.5}
+        assert names == {"600000": "测试股", "000001": "平安银行"}
+
+    def test_invalid_prices_dropped_but_names_kept(self):
+        # 0 / 负数 / nan / inf / None 全部剔除；简称无条件收（价格无效也收）
+        quotes = {"600000": _rt_quote("600000", 0.0),
+                  "000001": _rt_quote("000001", -1.0),
+                  "600036": _rt_quote("600036", float("nan")),
+                  "600030": _rt_quote("600030", float("inf")),
+                  "600009": _rt_quote("600009", None)}
+        prices, names = realtime_quotes(list(quotes), manager=_FakeManager(quotes))
+        assert prices == {}
+        assert set(names) == set(quotes)
+
+    def test_none_quote_and_exception_skipped_fail_soft(self, caplog):
+        fm = _FakeManager({"600000": None,
+                           "000001": RuntimeError("超时"),
+                           "600036": _rt_quote("600036", 9.9)})
+        with caplog.at_level(logging.WARNING):
+            prices, _ = realtime_quotes(["600000", "000001", "600036"], manager=fm)
+        assert prices == {"600036": 9.9}  # 单只失败不中断整批
+        assert "实时报价获取失败 000001" in caplog.text
+
+    def test_empty_name_not_collected(self):
+        fm = _FakeManager({"600000": _rt_quote("600000", 10.0, name="")})
+        prices, names = realtime_quotes(["600000"], manager=fm)
+        assert prices == {"600000": 10.0} and names == {}
+
+    def test_default_manager_resolved_from_get_fetcher(self, monkeypatch):
+        fm = _FakeManager({"600000": _rt_quote("600000", 10.0)})
+        monkeypatch.setattr("data_provider.manager.get_fetcher", lambda: fm)
+        prices, _ = realtime_quotes(["600000"])
+        assert prices == {"600000": 10.0}
