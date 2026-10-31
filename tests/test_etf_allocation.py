@@ -1,7 +1,6 @@
 # -*- coding: utf-8 -*-
 """周度批次闭环（src/etf/allocation）：单动词 run 的装配/渲染/记账口径。
 全部假数据（*_raw seam 注入），不访问网络或真实台账。"""
-import sys
 from types import SimpleNamespace
 
 import pandas as pd
@@ -29,8 +28,6 @@ def _alloc(orders=None):
         "positions": [{"code": "510300", "current_price": 5.0}],
         "prices": {"510300": 5.0},
         "core_positions": [],
-        "rotation_mv": 0.0,
-        "rotation_positions": [],
         "target": {},
         "plan": plan,
     }
@@ -49,7 +46,6 @@ def _patch_render_seams(monkeypatch):
 
     monkeypatch.setattr(allocation, "_raw_trend_bars_ad", lambda codes, end: {})
     monkeypatch.setattr(allocation, "_raw_trend_bars", _no_bars)
-    monkeypatch.setattr(allocation, "render_summary", lambda *a, **kw: "**账户速览**（测试桩）")
 
 
 @pytest.fixture(autouse=True)
@@ -57,8 +53,7 @@ def baseline_for_report_tests(monkeypatch):
     monkeypatch.setattr(allocation, "_baseline", lambda: CORE_BASELINE)
 
 
-@pytest.mark.parametrize("dry_run", [False, True])
-def test_report_never_records_fills(monkeypatch, tmp_path, dry_run):
+def test_report_never_records_fills(monkeypatch, tmp_path):
     import src.etf_account as core
     path = tmp_path / "etf_account.json"
     core.initialize(path, asof="2025-01-02", cash=1000,
@@ -67,7 +62,7 @@ def test_report_never_records_fills(monkeypatch, tmp_path, dry_run):
     monkeypatch.setattr(core, "ACCOUNT_PATH", path)
     monkeypatch.setattr(allocation, "_compute_allocation", lambda: _alloc())
     _patch_render_seams(monkeypatch)
-    report = allocation.run(dry_run=dry_run)
+    report = allocation.run()
     assert "## 本次建议" in report
     assert "约 2000份" in report
     assert path.read_bytes() == before
@@ -79,29 +74,28 @@ def test_run_renders_full_report_without_orders(monkeypatch):
     monkeypatch.setattr(allocation, "_compute_allocation", lambda: _alloc(orders=[]))
     _patch_render_seams(monkeypatch)
 
-    report = allocation.run(dry_run=True)
+    report = allocation.run()
 
     assert report.startswith("# ETF 周度观察")
-    assert "（dry-run，未记账）" in report
     assert "无调仓需求，保持当前持仓。" in report
-    assert "## 执行前持仓对照与调仓依据" in report
-    assert "**PE 分位**: 40%" in report
-    assert "近 5 年 **40%** 分位" in report          # 市场概览与新钱参考共用同一口径
-    assert "## 各标的估值参考" in report
-    assert "## 新钱投放参考" in report
+    assert "## 策略参考" in report
+    assert "近 5 年 **40%** 分位" in report
+    assert "## 市场宏观（未完善）" in report
+    assert "建议调仓指令" not in report and "新钱投放" not in report  # 精简版式：指令只进表格
     assert "免责声明" in report
 
 
-def test_run_with_orders_dry_run_renders_dry_batch(monkeypatch):
+def test_run_with_orders_renders_orders_only_in_recommendation(monkeypatch):
     monkeypatch.setattr(allocation, "_compute_allocation", lambda: _alloc())
     _patch_render_seams(monkeypatch)
 
     def _boom(*a, **kw):
-        raise AssertionError("dry-run 不应触达 execute_batch")
+        raise AssertionError("报告生成不应触达 execute_batch")
 
     monkeypatch.setattr("src.trade_ledger.execute_batch", _boom)
-    report = allocation.run(dry_run=True)
+    report = allocation.run()
     assert "SELL 沪深300ETF(510300) 约 2000份" in report
+    assert report.count("SELL 沪深300ETF(510300)") == 1  # 指令只在本次建议出现，表格只看建议列
 
 
 def test_ledger_unreadable_degrades_report(monkeypatch):
@@ -111,7 +105,7 @@ def test_ledger_unreadable_degrades_report(monkeypatch):
     monkeypatch.setattr(allocation, "_raw_snapshot", _boom)
     _patch_render_seams(monkeypatch)
 
-    report = allocation.run(dry_run=True)
+    report = allocation.run()
     assert "成交台账不可用，跳过持仓对照" in report
     assert "持仓数据不可用，暂不生成建议。" in report
 

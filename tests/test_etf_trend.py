@@ -125,8 +125,8 @@ def test_amazingdata_series_too_short_falls_back_to_eastmoney(monkeypatch):
 def test_report_columns_share_snapshot_and_do_not_change_target_or_plan(monkeypatch):
     target = {asset.code: asset.neutral_weight for asset in CORE_BASELINE}
     plan = RebalancePlan([], 0., False, "无指令", [])
-    alloc = {"positions": [], "total_assets": 100_000., "rotation_mv": 0.,
-             "rotation_positions": [], "core_positions": [], "target": target, "plan": plan}
+    alloc = {"positions": [], "total_assets": 100_000.,
+             "core_positions": [], "target": target, "plan": plan}
     valuations = [{"code": "515180", "name": "红利ETF", "pe": 8.,
                    "div_yield": 5., "div_yield_spread": 3., "source_name": "中证红利"}]
     ctx = eo.WeekContext(None, None, None, alloc,
@@ -143,9 +143,8 @@ def test_report_columns_share_snapshot_and_do_not_change_target_or_plan(monkeypa
     assert "**× ★**" in output
     assert "513180" in output and "重点观察规则" in output
     assert "513380" not in output
-    assert "2026-10-14 收盘" in output
-    assert "PE 8.0 / 股息 5.0% / 利差 +3.0pt（偏低）" in output
-    assert "中证红利" in eo._valuation_reference(ctx)
+    assert "行情截至" not in output  # 精简版式：数据新鲜度脚注已删，数据缺口由 — 列自明
+    assert "中证红利 / PE 8.0 / 股息 5.0% / 利差 +3.0pt（偏低）" in output
     assert alloc["target"] == original_target
     assert alloc["plan"] is plan and plan.orders == []
 
@@ -153,3 +152,5 @@ def test_report_columns_share_snapshot_and_do_not_change_target_or_plan(monkeypa
 def test_pe_alone_never_becomes_cheap_or_buy():
     assert eo._valuation_cell({"pe": 8.}) == "PE 8.0"
     assert eo._valuation_cell({}) == "—"
+    assert eo._valuation_cell({"level_text": "无估值锚（未配跟踪指数或中证官网未取到）"}) == "无"
+    assert eo._valuation_cell({"source_name": "海外"}) == "海外"

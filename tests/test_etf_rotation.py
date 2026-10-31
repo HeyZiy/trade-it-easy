@@ -581,7 +581,7 @@ class TestEntryIntegration:
         assert not entry_env.ledger.exists()              # 台账零写入
         assert "dry-run" in report
         assert "试运行，未记账" in report
-        assert "## 执行明细" in report
+        assert "## 执行明细" not in report and "## 决策" in report
         assert "[DRY] BUY 沪深300(510300) 249900股" in report
         assert "已记账" not in report
 
@@ -599,7 +599,7 @@ class TestEntryIntegration:
         assert trade.qty == affordable_shares(1_000_000.0, 4.0) == 249_900
         assert trade.price == 4.0
 
-        assert "## 执行明细" in report
+        assert "## 执行明细" not in report and "## 决策" in report
         assert "✅ BUY 沪深300(510300) 249900股" in report
         assert "已记账 1 笔（买入 1，卖出 0）" in report
         assert "执行后持仓" in report
@@ -613,8 +613,7 @@ class TestEntryIntegration:
         report = entry.run(dry_run=False, trade_date=DECISION_STR)
 
         assert load_trades(entry_env.ledger) == before    # 无新增流水
-        assert "无调仓指令" in report
-        assert "仍为合格候选第一名" in report
+        assert "合格候选第 1 名" in report          # 持仓=目标，合并行即"继续持有"
         assert "已记账 0 笔（买入 0，卖出 0）" in report
 
     def test_no_eligible_candidate_flat_account_writes_nothing(self, entry_env):
@@ -627,7 +626,6 @@ class TestEntryIntegration:
 
         assert not entry_env.ledger.exists()              # 空仓无指令 → 零写入
         assert "无合格候选 → 空仓" in report
-        assert "无调仓指令" in report
         assert "保持空仓" in report
 
     def test_no_rows_fail_closed_keeps_existing_ledger(self, entry_env):

@@ -151,7 +151,7 @@ def test_entry_uses_same_snapshot_for_independent_fills_and_account_advice(accou
     before = wallet.account_data(account)
     report = entry.run(trade_date='2025-01-07')
     assert len(calls) == 1
-    assert 'ETF账户 · 待执行建议' in report and '约 900 份' in report
+    assert '账户建议' in report and '约 900 份' in report
     assert strategy(account)['suggestions'][0]['qty'] == 900
     assert wallet.account_data(account)['positions'] == before['positions']
     assert wallet.account_data(account)['cash'] == before['cash']

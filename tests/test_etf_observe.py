@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""入口 etf_observe 只读降级口径：非交易日 --force 一律不写台账（同 quality_pool 口径）。
+"""入口 etf_observe 门禁口径：非交易日未 --force 跳过；报告生成从不写台账。
 周度批次闭环本体在 src/etf/allocation，由 test_etf_allocation 覆盖。"""
 import io
 import sys
@@ -12,8 +12,8 @@ from src.etf import allocation
 def _stub_main(monkeypatch, trading, argv):
     seen = {}
 
-    def fake_run(dry_run=False):
-        seen["dry_run"] = dry_run
+    def fake_run():
+        seen["called"] = True
         return "# 报告"
 
     # 交易日政策单点在 cron_entry.resolve_run_gate，桩打在其查找命名空间。
@@ -30,25 +30,25 @@ def _stub_main(monkeypatch, trading, argv):
     return seen
 
 
-def test_holiday_force_forces_readonly(monkeypatch):
+def test_holiday_force_generates_report(monkeypatch):
     seen = _stub_main(monkeypatch, trading=False, argv=["--force"])
     assert eo.main() == 0
-    assert seen["dry_run"] is True
+    assert seen.get("called") is True
 
 
-def test_trading_day_force_keeps_ledger_write(monkeypatch):
+def test_trading_day_generates_report(monkeypatch):
     seen = _stub_main(monkeypatch, trading=True, argv=["--force"])
     assert eo.main() == 0
-    assert seen["dry_run"] is False
+    assert seen.get("called") is True
 
 
-def test_trading_day_explicit_dry_run(monkeypatch):
+def test_trading_day_explicit_dry_run_flag_accepted(monkeypatch):
     seen = _stub_main(monkeypatch, trading=True, argv=["--dry-run"])
     assert eo.main() == 0
-    assert seen["dry_run"] is True
+    assert seen.get("called") is True
 
 
 def test_holiday_without_force_skips(monkeypatch):
     seen = _stub_main(monkeypatch, trading=False, argv=[])
     assert eo.main() == 0
-    assert "dry_run" not in seen          # 报告根本没生成，也没记账
+    assert "called" not in seen          # 报告根本没生成

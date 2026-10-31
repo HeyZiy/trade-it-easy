@@ -33,7 +33,7 @@
 #     模块保留；未来策略需要市场门控时再加回一行（14:35，先于消费任务）
 # =============================================
 
-# ── 质量池模拟：每交易日09:30启动，计算后按实时价先卖后买、处理退出，统一推送 ──
+# ── 质量池模拟：每交易日09:30启动，计算后按实时价先卖后买、处理退出；调仓或有成交才推送 ──
 30 9 * * 1-5 cd /root/trade-it-easy && flock -n /tmp/quality-pool.lock /root/miniconda/envs/rt/bin/python quality_pool.py > /dev/null 2>> logs/cron_error.log
 
 # ── ETF 周度观察：每周一 14:40 生成报告与配置建议；成交由人工确认，统一记入ETF账户 ──
@@ -46,5 +46,6 @@
 50 14 * * 1-5 cd /root/trade-it-easy && flock -n /tmp/industry_momentum.lock /root/miniconda/envs/rt/bin/python industry_momentum.py > /dev/null 2>> logs/cron_error.log
 
 # ── 收盘成绩：次日08:30（北京时间）采集上一交易日ETF共享组合、质量池与跨资产动量轮动，
-#    并回补最近5个交易日不完整记录；给ETF日线源留出整夜；缺价保留最近完整成绩；不交易、不推送 ──
+#    并回补最近5个交易日不完整记录；给ETF日线源留出整夜；缺价保留最近完整成绩；
+#    不交易、不推送、不生成日报（成绩看板在 dashboard）──
 30 8 * * 1-5 cd /root/trade-it-easy && flock -n /tmp/portfolio-report.lock /root/miniconda/envs/rt/bin/python portfolio_report.py > /dev/null 2>> logs/cron_error.log

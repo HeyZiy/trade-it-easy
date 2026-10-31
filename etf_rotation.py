@@ -57,9 +57,7 @@ from src.task_io import notify, save_report       # noqa: E402
 from src.trade_ledger import (                    # noqa: E402
     append_trade, derive, load_trades,
 )
-from src.trade_ledger.performance import (        # noqa: E402
-    execution_summary, render_summary,
-)
+from src.trade_ledger.performance import execution_summary  # noqa: E402
 
 logger = logging.getLogger(__name__)
 LABEL = "ETF跨资产动量轮动"
@@ -158,18 +156,7 @@ def run(dry_run: bool = False, trade_date: Optional[str] = None) -> str:
     lines = [
         f"# {LABEL} — {datetime.now().strftime('%Y-%m-%d')}",
         "",
-        f"**生成时间**: {datetime.now().strftime('%Y-%m-%d %H:%M')}"
-        f"{'（dry-run，未记账）' if dry_run else ''}",
-        "",
-        "## ETF账户 · 待执行建议",
-        "",
-        account_advice,
-        "",
-        "## 独立模拟",
-        "",
-        render_summary(LEDGER_PATH, label=LABEL),
-        "",
-        "## 决策口径",
+        f"**生成时间**: {datetime.now().strftime('%Y-%m-%d %H:%M')}",
         "",
         f"- 数据基准日：上一交易日 {diag.get('prev_trading_day') or '—'}；"
         f"池内可用 {diag['n']}/{diag['pool']} 只，合格候选 {diag['eligible']} 只",
@@ -180,7 +167,7 @@ def run(dry_run: bool = False, trade_date: Optional[str] = None) -> str:
         lines.append(f"- {'拟登记' if dry_run else '已登记'}分红权益 {len(distributions)} 项，按公告发放日转为可用现金")
     if snap.receivables:
         lines.append(f"- 尚未到账的应收红利：{snap.receivables:,.2f}元（不用于买入）")
-    lines += ["", "## 今日截面（15 只池）", ""]
+    lines += ["", "## 今日截面", ""]
     lines += _cross_section_table(rows)
     lines += [""]
 
@@ -208,30 +195,34 @@ def run(dry_run: bool = False, trade_date: Optional[str] = None) -> str:
     target = plan["target"]
     holding = plan["holding"]
     lines += ["## 决策", ""]
+    advice_lines = account_advice.splitlines()
+    lines.append(f"- 账户建议：{advice_lines[0]}")
+    lines.extend(f"  {extra}" for extra in advice_lines[1:])
     if target is not None:
-        lines.append(f"- 目标：**{target.name}({target.code})** "
-                     f"score {_fmt_score(target)}（合格候选第 {target.rank} 名）")
+        target_text = (f"目标 **{target.name}({target.code})** "
+                       f"score {_fmt_score(target)}（合格候选第 {target.rank} 名）")
     else:
-        lines.append("- 目标：**无合格候选 → 空仓**")
+        target_text = "目标：无合格候选 → 空仓"
     if holding is not None:
-        lines.append(f"- 当前持仓：{holding.get('name', '')}({holding.get('code', '')}) "
-                     f"{holding.get('count', 0)}股")
+        lines.append(f"- 模拟：{target_text}；当前持有 "
+                     f"{holding.get('name', '')}({holding.get('code', '')}) {holding.get('count', 0)}股")
     else:
-        lines.append("- 当前持仓：空仓")
-    lines += [f"- {note}" for note in plan["notes"]]
+        lines.append(f"- 模拟：{target_text}；当前空仓")
+    # “继续持有 X：仍为合格候选第一名”已被上面合并行表达，不重复渲染
+    lines += [f"  - {note}" for note in plan["notes"]
+              if not (note.startswith("继续持有 ") and note.endswith("仍为合格候选第一名"))]
     lines += [""]
 
-    action_index = len(lines)
-    lines += ["## 执行明细", ""]
+    exec_index = len(lines)
+    lines.append("")
 
     def finish() -> str:
         summary = execution_summary(trades, load_trades(LEDGER_PATH),
                                     dry_run=dry_run, planned=len(orders))
-        lines.insert(action_index, summary + "\n")
+        lines.insert(exec_index, summary)
         return "\n".join(lines)
 
     if not orders:
-        lines += ["无调仓指令，保持当前持仓。", ""]
         return finish()
 
     if dry_run:
@@ -244,23 +235,21 @@ def run(dry_run: bool = False, trade_date: Optional[str] = None) -> str:
 
     abort, exec_lines = _execute(orders, trade_date)
     if abort:
-        lines += [f"⛔ 安全校验未通过，本次不执行：{abort}", ""]
+        lines.append(f"⛔ 安全校验未通过，本次不执行：{abort}")
         return finish()
     lines += exec_lines
-    lines += [""]
 
     prices.update({o.code: o.price for o in orders if o.price > 0})
     fresh = derive(load_trades(LEDGER_PATH), trade_date, prices).positions
     if fresh:
-        lines += ["**执行后持仓**：", ""]
+        lines += ["", "**执行后持仓**："]
         for pos in fresh:
             mv = float(pos.get("market_value", 0) or 0)
             pct = mv / total_assets * 100 if total_assets > 0 else 0
             lines.append(f"- {security_name(pos['code'])}({pos.get('code', '')}) "
                          f"{pos.get('count', 0)}股 ≈ {mv:,.0f}元（{pct:.1f}%）")
-        lines.append("")
     else:
-        lines += ["**执行后持仓**：空仓（现金）", ""]
+        lines += ["", "**执行后持仓**：空仓（现金）"]
     return finish()
 
 

@@ -10,13 +10,13 @@ ETF 周度观察报告 — 估值导向
 本入口只剩旗标/闸门/落盘/推送；规格唯一来源 strategy/etf_allocation.md。
 
 报告结构：
-  1. 市场估值概览（纯数据：全市场 PE / 收益率 / 风险溢价及其分位，不给操作建议）
-  2. 各标的估值参考（锚对准跟踪指数当前 PE/股息率，跨标的不可比，仅展示）
-  3. 新钱投放参考（全市场估值分位一个数，节奏人工决策，人工执行）
-  4. 持仓对照与调仓建议（核心口径，旧钱只做阈值再平衡）
+  1. 本次建议（阈值再平衡指令，仅供参考不自动执行；成交由用户确认后统一记入ETF账户）
+  2. 策略参考（目标/实际/偏离/建议指令表，并列唐奇安20/10观察与标的级估值——
+     锚对准跟踪指数当前 PE/股息率，跨标的不可比，仅展示）
+  3. 市场宏观（未完善）（全市场 PE / 收益率 / 风险溢价及其分位，纯数据不给操作建议）
 
-估值口径分两层，不互相兜底：市场级 = 全市场 PE/ERP 分位（第一、三节）；
-标的级 = 跟踪指数自身 PE/股息率（估值参考节，无锚或取数失败即显示"无估值锚"）。
+估值口径分两层，不互相兜底：市场级 = 全市场 PE/ERP 分位（市场宏观节）；
+标的级 = 跟踪指数自身 PE/股息率（策略参考表估值列，无锚或取数失败即显示"无"）。
 任何估值都不进自动决策——核心仓目标恒等于中性基准。
 """
 
@@ -46,13 +46,11 @@ def main():
     setup_logging(log_prefix="etf_observe", debug=args.debug)
 
     # 交易日检查：非交易日且未 --force 时直接跳过（节假日周一）
-    skip, dry_run = resolve_run_gate(force=args.force, dry_run=args.dry_run)
+    skip, _ = resolve_run_gate(force=args.force, dry_run=args.dry_run)
     if skip:
         logger.info("今天不是 A 股交易日，跳过执行")
         print("今天不是 A 股交易日，跳过执行")
         return 0
-    if dry_run and not args.dry_run:
-        logger.info("非交易日 --force：本次只读，不写台账")
 
     logger.info("=" * 60)
     logger.info("ETF 周度观察报告（配置建议）")
@@ -60,7 +58,7 @@ def main():
     logger.info("=" * 60)
 
     try:
-        report = allocation.run(dry_run=dry_run)
+        report = allocation.run()
     except Exception as e:
         logger.exception(f"生成报告失败: {e}")
         return 1

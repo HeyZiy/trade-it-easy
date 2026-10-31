@@ -9,7 +9,8 @@
 
 默认命令（quality_pool.py，无须子命令；deploy/crontab.server 一条 cron）：
 每交易日09:30启动，先检查调仓周期、生成名单或补判未知旧仓，再以计算完成后
-的实时行情先卖后买、处理退出队列，最后保存并推送一份报告。全批失败次日
+的实时行情先卖后买、处理退出队列；调仓轮或当日有成交才保存并推送一份报告，
+非调仓且无成交的静默日免发日报（异常走日志告警通道）。全批失败次日
 自动重算，不移动原定20交易日周期。预算 = 执行时总权益/6 冻结。
 成交不固定为09:30或09:31，按实际取价时点模拟记账。真实账户由人工另行执行。
 
@@ -43,32 +44,39 @@ logger = logging.getLogger(__name__)
 
 
 def run(today: date, dry_run: bool = False, retry: bool = False) -> str:
-    """一次完成信号、执行与汇总，只保存和推送一份报告。"""
+    """一次完成信号、执行与汇总；非调仓且无成交的静默日不保存不推送。"""
     return _finish_report(assembly.run_day(today, dry_run=dry_run, retry=retry),
                           "", today, dry_run)
 
 
 def run_signal(today: date, dry_run: bool = False, retry: bool = False) -> str:
-    """信号周期与恢复由质量池 module 负责，入口只保存和推送报告。"""
+    """信号周期与恢复由质量池 module 负责；手动分阶段排查始终保存推送。"""
     return _finish_report(pool_signal.run_signal(today, dry_run=dry_run, retry=retry),
-                          "signal", today, dry_run)
+                          "signal", today, dry_run, acted=True)
 
 
 # ── execute ──
 
 def run_execute(today: date, dry_run: bool = False) -> str:
-    """手动执行已生成的名单，入口只保存和推送报告。"""
+    """手动执行已生成的名单；手动分阶段排查始终保存推送。"""
     return _finish_report(assembly.run_execution(today.isoformat(), dry_run=dry_run),
-                          "execute", today, dry_run)
+                          "execute", today, dry_run, acted=True)
 
 
-def _finish_report(report: str, stage: str, today: date, dry_run: bool) -> str:
+def _finish_report(report: str, stage: str, today: date, dry_run: bool,
+                   *, acted: bool | None = None) -> str:
     from src.quality_pool.config import POOL_LEDGER_PATH
+    # acted 必须在重建前读：partition/拼接会把 SignalReport 降级成普通 str，属性丢失
+    if acted is None:
+        acted = getattr(report, "acted", True)
     title, _, body = report.partition("\n")
     status = "**试运行：未写状态或交易台账。**\n\n" if dry_run else ""
     report = (title + "\n\n" + status
               + render_summary(POOL_LEDGER_PATH, today=today, label="质量池轮动")
               + "\n\n" + body)
+    if not acted and not dry_run:
+        logger.info(f"{today} 非调仓且无成交，免发日报")
+        return report
     prefix = REPORT_PREFIX + (f"_{stage}" if stage else "") + ("_dry_run" if dry_run else "")
     path = save_report(report, prefix, report_date=today.isoformat())
     notify(report)

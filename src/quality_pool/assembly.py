@@ -28,6 +28,7 @@ from datetime import date
 from typing import List
 
 from src.quality_pool import config, execution, feeds, signal, state as pool_state
+from src.quality_pool.signal import SignalReport
 from src.trade_ledger.batch import BatchOrder, BatchResult, execute_batch
 from src.trade_ledger.ledger import derive, load_trades
 from src.trade_ledger.performance import execution_summary
@@ -36,14 +37,20 @@ import src.trading_calendar as trading_calendar
 logger = logging.getLogger(__name__)
 
 
-def run_day(today: date, dry_run: bool = False, retry: bool = False) -> str:
-    """09:30启动后顺序完成信号与执行；共享本轮状态，只读预览也不丢新名单。"""
+def run_day(today: date, dry_run: bool = False, retry: bool = False) -> SignalReport:
+    """09:30启动后顺序完成信号与执行；共享本轮状态，只读预览也不丢新名单。
+
+    acted＝信号行动轮或当日有成交；纯"非调仓日且无成交"为 False，入口据此免发日报。
+    """
     st = pool_state.load_state(config.STATE_PATH)
     signal_report = signal.run_signal(today, dry_run=dry_run, retry=retry, state=st)
+    before = len(load_trades(config.POOL_LEDGER_PATH))
     execution_report = run_execution(today.isoformat(), dry_run=dry_run, state=st)
-    return (f"# 质量池模拟（{today.isoformat()}）\n\n"
-            + signal_report.replace("# ", "## ", 1) + "\n\n"
-            + execution_report.replace("# ", "## ", 1))
+    acted = (getattr(signal_report, "acted", True)
+             or len(load_trades(config.POOL_LEDGER_PATH)) > before)
+    return SignalReport(f"# 质量池模拟（{today.isoformat()}）\n\n"
+                        + signal_report.replace("# ", "## ", 1) + "\n\n"
+                        + execution_report.replace("# ", "## ", 1), acted)
 
 
 def build_snapshot(exec_date: str, selected: List[str]) -> execution.ExecSnapshot:

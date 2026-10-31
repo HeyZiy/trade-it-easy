@@ -79,7 +79,7 @@ REBALANCE_TOTAL_THRESHOLD = 0.15      # 所有偏离绝对值之和 > 15% 强制
 MIN_TRADE_DEVIATION = 0.02            # 碎股偏差过滤：< 2% 不出指令
 
 
-# ── 全市场 PE 分位 → 估值档位（唯一 producer：src/etf/allocation 市场概览/持仓对照两处展示共用）。
+# ── 全市场 PE 分位 → 估值档位（唯一 producer：src/etf/allocation 市场宏观节展示）。
 #    只吃市场级分位（amazing_factors.get_market_pe）；标的级估值无分位口径，见 TRACKED_INDEX 注。
 def pe_level(pe_pct: float) -> str:
     """全市场 PE 近 5 年分位(%) → 五档估值水平标签。"""

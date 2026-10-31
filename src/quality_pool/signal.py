@@ -92,8 +92,22 @@ def _next_rebalance_day(day: date) -> date:
     return upcoming[config.ROTATE_EVERY - 1]
 
 
+class SignalReport(str):
+    """报告文本，附 acted 行动轮标记（str 子类：既有按文本消费的调用零改动）。
+
+    acted=True＝轮次名单生成/失败重试/补判；False＝非调仓日空转或当日名单已重放，
+    入口据此免发日报（str 兼容让测试桩等普通字符串一律按行动轮处理）。
+    """
+    acted: bool
+
+    def __new__(cls, text: str, acted: bool):
+        self = super().__new__(cls, text)
+        self.acted = acted
+        return self
+
+
 def run_signal(today: date, dry_run: bool = False, retry: bool = False,
-               *, state: dict | None = None) -> str:
+               *, state: dict | None = None) -> SignalReport:
     """处理一个信号日，返回报告；状态提交先于报告生成，零通知副作用。
 
     retry 与入口的手动恢复选项一致：只恢复持久化的失败轮，
@@ -105,11 +119,11 @@ def run_signal(today: date, dry_run: bool = False, retry: bool = False,
     next_day = st.get("next_signal_date")
     is_round_day = next_day is None or today_str >= next_day
     if st.get('last_signal_date') == today_str and not st.get('signal_retry'):
-        return f'# 质量池信号（{today_str}）\n\n- 今日名单已生成，不重复本轮。\n'
+        return SignalReport(f'# 质量池信号（{today_str}）\n\n- 今日名单已生成，不重复本轮。\n', False)
     if not is_round_day and not st.get('signal_retry'):
         if st.get('deferred_codes'):
-            return review_deferred(today, st, dry_run)
-        return f"# 质量池信号（{today_str}）\n\n- 非调仓日：下一调仓信号日 {next_day}\n"
+            return SignalReport(review_deferred(today, st, dry_run), True)
+        return SignalReport(f"# 质量池信号（{today_str}）\n\n- 非调仓日：下一调仓信号日 {next_day}\n", False)
 
     asof = _prev_trading_day(today).isoformat()
     lines: List[str] = [f"# 质量池信号（{today_str}）", f"- 财务/估值/波动/强弱截至 T−1：{asof}"]
@@ -152,8 +166,8 @@ def run_signal(today: date, dry_run: bool = False, retry: bool = False,
     except Exception as exc:
         # 恢复标记已经落盘；取数/日志中断不丢失失败轮，也不挪动原定周期。
         logger.exception("调仓名单生成失败")
-        return "\n".join(lines + [
-            f"- ⚠️ 数据异常，本轮暂停；下一交易日模拟任务自动重试，原定节点 {nxt}：{exc}"])
+        return SignalReport("\n".join(lines + [
+            f"- ⚠️ 数据异常，本轮暂停；下一交易日模拟任务自动重试，原定节点 {nxt}：{exc}"]), True)
 
     rank = {c: i + 1 for i, c in enumerate(ranked)}
     exit_reasons = {c: config.EXIT_OUT_OF_POOL for c in sorted(held)
@@ -186,7 +200,7 @@ def run_signal(today: date, dry_run: bool = False, retry: bool = False,
     lines.append(f"- 下一调仓信号日 {nxt}；本轮随后先卖后买；暂缓判断 {len(deferred)} 只")
     names = _decision_names([d["code"] for d in decisions] + ranked)
     lines += render_decision_table(decisions, ranked, rank, scores, names)
-    return "\n".join(lines)
+    return SignalReport("\n".join(lines), True)
 
 
 def render_decision_table(decisions: List[dict], ranked: List[str],

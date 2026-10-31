@@ -17,7 +17,7 @@ ETF 再平衡引擎
 
 整手口径单点在 src/mx/executor：买侧 round_lot（向下取整后强凑≥100）、
 卖侧 floor_lot(min(应卖, 持仓))（不足一手跳过该笔，残腿进 odd_lots 供报告列手动待办）。
-新钱投放参考（全市场估值分位）由 src/etf/allocation 周报生成，仅建议不自动执行。
+调仓指令由 src/etf/allocation 周报生成展示，仅建议不自动执行。
 """
 
 import logging

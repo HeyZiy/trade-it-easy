@@ -1,6 +1,7 @@
-"""次日盘前采集各账户上一交易日成绩；不改持仓、不下单、不发送通知。
+"""次日盘前采集各账户上一交易日收盘成绩；不改持仓、不下单、不发送通知、不生成日报。
 
 默认运行还会回补目标日之前最近 5 个交易日的不完整记录；手动 --date 只采指定日。
+采集结果经各账户台账的 performance 记录供 dashboard 展示；异常与缺价走日志告警。
 """
 
 import argparse
@@ -67,7 +68,7 @@ def run(*, asof=None, dry_run=False, now=None, backfill=False):
     accounts = all_sources()
     from pathlib import Path
     from src.etf_account import FILENAME, collect_close as collect_core_close, load as load_core, render_summary as core_summary, revision
-    sections = [f"# 账户收盘日报 — {target}", ""]
+    sections = [f"# 账户收盘采集 — {target}", ""]
     notes = []
     errors = 0
     window = _backfill_dates(target) if backfill else []
@@ -89,6 +90,7 @@ def run(*, asof=None, dry_run=False, now=None, backfill=False):
                 row = _record(state, target.isoformat())
                 if row and row.get("issues"):
                     errors += 1
+                    logger.warning("[收盘提示] ETF账户 %s：%s", target, "；".join(row["issues"]))
                     sections.append("## ETF账户估值提示\n\n" + "；".join(row["issues"]))
             except FileNotFoundError:
                 sections.append("## ETF账户\n\n尚未初始化，暂不生成成绩。")
@@ -129,6 +131,7 @@ def run(*, asof=None, dry_run=False, now=None, backfill=False):
             row = _record(state, target.isoformat())
             if row and row["issues"]:
                 errors += 1
+                logger.warning("[收盘提示] %s %s：%s", label, target, "；".join(row["issues"]))
             if healed:
                 notes.append(f"- {label} 已补齐：{'、'.join(healed)}")
             if lingering:
@@ -155,11 +158,12 @@ def main():
     setup_logging(log_prefix="portfolio_report")
     asof = args.date or closed_date(datetime.now(SHANGHAI)).isoformat()
     report, errors = run(asof=asof, dry_run=args.dry_run, backfill=args.date is None)
-    print(report)
-    if not args.dry_run:
-        from src.task_io import save_report
-        # 补采历史日按数据日期归档，不覆盖今天的收盘日报。
-        save_report(report, "portfolio_close", report_date=asof)
+    if args.dry_run:
+        # 预览采集结果；正式运行静默采集——成绩看板在 dashboard，不再生成收盘日报。
+        import io
+        import sys
+        sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding="utf-8")
+        print("\n" + report)
     return 1 if errors else 0
 
 

@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 """周度批次——ETF 核心仓统一调仓闭环（规格唯一来源 strategy/etf_allocation.md）。
 
-单动词 interface：run(dry_run) -> str，完成账户快照 → 再平衡建议 → 周报。
+单动词 interface：run() -> str，完成账户快照 → 再平衡建议 → 周报。
 ETF账户台账由用户确认成交记账，报告生成不写入成交。
 
 数据 seam（测试注入假数据的唯一入口，家法同 quality_pool/feeds.py）：
@@ -25,7 +25,6 @@ from datetime import datetime, timedelta, timezone
 from typing import List, Optional
 
 from src.etf.config import is_dividend_style, AssetType, pe_level
-from src.etf_account import render_summary
 
 logger = logging.getLogger(__name__)
 
@@ -96,9 +95,8 @@ def _raw_realtime_quotes(codes):
 class WeekContext:
     """一次装配的取数快照；渲染节只读此上下文，不再各自发起同主题取数。
 
-    market_pe/y10/erp_pct 单点取齐（市场概览/持仓对照/新钱参考共用同一估值口径，
-    避免同一报告里各节各自取数导致口径不一致）；
-    alloc 为账户+决策快照（None = 台账不可读，持仓对照节渲染跳过文案，不再重算链路）。
+    market_pe/y10/erp_pct 单点取齐（市场宏观节估值三件套）；
+    alloc 为账户+决策快照（None = 台账不可读，策略参考节渲染跳过文案，不再重算链路）。
     """
     market_pe: Optional[dict]    # get_market_pe()：{pe, pe_pct, ...} 或 None
     y10: Optional[float]         # 10 年期国债收益率（%）
@@ -163,8 +161,15 @@ def _fetch_trend_observations() -> dict:
 
 
 def _valuation_cell(row: dict) -> str:
-    """现有估值事实，不从绝对PE编造历史分位或买卖判断。"""
+    """现有估值事实＋锚来源前缀，不从绝对PE编造历史分位或买卖判断。
+    row 为空＝基准外无估值行（如黄金）；有行但锚与数值全缺＝无。"""
+    if not row:
+        return "—"
+    if not row.get("source_name") and row.get("pe") is None and row.get("div_yield") is None:
+        return "无"
     parts = []
+    if row.get("source_name"):
+        parts.append(row["source_name"])
     if row.get("pe") is not None:
         parts.append(f"PE {row['pe']:.1f}")
     if row.get("div_yield") is not None:
@@ -173,14 +178,14 @@ def _valuation_cell(row: dict) -> str:
     if is_dividend_style(row.get("code")) and spread is not None:
         note = "（偏低）" if spread >= 1.5 else ""
         parts.append(f"利差 {spread:+.1f}pt{note}")
-    return " / ".join(parts) or "—"
+    return " / ".join(parts)
 
 
-# ── 市场概览 ──
+# ── 市场宏观 ──
 
 def _market_overview(ctx: WeekContext) -> str:
-    """市场估值概览（纯渲染 ctx，不给操作建议；整体配比观点归基准）。"""
-    lines = ["## 市场估值概览", ""]
+    """市场宏观（未完善）：全市场 PE / 收益率 / 风险溢价，纯数据不给操作建议。"""
+    lines = ["## 市场宏观（未完善）", ""]
 
     market_pe = ctx.market_pe
     if market_pe:
@@ -206,28 +211,6 @@ def _market_overview(ctx: WeekContext) -> str:
         lines.append("- **全市场 PE**：数据不可用")
         if ctx.y10:
             lines.append(f"- **10 年期国债收益率**：{ctx.y10:.2f}%")
-
-    lines.append("")
-    return "\n".join(lines)
-
-
-# ── 买入优先级 ──
-
-def _valuation_reference(ctx: WeekContext) -> str:
-    """各标的估值参考（锚=跟踪指数自身 PE/股息率；跨标的不可比，仅展示）"""
-    lines = ["## 各标的估值参考（锚对准跟踪指数，PE 跨标的不可比）", ""]
-
-    rows = ctx.valuations
-
-    lines.append("| ETF | 估值锚 | PE | 股息率 | 备注 |")
-    lines.append("|-----|--------|-----|--------|------|")
-
-    for r in rows:
-        source = r.get("source_name", "") or "—"
-        pe = f"{r['pe']:.1f}" if r.get("pe") is not None else "—"
-        dy = f"{r['div_yield']:.1f}%" if r.get("div_yield") is not None else "—"
-        note = r.get("level_text", "") or "—"
-        lines.append(f"| {r['name']}（{r['code']}） | {source} | {pe} | {dy} | {note} |")
 
     lines.append("")
     return "\n".join(lines)
@@ -286,7 +269,7 @@ def _compute_allocation():
     rebalancer = ETFRebalancer(_baseline())
     target = rebalancer.calculate_target()
 
-    core_positions, rotation_mv, rotation_positions = rebalancer.split_rotation_positions(positions)
+    core_positions, _, _ = rebalancer.split_rotation_positions(positions)
     # 台账缺价的持仓 + 未持仓基准 ETF 一并补价（compare 对无价标的自然跳过）
     prices = _fetch_missing_prices(rebalancer.baseline, positions)
     plan = rebalancer.build_plan(target, positions, total_assets, prices=prices)
@@ -296,8 +279,6 @@ def _compute_allocation():
         "positions": positions,
         "total_assets": total_assets,
         "core_positions": core_positions,
-        "rotation_mv": rotation_mv,
-        "rotation_positions": rotation_positions,
         "target": target,
         "plan": plan,
         "prices": prices,
@@ -305,8 +286,8 @@ def _compute_allocation():
 
 
 def _holding_overview(ctx: WeekContext) -> str:
-    """持仓 vs 目标对照 + 调仓建议（纯渲染 ctx.alloc；只出建议，不自动执行）"""
-    lines = ["## 执行前持仓对照与调仓依据", ""]
+    """策略参考表：目标/实际/偏离/建议指令，唐奇安与估值两列独立参考（纯渲染 ctx.alloc）。"""
+    lines = ["## 策略参考", ""]
 
     alloc = ctx.alloc
     if alloc is None:
@@ -315,25 +296,9 @@ def _holding_overview(ctx: WeekContext) -> str:
 
     positions = alloc["positions"]
     total_assets = alloc["total_assets"]
-    rotation_mv = alloc["rotation_mv"]
-    rotation_positions = alloc["rotation_positions"]
     target = alloc["target"]
     plan = alloc["plan"]
     orders = plan.orders
-
-    pe_pct = ctx.market_pe.get("pe_pct") if ctx.market_pe else None
-    if pe_pct is not None:
-        level = pe_level(pe_pct)
-        gate_line = f"**PE 分位**: {pe_pct:.0f}%（{level}，仅作参考）"
-    else:
-        gate_line = "**PE 分位**: 数据不可用"
-
-    assets_line = f"**策略预算**: {total_assets:,.0f} 元"
-    if rotation_mv > 0:
-        assets_line += f" | **卫星/其他账户持仓**: {rotation_mv:,.0f} 元（由现金桶吸收）"
-    lines.append(f"{assets_line} | {gate_line}")
-    lines.append(f"**本次批次**: {plan.reason}")
-    lines.append("")
 
     # 当前持仓占比（资金占比即总占比；卫星等基准外持仓不产生偏离，由现金桶吸收）
     current_map: dict = {}
@@ -376,48 +341,16 @@ def _holding_overview(ctx: WeekContext) -> str:
 
     lines.append("")
     lines.append("> 唐奇安：√＝规则持有，×＝规则空仓，—＝数据不足或状态未确定；"
-                 "收盘突破此前20日最高价入场、跌破此前10日最低价离场，通道内延续历史状态。"
-                 "当日新信号对应下一交易日开盘，不代表实际持仓或本周新增买卖指令。")
+                 "收盘突破此前20日最高价入场、跌破此前10日最低价离场，通道内延续历史状态。")
     lines.append("> ★ 恒生科技：当前样本中唐奇安20/10改善了持有体验，为重点观察规则。")
-    lines.append("> 估值展示跟踪指数PE/股息率；红利沿用股息率减10年国债利差≥1.5pt视同低估的现有口径。"
-                 "其余标的暂无高低判定，—表示无数据或不适用。两列独立参考，不合成评分，不参与调仓建议。")
-    dated = {}
-    unavailable = []
-    for asset in _baseline():
-        if asset.code == "CASH":
-            continue
-        observation = ctx.trends.get(asset.code, {})
-        if observation.get("asof"):
-            dated.setdefault(observation["asof"], []).append(asset.code)
-        if observation.get("state") is None:
-            reason = observation.get("error", "尚无明确突破" if observation else "未取到行情")
-            unavailable.append(f"{asset.name}（{reason}）")
-    for date, codes in sorted(dated.items()):
-        lines.append(f"> 唐奇安行情截至 {date} 收盘：{'、'.join(codes)}。")
-    if unavailable:
-        lines.append(f"> 唐奇安暂无判断：{'、'.join(unavailable)}。")
 
-    # 卫星持仓与基准外持仓提示（由"现金（以及其他账户）"桶吸收，不产生核心偏离）
-    if rotation_positions:
-        lines.append("")
-        lines.append("> 卫星持仓（现金桶吸收，不参与核心再平衡）："
-                     + "、".join(f"{p.get('name', '')}({p.get('code', '')})" for p in rotation_positions))
+    # 基准外持仓提示（未纳入对照表）
     baseline_codes = {a.code for a in _baseline()}
     extra = [f"{p.get('name', '')}({p.get('code', '')})" for p in alloc["core_positions"]
              if p.get("code") not in baseline_codes]
     if extra:
         lines.append("")
         lines.append(f"> 基准外持仓：{'、'.join(extra)}（未纳入对照）")
-
-    if orders:
-        lines.append("")
-        lines.append("**建议调仓指令（仅供参考，不自动执行）**")
-        lines.append("")
-        for o in orders:
-            lines.append(f"- {o.action.upper()} {o.name}({o.code}) {o.quantity}股 ≈ {o.amount:,.0f}元 — {o.reason}")
-    else:
-        lines.append("")
-        lines.append("无调仓需求，保持当前配置。")
 
     # 残腿：应卖但持仓不足一手，交易所只收整手——不出必拒卖单，列手动待办
     for o in plan.odd_lots:
@@ -428,33 +361,13 @@ def _holding_overview(ctx: WeekContext) -> str:
     return "\n".join(lines)
 
 
-def _deploy_cash_section(ctx: WeekContext) -> str:
-    """新钱投放参考（每周固定输出）：只报告一个全市场估值分位，并入快慢人工把握。
-
-    入金记入ETF账户台账后，按更新后的总资产与目标权重重新计算配置缺口。
-    """
-    lines = ["## 新钱投放参考（估值分位，仅数据）", ""]
-    market_pe = ctx.market_pe
-    if market_pe:
-        level = pe_level(market_pe["pe_pct"])
-        lines.append(f"全市场 PE 近 5 年分位 **{market_pe['pe_pct']:.0f}%**（{level}）。"
-                     "并入快慢据此自行把握，本节不做节奏判定。")
-    else:
-        lines.append("全市场估值数据不可用。")
-    lines.append("")
-    lines.append("> 入金后先在网页记录资金转入，再参考重新计算的配置缺口。")
-    lines.append("> 成交后在网页填写份额、均价和手续费，更新持仓与现金。")
-    lines.append("")
-    return "\n".join(lines)
-
-
 # ── 建议说明 ──
 
 def _recommendation_section(alloc: dict) -> str:
     orders = [o for o in alloc["plan"].orders if o.action in ("sell", "buy")]
     if not orders:
         return "## 本次建议\n\n无调仓需求，保持当前持仓。"
-    lines = ["## 本次建议", "", "成交后在网页记账。", ""]
+    lines = ["## 本次建议", ""]
     lines.extend(f"- {o.action.upper()} {o.name}({o.code}) 约 {o.qty}份 ≈ {o.amount:,.0f}元（{o.reason}）"
                  for o in orders)
     return "\n".join(lines)
@@ -462,7 +375,7 @@ def _recommendation_section(alloc: dict) -> str:
 
 # ── 报告生成（单动词 interface）──
 
-def run(dry_run: bool = False) -> str:
+def run() -> str:
     """生成周报与配置建议，不写入成交记录。
 
     取数一次装配进 WeekContext，各节纯渲染。
@@ -472,22 +385,18 @@ def run(dry_run: bool = False) -> str:
     ctx = _build_week_context()
     alloc = ctx.alloc
 
-    from src.etf_account import ACCOUNT_PATH
-    summary = render_summary(ACCOUNT_PATH)
     sections = [
         f"# ETF 周度观察 — {datetime.now().strftime('%Y-%m-%d')}",
         "",
-        f"**生成时间**: {now}{'（dry-run，未记账）' if dry_run else ''}",
+        f"**生成时间**: {now}",
         "",
-        summary,
     ]
 
     if alloc is not None:
         sections.append(_recommendation_section(alloc))
     else:
         sections.append("## 本次建议\n\n持仓数据不可用，暂不生成建议。")
-    sections.extend([_holding_overview(ctx), _market_overview(ctx),
-                     _valuation_reference(ctx), _deploy_cash_section(ctx)])
+    sections.extend([_holding_overview(ctx), _market_overview(ctx)])
 
     sections.extend([
         "---",

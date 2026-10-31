@@ -73,6 +73,21 @@ def test_failed_signal_still_retries_exits_then_recovers_original_cycle(env):
     assert not saved["signal_retry"] and saved["next_signal_date"] == "2026-10-30"
 
 
+def test_silent_non_round_day_skips_report_and_push(env):
+    _patch_execute_data(env, {})
+    saved = state.load_state(config.STATE_PATH)
+    saved.update(next_signal_date="2026-10-30", deferred_codes=[])
+    state.save_state(saved, config.STATE_PATH)
+    reports, notifications = [], []
+    env.setattr(entry, "save_report", lambda report, prefix, **kw: reports.append(prefix))
+    env.setattr(entry, "notify", notifications.append)
+
+    report = entry.run(date(2026, 10, 2))
+
+    assert "非调仓日" in report
+    assert reports == [] and notifications == []     # 静默日不落盘不推送
+
+
 def test_non_round_day_reviews_unknown_holding_and_exits_in_same_run(env):
     from src.quality_pool import feeds
 
