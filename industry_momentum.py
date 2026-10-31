@@ -38,7 +38,7 @@ setup_env()
 from src.etf.industry_momentum import (           # noqa: E402
     SATELLITE_BUDGET_RATIO, EtfOrder, analyze_rotation,
 )
-from src.etf.industry_account import SIM_ACCOUNT  # noqa: E402
+from src.etf.industry_account import ACCOUNT_SOURCE  # noqa: E402
 from src.task_io import notify, save_report       # noqa: E402
 from src.trade_ledger import (                    # noqa: E402
     derive, load_trades, resolve_prices,
@@ -61,7 +61,7 @@ def _execute(orders: List[EtfOrder], trade_date: str, *,
                     for o in orders]
     res = execute_batch(batch_orders, account="satellite",
                         trade_date=trade_date,
-                        path=SIM_ACCOUNT.ledger_path if ledger_path is None else ledger_path)
+                        path=ACCOUNT_SOURCE.ledger_path if ledger_path is None else ledger_path)
     lines = [oc.outcome_line for oc in res.outcomes]
     return res.abort, lines
 
@@ -81,7 +81,7 @@ def _pool_line(diag: dict) -> str:
 def run(dry_run: bool = False) -> str:
     """尾盘闭环：台账持仓 → 截面判定 → 安全校验 → 记账 → 报告。"""
     trade_date = date.today().isoformat()
-    trades = load_trades(SIM_ACCOUNT.ledger_path)
+    trades = load_trades(ACCOUNT_SOURCE.ledger_path)
     held = derive(trades, trade_date)
     prices = resolve_prices([p["code"] for p in held.positions])
     snap = derive(trades, trade_date, prices)
@@ -100,7 +100,7 @@ def run(dry_run: bool = False) -> str:
         f"**生成时间**: {datetime.now().strftime('%Y-%m-%d %H:%M')}"
         f"{'（dry-run，未记账）' if dry_run else ''}",
         "",
-        render_summary(SIM_ACCOUNT.ledger_path, label=SIM_ACCOUNT.label),
+        render_summary(ACCOUNT_SOURCE.ledger_path, label=ACCOUNT_SOURCE.label),
         "",
         f"**执行前卫星仓位**: {plan['satellite_mv'] / total_assets * 100:.1f}%"
         f"（预算上限 {SATELLITE_BUDGET_RATIO * 100:.0f}%）" if total_assets > 0
@@ -111,7 +111,7 @@ def run(dry_run: bool = False) -> str:
     action_index = len(lines)
 
     def finish():
-        summary = execution_summary(trades, load_trades(SIM_ACCOUNT.ledger_path), dry_run=dry_run,
+        summary = execution_summary(trades, load_trades(ACCOUNT_SOURCE.ledger_path), dry_run=dry_run,
                                     planned=len(sells) + len(buys))
         lines.insert(action_index, summary + "\n")
         return "\n".join(lines)
@@ -161,7 +161,7 @@ def run(dry_run: bool = False) -> str:
     # 执行后持仓：台账重推导（成交价补进现价表，不二次取数）
     if not dry_run:
         prices.update({o.code: o.price for o in orders if o.price > 0})
-        fresh = derive(load_trades(SIM_ACCOUNT.ledger_path), trade_date, prices).positions
+        fresh = derive(load_trades(ACCOUNT_SOURCE.ledger_path), trade_date, prices).positions
     else:
         fresh = positions
     if fresh:

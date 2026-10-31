@@ -13,12 +13,12 @@
     <span class="private-label"><span></span> 个人账户</span>
   </div></header>
   <main>
-    <div class="intro"><p>各账户独立记账，收益按收盘估值更新。</p><p id="status" role="status">正在读取数据…</p></div>
+    <div class="intro"><p>ETF账户统一记账，各策略分别管理配置。</p><p id="status" role="status">正在读取数据…</p></div>
     <div id="app" hidden>
       <nav class="tabs" id="tabs" aria-label="账户"></nav>
       <div id="account"></div>
       <section class="section reports-section" aria-labelledby="reports-title">
-        <div class="section-heading"><div><div class="eyebrow">DAILY BRIEF</div><h2 id="reports-title">最新报告</h2></div><span class="subtle">在这里阅读，按需展开</span></div>
+        <div class="section-heading"><div><div class="eyebrow">DAILY BRIEF</div><h2 id="reports-title">最新报告</h2></div></div>
         <div class="report-shell">
           <div id="report-list" class="report-list" role="tablist" aria-label="选择报告"></div>
           <div id="report-panel" class="report-panel" role="tabpanel" aria-label="报告正文">
@@ -32,10 +32,12 @@
     </div>
     <dialog id="event-dialog" aria-labelledby="event-title">
       <form id="event-form">
-        <div class="section-heading"><h2 id="event-title">记录成交</h2><button type="button" id="event-cancel" class="text-button">关闭</button></div>
+        <div class="section-heading"><h2 id="event-title">记账</h2><button type="button" id="event-cancel" class="text-button">关闭</button></div>
         <div class="entry-grid">
-          <label>记账类型<select name="side"><option value="buy">买入</option><option value="sell">卖出</option><option value="dividend">现金分红到账</option><option value="deposit">资金转入</option><option value="withdraw">资金转出</option></select></label>
+          <label>记账类型<select name="side"><option value="assign">持仓分配</option><option value="buy">买入</option><option value="sell">卖出</option><option value="dividend">现金分红到账</option><option value="deposit">资金转入</option><option value="withdraw">资金转出</option></select></label>
           <label>发生日期<input name="date" type="date" required></label>
+          <label hidden>分配来源<select name="from_strategy" disabled><option value="unassigned">未分配</option><option value="core">核心配置</option><option value="rotation">跨资产轮动</option></select></label>
+          <label data-strategy-field>策略<select name="strategy"><option value="unassigned">未分配</option><option value="core">核心配置</option><option value="rotation">跨资产轮动</option></select></label>
           <label data-trade-field>证券代码<input name="code" inputmode="numeric" pattern="[0-9]{6}" maxlength="6" required></label>
           <label data-trade-field>标的名称<input name="name" maxlength="80" required></label>
           <label data-trade-field>成交份额<input name="qty" type="number" min="1" step="1" required></label>
@@ -46,6 +48,23 @@
         <p id="event-preview" class="entry-preview"></p>
         <p id="event-error" class="warning" role="alert" hidden></p>
         <button id="event-save" type="submit" class="primary-button">确认记账</button>
+      </form>
+    </dialog>
+    <dialog id="budget-dialog" aria-labelledby="budget-title">
+      <form id="budget-form">
+        <div class="section-heading"><h2 id="budget-title">策略目标比例</h2><button id="budget-cancel" type="button" class="text-button">关闭</button></div>
+        <p class="subtle">占账户总资产的比例，留空表示未设置。修改目标不会自动调仓或分配现金。</p>
+        <div class="entry-grid"><label>核心配置 / %<input name="core" type="number" min="0" max="100" step="any"></label><label>跨资产轮动 / %<input name="rotation" type="number" min="0" max="100" step="any"></label></div>
+        <p id="budget-error" class="warning" role="alert" hidden></p><button type="submit" class="primary-button">保存比例</button>
+      </form>
+    </dialog>
+    <dialog id="cash-dialog" aria-labelledby="cash-title">
+      <form id="cash-form">
+        <div class="section-heading"><h2 id="cash-title">分配现金</h2><button id="cash-cancel" type="button" class="text-button">关闭</button></div>
+        <button id="cash-fill-target" type="button" class="text-button">填写核心现金目标</button>
+        <div class="entry-grid"><label>核心配置 / 元<input name="core" type="number" min="0" step="0.01" required></label><label>跨资产轮动 / 元<input name="rotation" type="number" min="0" step="0.01" required></label></div>
+        <p id="cash-remaining" class="entry-preview"></p><p id="cash-error" class="warning" role="alert" hidden></p>
+        <button type="submit" class="primary-button">确认分配</button>
       </form>
     </dialog>
   </main>

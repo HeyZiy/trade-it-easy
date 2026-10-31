@@ -4,15 +4,8 @@
 成交台账 CLI — 手动记账与查账（book.py）
 ===================================
 
-名义影子台账的人工入口：
-
-- open：手动记建仓（实盘底仓补记）——给成本价与仓位权重%，
-  换算名义整手股数写入流水（manual=True，入场日=该日不追溯）；
-- view：渲染当前持仓/权重/名义现金，兼对账自检——
-  流水截止日陈旧度提示。
-
-约定：卖出/买侧影子成交由各任务 cron 自动记账，不经本 CLI；
-真实资金数字不在系统内——权重% → 钱的乘法在实盘下单时自算。
+ETF账户的成交和资金变动通过网页记账，view 显示账户概览。
+其他独立观察台账可指定 --path 使用 open/view；open 的权重换算沿用观察资金口径。
 """
 
 import argparse
@@ -20,6 +13,7 @@ import io
 import logging
 import sys
 from datetime import date
+from pathlib import Path
 
 from src.config import setup_env
 from src.logging_config import setup_logging
@@ -39,13 +33,20 @@ def _ledger_path(args):
     if args.account == "satellite":
         from src.etf.industry_account import LEDGER_PATH
         return LEDGER_PATH
-    return DEFAULT_LEDGER_PATH
+    if args.account == "quality_pool":
+        from src.quality_pool.config import ACCOUNT_SOURCE
+        return ACCOUNT_SOURCE.ledger_path
+    if args.account == "etf_rotation":
+        from src.etf.rotation import ACCOUNT_SOURCE
+        return ACCOUNT_SOURCE.ledger_path
+    from src.etf_account import ACCOUNT_PATH
+    return ACCOUNT_PATH
 
 
 def cmd_open(args) -> int:
-    from src.real_account import ACCOUNT_PATH
-    if ACCOUNT_PATH.exists() and args.path is None and args.account == "core":
-        print("核心配置已切换为实际账户，请在网页使用手动记账。")
+    from src.etf_account import ACCOUNT_PATH
+    if (args.path is None and args.account == "core") or (args.path is not None and Path(args.path).resolve() == ACCOUNT_PATH.resolve()):
+        print("ETF账户请在网页使用手动记账。")
         return 1
     weight_pct = args.weight
     if not 0 < weight_pct <= 100:
@@ -68,10 +69,14 @@ def cmd_open(args) -> int:
 
 
 def cmd_view(args) -> int:
-    from src.real_account import ACCOUNT_PATH, render_summary
-    if ACCOUNT_PATH.exists() and args.path is None and args.account in (None, "core"):
-        print(render_summary(ACCOUNT_PATH))
-        return 0
+    from src.etf_account import ACCOUNT_PATH, render_summary
+    if args.path is None and args.account in (None, "core"):
+        try:
+            print(render_summary(ACCOUNT_PATH))
+            return 0
+        except FileNotFoundError:
+            print("ETF账户尚未初始化")
+            return 1
     trades = load_trades(_ledger_path(args))
     as_of = args.as_of or date.today().isoformat()
     snap = derive(trades, as_of=as_of)  # 无现价：市值按 0，权重列按成本口径
@@ -117,7 +122,7 @@ def main() -> int:
     sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8')
     parser = argparse.ArgumentParser(description="名义影子成交台账 CLI")
     parser.add_argument("--path", default=None,
-                        help="流水 JSONL 路径（默认核心配置台账；satellite 使用行业独立台账）")
+                        help="流水 JSONL 路径（默认ETF账户；satellite 使用行业独立台账）")
     sub = parser.add_subparsers(dest="cmd", required=True)
 
     po = sub.add_parser("open", help="手动记建仓（实盘底仓补记）")

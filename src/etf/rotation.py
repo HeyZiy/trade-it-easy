@@ -41,7 +41,7 @@ import pandas as pd
 from src.etf.momentum import (DIVE_RATIO, SCORE_DAYS, EtfOrder,
                               momentum_score)
 from src.mx.executor import floor_lot
-from src.sim_accounts import SimAccount
+from src.account_sources import AccountSource
 from src.trading_calendar import latest_trading_day_on_or_before
 
 # ── 研究线参数（research/studies/etf_rotation/study_etf_fit_jq.py；
@@ -55,7 +55,7 @@ STALE_DAYS = 10          # 交易日历不可用时：最后日线距今 > N 自
 
 ACCOUNT = "etf_rotation"                       # 台账归因标签（独立策略账户）
 LEDGER_PATH = "data/trade_ledger_etf_rotation.jsonl"   # 独立流水，与主台账互不可见
-SIM_ACCOUNT = SimAccount(                      # 收盘成绩消费方经 src/sim_accounts 枚举
+ACCOUNT_SOURCE = AccountSource(                      # 收盘成绩消费方经 src/account_sources 枚举
     ledger_path=LEDGER_PATH, label="ETF跨资产动量轮动",
     benchmark={"name": "沪深300价格指数", "index": "000300"})
 COMMISSION = 0.0002      # 新成交佣金万二，规划与台账执行使用同一口径

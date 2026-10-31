@@ -53,7 +53,7 @@ def test_execution_writes_only_industry_ledger(tmp_path, monkeypatch):
     from src.trade_ledger.ledger import load_trades
 
     path = tmp_path / "industry.jsonl"
-    monkeypatch.setattr(entry.SIM_ACCOUNT, "ledger_path", str(path))
+    monkeypatch.setattr(entry.ACCOUNT_SOURCE, "ledger_path", str(path))
     order = EtfOrder(code="512500", name="行业ETF", action="buy",
                      shares=100, price=2.0, amount=200, reason="test")
     abort, _ = entry._execute([order], "2026-10-29")
@@ -66,7 +66,7 @@ def test_run_reads_only_industry_ledger(monkeypatch):
     from src.trade_ledger.ledger import TradeRecord
 
     paths = []
-    monkeypatch.setattr(entry.SIM_ACCOUNT, "ledger_path", "industry-only.jsonl")
+    monkeypatch.setattr(entry.ACCOUNT_SOURCE, "ledger_path", "industry-only.jsonl")
 
     def read(path):
         paths.append(path)

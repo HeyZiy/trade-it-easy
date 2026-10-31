@@ -32,7 +32,7 @@ def test_account_shows_ledger_and_only_valid_performance(tmp_path):
 
 
 def test_curve_keeps_missing_days_as_gaps_and_excludes_future_records(tmp_path):
-    path = tmp_path / "data" / "trade_ledger.jsonl"
+    path = tmp_path / "data" / "trade_ledger_industry_momentum.jsonl"
     trade = TradeRecord("2025-01-02", "510300", "ETF", "buy", 100, 3.0)
     append_trade(trade, path)
     rows = [
@@ -55,8 +55,8 @@ def test_curve_keeps_missing_days_as_gaps_and_excludes_future_records(tmp_path):
         {"date": "2025-01-06", "nav": 1.02, "benchmark_nav": None},
     ]
     assert account["benchmark_name"] == "测试基准"
-    strategies = {s["id"]: s for s in dashboard_data(tmp_path)["strategies"]}
-    assert strategies["core"]["history"] == account["history"]
+    strategies = {s["id"]: s for s in dashboard_data(tmp_path)["observations"]}
+    assert strategies["satellite"]["history"] == account["history"]
 
 
 def test_report_retains_readable_formatting_without_active_html(tmp_path):
@@ -89,9 +89,9 @@ def test_missing_and_corrupt_accounts_are_isolated(tmp_path):
 
 def test_display_table_covers_registry_accounts():
     """注册表与展示表强制对齐：新账户漏补 DISPLAY 展示元数据时在此失败。"""
-    from src.sim_accounts import all_accounts
+    from src.account_sources import all_sources
 
-    registered = {Path(sa.ledger_path).name for sa in all_accounts()}
+    registered = {Path(sa.ledger_path).name for sa in all_sources()}
     listed = {filename for filename, _, _ in dashboard.DISPLAY}
     assert registered == listed
 
@@ -101,47 +101,38 @@ def basic(user, password):
 
 
 def test_core_and_industry_use_independent_ledgers(tmp_path):
+    from src.etf_account import initialize
     data = tmp_path / "data"
-    data.mkdir()
-    path = data / "trade_ledger.jsonl"
-    append_trade(TradeRecord(date="2025-01-02", code="510300", name="核心ETF",
-                             side="buy", qty=100, price=3.0, account="core"), path)
+    initialize(data / "etf_account.json", asof="2025-01-02", cash=1000,
+               positions=[dict(code="510300", name="核心ETF", count=100, price=3, strategy="core")])
     append_trade(TradeRecord(date="2025-01-03", code="512500", name="卫星ETF",
                              side="buy", qty=200, price=2.0, account="satellite"),
                  data / "trade_ledger_industry_momentum.jsonl")
     overview = dashboard_data(tmp_path)
-    strategies = {s["id"]: s for s in overview["strategies"]}
+    strategies = {s["id"]: s for s in overview["strategies"] + overview["observations"]}
     assert [p["code"] for p in strategies["core"]["positions"]] == ["510300"]
     assert [p["code"] for p in strategies["satellite"]["positions"]] == ["512500"]
-    assert [t["code"] for t in strategies["core"]["trades"]] == ["510300"]
+    assert strategies["core"]["trades"] == []
     assert [t["code"] for t in strategies["satellite"]["trades"]] == ["512500"]
-    assert strategies["core"]["ledger"] == "core"
-    assert strategies["satellite"]["ledger"] == "satellite"
-    assert "cash" not in strategies["core"] or strategies["core"]["cash"] is None
-    assert not strategies["core"]["shared"] and not strategies["satellite"]["shared"]
-    assert not strategies["rotation"]["shared"] and not strategies["quality"]["shared"]
+    assert overview["accounts"][0]["cash"] == 1000
+    assert strategies["core"]["account_id"] == "etf"
+    assert not strategies["satellite"]["shared"]
+
 
 
 def test_strategy_positions_carry_last_close_snapshot(tmp_path):
-    data = tmp_path / "data"
-    data.mkdir()
-    path = data / "trade_ledger.jsonl"
-    core = TradeRecord(date="2025-01-02", code="510300", name="核心ETF",
-                       side="buy", qty=100, price=3.0, account="core")
-    satellite = TradeRecord(date="2025-01-02", code="512500", name="卫星ETF",
-                            side="buy", qty=200, price=2.0, account="satellite")
-    append_trade(core, path)
-    append_trade(satellite, data / "trade_ledger_industry_momentum.jsonl")
-    rows = [{"date": "2025-01-02", "nav": 1.0, "issues": [],
-             "fingerprint": _fingerprint([core], "2025-01-02"),
-             "positions": [{"code": "510300", "name": "核心ETF", "count": 100,
-                            "cost_price": 3.0, "close": 3.3,
-                            "market_value": 330.0, "pos_pct": 0.033}]}]
-    path.with_suffix(".performance.json").write_text(json.dumps({"records": rows}), encoding="utf-8")
-    strategies = {s["id"]: s for s in dashboard_data(tmp_path)["strategies"]}
+    from src.etf_account import initialize, collect_close
+    path = tmp_path / "data" / "etf_account.json"
+    initialize(path, asof="2025-01-01", cash=1000,
+               positions=[dict(code="510300", name="核心ETF", count=100, price=3, strategy="core")])
+    collect_close(path, "2025-01-02", lambda codes, day: {codes[0]: 3.3})
+    append_trade(TradeRecord("2025-01-02", "512500", "卫星ETF", "buy", 200, 2, account="satellite"),
+                 path.with_name("trade_ledger_industry_momentum.jsonl"))
+    overview = dashboard_data(tmp_path)
+    strategies = {s["id"]: s for s in overview["strategies"] + overview["observations"]}
     assert strategies["core"]["positions"][0]["close"] == 3.3
-    # 快照缺某只持仓时保持空值，页面回退到成本口径。
     assert strategies["satellite"]["positions"][0]["close"] is None
+
 
 
 def test_authorized_accepts_only_exact_credentials():

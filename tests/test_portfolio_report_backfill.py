@@ -26,10 +26,10 @@ def accounts(tmp_path, monkeypatch):
     main, pool, rotation = (tmp_path / name for name in
                             ("main.jsonl", "pool.jsonl", "rotation.jsonl"))
     append_trade(TradeRecord("2026-09-22", "510300", "测试ETF", "buy", 100, 10), main)
-    # 账户事实的缝＝模拟账户描述符（src/sim_accounts 各家单点），不再逐家戳源模块常量。
-    monkeypatch.setattr("src.etf.config.SIM_ACCOUNT.ledger_path", str(main))
-    monkeypatch.setattr("src.quality_pool.config.SIM_ACCOUNT.ledger_path", str(pool))
-    monkeypatch.setattr("src.etf.rotation.SIM_ACCOUNT.ledger_path", str(rotation))
+    # 账户事实的缝＝模拟账户描述符（src/account_sources 各家单点），不再逐家戳源模块常量。
+    monkeypatch.setattr("src.etf.config.ACCOUNT_SOURCE.ledger_path", str(main))
+    monkeypatch.setattr("src.quality_pool.config.ACCOUNT_SOURCE.ledger_path", str(pool))
+    monkeypatch.setattr("src.etf.rotation.ACCOUNT_SOURCE.ledger_path", str(rotation))
     monkeypatch.setattr(entry, "get_trading_dates", calendar)
     return main, pool, rotation
 

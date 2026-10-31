@@ -82,7 +82,8 @@ def test_manual_book_routes_satellite_to_independent_account():
     from types import SimpleNamespace
     from book import _ledger_path
     from src.etf.industry_account import LEDGER_PATH
+    from src.etf_account import ACCOUNT_PATH
 
     assert _ledger_path(SimpleNamespace(path=None, account="satellite")) == LEDGER_PATH
-    assert Path(_ledger_path(SimpleNamespace(path=None, account="core"))) == Path("data/trade_ledger.jsonl")
+    assert Path(_ledger_path(SimpleNamespace(path=None, account="core"))) == ACCOUNT_PATH
     assert _ledger_path(SimpleNamespace(path="explicit.jsonl", account="satellite")) == "explicit.jsonl"

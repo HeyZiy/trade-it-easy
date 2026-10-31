@@ -122,7 +122,7 @@ def test_amazingdata_series_too_short_falls_back_to_eastmoney(monkeypatch):
 
 
 def test_report_columns_share_snapshot_and_do_not_change_target_or_plan(monkeypatch):
-    target = {asset.code: asset.neutral_weight for asset in eo.CORE_BASELINE}
+    target = {asset.code: asset.neutral_weight for asset in CORE_BASELINE}
     plan = RebalancePlan([], 0., False, "无指令", [])
     alloc = {"positions": [], "total_assets": 100_000., "rotation_mv": 0.,
              "rotation_positions": [], "core_positions": [], "target": target, "plan": plan}

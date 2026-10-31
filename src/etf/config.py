@@ -17,8 +17,8 @@ ETF 长期配置 — 中性基准
 from dataclasses import dataclass
 from typing import Dict, FrozenSet, List
 
-from src.sim_accounts import SimAccount
-from src.trade_ledger.ledger import DEFAULT_LEDGER_PATH
+from src.account_sources import AccountSource
+from src.etf_account import FILENAME
 
 # ── 类别枚举 ──
 
@@ -127,11 +127,11 @@ def pe_level(pe_pct: float) -> str:
     return "高估"
 
 
-# ── 模拟账户描述符（收盘成绩等消费方经 src/sim_accounts 枚举）──
+# ── 账户数据源描述符（收盘成绩等消费方经 src/account_sources 枚举）──
 
-SIM_ACCOUNT = SimAccount(
-    ledger_path=str(DEFAULT_LEDGER_PATH),
-    label="核心配置",
+ACCOUNT_SOURCE = AccountSource(
+    ledger_path=f"data/{FILENAME}",
+    label="ETF账户",
     benchmark={"name": "ETF期初权重买入持有（现金零收益，不再平衡）",
                "weights": {a.code: a.neutral_weight for a in CORE_BASELINE}},
 )

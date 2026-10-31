@@ -98,9 +98,8 @@ class TradeRecord:
 def append_trade(record: TradeRecord,
                  path: Path | str = DEFAULT_LEDGER_PATH) -> TradeRecord:
     """校验后追加一行 JSONL。record.code 先经 canonical_stock_code 归一。"""
-    from src.real_account import ACCOUNT_PATH
-    if Path(path) == DEFAULT_LEDGER_PATH and ACCOUNT_PATH.exists():
-        raise LedgerError("核心配置已使用实际账户，请在网页确认成交记账")
+    if Path(path).resolve() == DEFAULT_LEDGER_PATH.resolve():
+        raise LedgerError("ETF账户请在网页确认成交记账，不再写入旧台账")
     record = TradeRecord(**{**asdict(record),
                             "code": canonical_stock_code(record.code)})
     p = Path(path)

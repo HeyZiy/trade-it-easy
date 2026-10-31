@@ -16,26 +16,19 @@ import time
 
 from src.trade_ledger.ledger import derive, load_trades
 from src.trade_ledger.performance import load_performance, valid_records
+from src.etf_account import FILENAME as ETF_FILENAME, account_data as etf_account_data
 
 APP_ROOT = Path(__file__).resolve().parent
 ROOT = Path(os.environ.get("TRADE_DASHBOARD_ROOT", APP_ROOT)).resolve()
 # 展示元数据（台账文件名, id, 显示名），顺序即 accounts 数组顺序。账户存在性归
-# sim_accounts 注册表（join key = 台账文件名，即「单池」的账户身份）；
-# 新增账户 = 家里定义描述符 + sim_accounts 加一行 + 此处补一行展示元数据
+# account_sources 注册表（join key = 台账文件名，即「单池」的账户身份）；
+# 新增账户 = 家里定义描述符 + account_sources 加一行 + 此处补一行展示元数据
 # （test_display_table_covers_registry_accounts 强制两侧对齐）。
 DISPLAY = (
-    ("trade_ledger.jsonl", "core", "核心配置"),
+    (ETF_FILENAME, "etf", "ETF账户"),
     ("trade_ledger_industry_momentum.jsonl", "satellite", "行业动量"),
     ("trade_ledger_etf_rotation.jsonl", "rotation", "ETF 跨资产轮动"),
     ("trade_ledger_quality_pool_v2.jsonl", "quality", "质量池轮动"),
-)
-# 展示层策略拆分：(id, 名称, 所属账本, 账户标签)。标签为 None 表示整本账。
-# 四个策略分别读取独立台账；核心配置不包含行业模拟记录。
-STRATEGIES = (
-    ("core", "核心配置", "core", None),
-    ("satellite", "行业动量", "satellite", None),
-    ("rotation", "ETF 跨资产轮动", "rotation", None),
-    ("quality", "质量池轮动", "quality", None),
 )
 AUTH_REALM = 'Basic realm="trade-dashboard", charset="UTF-8"'
 AUTH_DELAY = 0.5
@@ -103,6 +96,8 @@ def authorized(header, user, password):
 
 
 def account_data(root, filename):
+    if filename == ETF_FILENAME:
+        return etf_account_data(root / "data" / filename)
     path = root / "data" / filename
     if not path.exists():
         return {"error": "台账文件不存在", "positions": [], "trades": []}
@@ -150,7 +145,6 @@ def strategy_view(key, name, account, tag):
         positions = [p for p in positions if p.get("account") == tag]
         trades = [t for t in trades if t.get("account") == tag]
     return {"id": key, "name": name, "ledger": account.get("id"),
-            "kind": account.get("kind", "simulated"),
             "positions": positions, "trades": trades[:20],
             "performance": performance,
             "history": account.get("history", []),
@@ -162,10 +156,10 @@ def strategy_view(key, name, account, tag):
 
 
 def _display_accounts():
-    """枚举展示账户：存在性归 sim_accounts 注册表，元数据与顺序归 DISPLAY。"""
-    from src.sim_accounts import all_accounts
+    """枚举展示账户：存在性归 account_sources 注册表，元数据与顺序归 DISPLAY。"""
+    from src.account_sources import all_sources
 
-    registry = {Path(sa.ledger_path).name for sa in all_accounts()}
+    registry = {Path(sa.ledger_path).name for sa in all_sources()}
     listed = {filename for filename, _, _ in DISPLAY}
     for filename in sorted(listed - registry):
         logging.warning("展示元数据指向的台账已不在注册表: %s", filename)
@@ -201,22 +195,28 @@ def _state_detail(filename: str, state) -> str:
 
 
 def dashboard_data(root=ROOT):
-    from src.real_account import FILENAME, account_data as actual_account_data
-    actual_path = root / "data" / FILENAME
-    accounts = []
+    ledgers = []
     for filename, key, name in _display_accounts():
         try:
-            data = (actual_account_data(actual_path) if key == "core" and actual_path.exists()
-                    else account_data(root, filename))
+            data = account_data(root, filename)
+        except FileNotFoundError:
+            data = {"error": "ETF账户尚未初始化", "positions": [], "trades": []}
         except Exception:
             logging.exception("读取账户失败: %s", key)
             data = {"error": "账户数据读取失败，请检查服务器日志。", "positions": [], "trades": []}
-        mode = "actual" if key == "core" and actual_path.exists() else "simulated"
-        accounts.append({"id": key, "name": name, "kind": mode, **data})
-    by_id = {account["id"]: account for account in accounts}
-    strategies = [by_id[ledger] if key == "core" and actual_path.exists()
-                  else strategy_view(key, name, by_id.get(ledger), tag)
-                  for key, name, ledger, tag in STRATEGIES]
+        ledgers.append({"id": key, "name": name, **data})
+    by_id = {account["id"]: account for account in ledgers}
+    account = by_id.get("etf", {"id": "etf", "name": "ETF账户", "error": "ETF账户数据源未配置",
+                                "positions": [], "trades": []})
+    strategies = account.pop("strategies", [
+        {"id": key, "name": name, "account_id": "etf", "positions": [], "trades": [],
+         "budget": None, "budget_pct": None, "invested": 0, "buying_power": None,
+         "suggestions": [], "status": "账户未初始化", "history": [], "performance": None}
+        for key, name in (("core", "核心配置"), ("rotation", "跨资产轮动"))])
+    rotation = strategy_view("rotation", "跨资产轮动 · 独立模拟", by_id.get("rotation"), None)
+    strategies[1]["observation"] = rotation
+    observations = [strategy_view(key, name, by_id.get(key), None)
+                    for key, name in (("satellite", "行业轮动"), ("quality", "质量池轮动"))]
     reports = _report_files(root)
     states = []
     for filename, label in (("quality_pool_v2_state.json", "质量池状态"),
@@ -228,7 +228,7 @@ def dashboard_data(root=ROOT):
             detail = "状态文件不存在或无法读取"
         states.append({"name": label, "detail": detail})
     return {"generated_at": datetime.now().astimezone().isoformat(timespec="seconds"),
-            "accounts": accounts, "strategies": strategies,
+            "accounts": [account], "strategies": strategies, "observations": observations,
             "reports": reports, "states": states}
 
 
@@ -247,8 +247,9 @@ class Handler(BaseHTTPRequestHandler):
                 or self.headers.get("Content-Type") != "application/json"):
             self.respond(b'{}', "application/json", status=403)
             return
-        from src.real_account import FILENAME, dismiss, record_event
-        handlers = {"/api/core/event": record_event, "/api/core/dismiss": dismiss}
+        from src.etf_account import FILENAME, dismiss, record_event, set_budgets
+        handlers = {"/api/etf/event": record_event, "/api/etf/dismiss": dismiss,
+                    "/api/etf/budgets": set_budgets}
         if self.path not in handlers:
             self.send_error(404)
             return
@@ -265,7 +266,7 @@ class Handler(BaseHTTPRequestHandler):
                          "application/json; charset=utf-8", status=400)
             return
         except Exception:
-            logging.exception("核心账户写入失败")
+            logging.exception("ETF账户写入失败")
             self.respond(json.dumps({"error": "保存失败，请刷新核对后重试。"}, ensure_ascii=False).encode(),
                          "application/json; charset=utf-8", status=500)
             return

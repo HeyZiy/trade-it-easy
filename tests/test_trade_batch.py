@@ -262,7 +262,7 @@ class TestEmptyBatch:
 
 
 class TestStrategyCallers:
-    def test_etf_ignores_stale_allocation_holdings_for_write_safety(self, tmp_path):
+    def test_etf_report_never_records_fills_from_allocation(self, tmp_path):
         from types import SimpleNamespace
         from src.etf import allocation as etf_allocation
         from src.etf.rebalancer import RebalanceOrder
@@ -275,8 +275,8 @@ class TestStrategyCallers:
             "positions": [{"code": "510300", "count": 200, "current_price": 1}],
             "prices": {}, "total_assets": NOMINAL_EQUITY, "cash": NOMINAL_EQUITY,
         }
-        report = etf_allocation._execute_batch(allocation, ledger_path=path)
-        assert "持仓 100 股" in report and load_trades(path) == before
+        report = etf_allocation._recommendation_section(allocation)
+        assert "本次建议" in report and load_trades(path) == before
 
     def test_industry_writes_without_caller_cash_or_holdings(self, tmp_path):
         import industry_momentum

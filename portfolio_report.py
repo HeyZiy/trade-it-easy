@@ -54,7 +54,7 @@ def _collect(path, day, benchmark, feed, dry_run):
 
 
 def run(*, asof=None, dry_run=False, now=None, backfill=False):
-    from src.sim_accounts import all_accounts
+    from src.account_sources import all_sources
 
     now = now or datetime.now(SHANGHAI)
     latest = closed_date(now)
@@ -64,13 +64,9 @@ def run(*, asof=None, dry_run=False, now=None, backfill=False):
     if target not in get_trading_dates(target, target):
         raise ValueError("目标日期不是已确认交易日")
     feed = ClosingPrices()
-    accounts = all_accounts()
+    accounts = all_sources()
     from pathlib import Path
-    from src.real_account import (ACCOUNT_PATH, collect_close as collect_actual_close,
-                                  load as load_actual, render_summary as actual_summary, revision)
-    if ACCOUNT_PATH.exists():
-        from src.trade_ledger.ledger import DEFAULT_LEDGER_PATH
-        accounts = [a for a in accounts if Path(a.ledger_path) != DEFAULT_LEDGER_PATH]
+    from src.etf_account import FILENAME, collect_close as collect_core_close, load as load_core, render_summary as core_summary, revision
     sections = [f"# 账户收盘日报 — {target}", ""]
     notes = []
     errors = 0
@@ -78,6 +74,30 @@ def run(*, asof=None, dry_run=False, now=None, backfill=False):
     for account in accounts:
         path, label, benchmark = (account.ledger_path, account.label,
                                   account.benchmark)
+        if Path(path).name == FILENAME:
+            try:
+                state = load_core(path)
+                for day in window:
+                    if day >= target or day.isoformat() <= state["initial"]["date"]:
+                        continue
+                    old = _record(state, day.isoformat())
+                    if not _complete(old) or old.get("revision") != revision(state, day.isoformat()):
+                        state = collect_core_close(path, day.isoformat(), feed.close_prices, dry_run=dry_run)
+                state = collect_core_close(path, target.isoformat(), feed.close_prices, dry_run=dry_run)
+                if target.isoformat() >= state["initial"]["date"]:
+                    sections.append(core_summary(path))
+                row = _record(state, target.isoformat())
+                if row and row.get("issues"):
+                    errors += 1
+                    sections.append("## ETF账户估值提示\n\n" + "；".join(row["issues"]))
+            except FileNotFoundError:
+                sections.append("## ETF账户\n\n尚未初始化，暂不生成成绩。")
+                errors += 1
+            except Exception:
+                logger.exception("ETF账户收盘采集失败，保留已有估值")
+                sections.append("## ETF账户\n\n本次估值失败，保留已有成绩。")
+                errors += 1
+            continue
         try:
             state = load_performance(path)
             healed, lingering = [], []
@@ -121,34 +141,13 @@ def run(*, asof=None, dry_run=False, now=None, backfill=False):
             errors += 1
     if notes:
         sections += ["## 本次回补（目标日之前）", "", *notes]
-    if ACCOUNT_PATH.exists():
-        try:
-            actual = load_actual(ACCOUNT_PATH)
-            for day in window:
-                if day >= target or day.isoformat() <= actual["initial"]["date"]:
-                    continue
-                old = _record(actual, day.isoformat())
-                if not _complete(old) or old.get("revision") != revision(actual, day.isoformat()):
-                    actual = collect_actual_close(ACCOUNT_PATH, day.isoformat(), feed.close_prices,
-                                                  dry_run=dry_run)
-            actual = collect_actual_close(ACCOUNT_PATH, target.isoformat(), feed.close_prices,
-                                          dry_run=dry_run)
-            if target.isoformat() >= actual["initial"]["date"]:
-                sections.insert(1, actual_summary(ACCOUNT_PATH))
-            row = _record(actual, target.isoformat())
-            if row and row.get("issues"):
-                errors += 1
-                sections.append("## 核心配置估值提示\n\n" + "；".join(row["issues"]))
-        except Exception:
-            logger.exception("真实账户收盘采集失败，保留已有估值")
-            errors += 1
     if dry_run:
         sections.append("试运行：未保存收盘记录。")
     return "\n\n".join(sections), errors
 
 
 def main():
-    parser = argparse.ArgumentParser(description="采集各独立模拟资金池的完整收盘成绩")
+    parser = argparse.ArgumentParser(description="采集各策略账户的完整收盘成绩")
     parser.add_argument("--date", help="补采已收盘交易日，YYYY-MM-DD（只采指定日）")
     parser.add_argument("--dry-run", action="store_true", help="仅展示，不保存记录")
     args = parser.parse_args()
