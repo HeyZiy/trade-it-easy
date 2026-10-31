@@ -16,6 +16,10 @@ FILENAME = "core_account.json"
 ACCOUNT_PATH = Path("data") / FILENAME
 
 
+def _today():
+    return date.today()
+
+
 def _positive(value):
     return type(value) in (int, float) and math.isfinite(value) and value > 0
 
@@ -180,6 +184,19 @@ def suggestions(state, view):
     engine = ETFRebalancer()
     engine.baseline = baseline(state)
     plan = engine.build_plan(state["targets"], view["positions"], view["equity"], prices=view["prices"])
+    records = sorted(state["records"], key=lambda r: r["date"])
+    valid = [r for r in records if _positive(r.get("nav")) and not r["issues"]
+             and (r["source"] == "用户确认的期初估值" or r["revision"] == revision(state, r["date"]))]
+    price_date = valid[-1]["date"] if valid else state["initial"]["date"]
+    outdated = (_today() - date.fromisoformat(price_date)).days > 7
+    incomplete = bool(records and (records[-1].get("issues") or
+                      (records[-1]["source"] != "用户确认的期初估值" and
+                       records[-1]["revision"] != revision(state, records[-1]["date"]))))
+    price_issue = None
+    if outdated:
+        price_issue = "估值已超过7天，参考份额待更新"
+    elif incomplete:
+        price_issue = "最新估值不完整，参考份额待更新"
     rev, result = revision(state), []
     for order in plan.orders:
         identity = hashlib.sha256(f"{rev}:{len(state['records'])}:{order.code}:{order.action}:{order.qty}".encode()).hexdigest()[:24]
@@ -189,8 +206,29 @@ def suggestions(state, view):
         if not _positive(price):
             continue  # 新标的缺少估值价格时不凑单。
         result.append({"id": identity, "code": order.code, "name": order.name,
-                       "side": order.action, "qty": order.qty, "price": price,
-                       "amount": round(order.qty * price, 2), "reason": order.reason})
+                       "side": order.action, "qty": None if price_issue else order.qty, "price": price,
+                       "amount": None if price_issue else round(order.qty * price, 2),
+                       "gap_amount": round(order.amount, 2),
+                       "current_pct": order.current_pct, "target_pct": order.target_pct,
+                       "price_date": price_date, "price_issue": price_issue, "reason": order.reason})
+    cash = view["cash"]
+    sale_proceeds = sum(r["amount"] or 0 for r in result if r["side"] == "sell")
+    projected = cash + sale_proceeds
+    for item in result:
+        item["cash_note"] = None
+        if item["side"] != "buy" or item["amount"] is None:
+            continue
+        amount = item["amount"]
+        if amount <= cash:
+            item["cash_note"] = "现有现金可覆盖参考成交额，另需预留手续费"
+            cash -= amount
+        elif amount <= projected:
+            item["cash_note"] = "需先完成减持并确认回款，再核对买入金额及手续费"
+            cash = 0
+        else:
+            item["cash_note"] = "按整组建议估算现金仍不足，请缩小买入金额或先补充资金"
+            cash = 0
+        projected -= amount
     return result
 
 

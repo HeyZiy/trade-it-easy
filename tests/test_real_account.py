@@ -11,7 +11,9 @@ from src.real_account import account_data, collect_close, initialize, load, reco
 
 
 @pytest.fixture
-def account(tmp_path):
+def account(tmp_path, monkeypatch):
+    from datetime import date
+    monkeypatch.setattr('src.real_account._today', lambda: date(2025, 1, 7))
     path = tmp_path / 'data' / 'core_account.json'
     initialize(path, asof='2025-01-04', cash=1000,
                positions=[dict(code='588000', name='ETF', count=1000, price=2)],
@@ -210,3 +212,41 @@ def test_write_api_requires_auth_and_custom_header(account, monkeypatch):
         server.shutdown()
         server.server_close()
         thread.join()
+
+def test_gap_amount_is_separate_from_rounded_trade_value(account):
+    record_event(account, event(account, 'deposit', amount=10))
+    item = account_data(account)['suggestions'][0]
+    assert item['gap_amount'] == 796
+    assert item['qty'] == 300
+    assert item['amount'] == 600
+    assert item['price_date'] == '2025-01-04'
+
+
+def test_stale_or_incomplete_prices_hide_reference_shares(account, monkeypatch):
+    from datetime import date
+    monkeypatch.setattr('src.real_account._today', lambda: date(2025, 1, 20))
+    item = account_data(account)['suggestions'][0]
+    assert item['gap_amount'] == 800
+    assert item['qty'] is None and item['amount'] is None
+    assert '超过7天' in item['price_issue']
+    monkeypatch.setattr('src.real_account._today', lambda: date(2025, 1, 7))
+    collect_close(account, '2025-01-06', lambda *_: {})
+    item = account_data(account)['suggestions'][0]
+    assert item['qty'] is None
+    assert '不完整' in item['price_issue']
+
+
+@pytest.mark.parametrize('targets,expected', [
+    ({'588000': .1, '510300': .9}, '需先完成减持'),
+    ({'510300': .9}, '现金仍不足'),
+])
+def test_buy_suggestions_do_not_treat_projected_sales_as_actual_cash(account, targets, expected):
+    path = account.parent / 'funding.json'
+    initialize(path, asof='2025-01-04', cash=0,
+               positions=[dict(code='588000', name='ETF1', count=1000, price=2),
+                          dict(code='510300', name='ETF2', count=100, price=2)], targets=targets)
+    view = account_data(path)
+    buy = next(r for r in view['suggestions'] if r['side'] == 'buy')
+    assert expected in buy['cash_note']
+    assert view['cash'] == 0
+    assert not view['trades']
