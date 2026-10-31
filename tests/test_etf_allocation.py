@@ -45,6 +45,7 @@ def _patch_render_seams(monkeypatch):
     def _no_bars(code, end):
         raise RuntimeError("行情不可用")
 
+    monkeypatch.setattr(allocation, "_raw_trend_bars_ad", lambda codes, end: {})
     monkeypatch.setattr(allocation, "_raw_trend_bars", _no_bars)
     monkeypatch.setattr(allocation, "render_summary", lambda *a, **kw: "**账户速览**（测试桩）")
 
@@ -147,6 +148,7 @@ def test_week_context_assembles_shared_facts_once(monkeypatch):
     def _no_bars(code, end):
         raise RuntimeError("行情不可用")
 
+    monkeypatch.setattr(allocation, "_raw_trend_bars_ad", lambda codes, end: {})
     monkeypatch.setattr(allocation, "_raw_trend_bars", _no_bars)
 
     ctx = allocation._build_week_context()
@@ -171,6 +173,7 @@ def test_erp_failure_tolerated_but_market_pe_failure_propagates(monkeypatch):
     def _no_bars(code, end):
         raise RuntimeError("down")
 
+    monkeypatch.setattr(allocation, "_raw_trend_bars_ad", lambda codes, end: {})
     monkeypatch.setattr(allocation, "_raw_trend_bars", _no_bars)
     ctx = allocation._build_week_context()
     assert ctx.erp_pct is None

@@ -10,7 +10,8 @@
   _raw_market_pe / _raw_treasury_yield_y10 / _raw_erp_percentile  市场估值三件套
   _raw_valuation_rows    标的级估值行（跟踪指数 PE/股息率）
   _raw_snapshot          名义台账读侧（持仓+价格快照）
-  _raw_trend_bars        唐奇安观察日线（东财后复权）
+  _raw_trend_bars_ad     唐奇安观察日线（AmazingData 累积复权，主源，批量）
+  _raw_trend_bars        唐奇安观察日线（东财 hfq，备源）
   _raw_daily_close       补价日线收盘
   _raw_realtime_quotes   缺价实时兜底（批量）
 执行侧不设 seam：批次语义（收敛/安全校验/先卖后买/逐单记账）全权委托
@@ -23,6 +24,7 @@ trade_ledger.execute_batch，测试按现有家法 monkeypatch src.trade_ledger.
 """
 
 import logging
+from collections import Counter
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from typing import List, Optional
@@ -70,6 +72,12 @@ def _raw_snapshot():
         return strategy_snapshot(ACCOUNT_PATH)
     from src.trade_ledger import snapshot_with_prices
     return snapshot_with_prices()
+
+
+def _raw_trend_bars_ad(codes, end):
+    """唐奇安观察日线，AmazingData 事件乘数累积复权（主源，批量取数）。"""
+    from data_provider.fetchers.amazingdata_info import fetch_etf_hfq_bars
+    return fetch_etf_hfq_bars(codes, end)
 
 
 def _raw_trend_bars(code, end):
@@ -125,20 +133,40 @@ def _build_week_context() -> WeekContext:
 
 
 def _fetch_trend_observations() -> dict:
-    """逐只观察自身ETF，供应商复权OHLC；失败不替换成原始价或其他ETF。"""
+    """逐只观察自身ETF：AmazingData 复权日线为主源，东财 hfq 为备源。
+
+    两源复权基有细微差异（历史约 0.3–2.4% 的信号日不同），同一只在一次报告内
+    只用单一来源、不拼接；两源都不可用才降级为"行情不可用"，不补旧价。
+    """
     from src.etf.trend import donchian_observation
 
     now = datetime.now(timezone(timedelta(hours=8))).replace(tzinfo=None)
+    today = now.strftime("%Y-%m-%d")
+    codes = [asset.code for asset in _baseline() if asset.code != "CASH"]
+    try:
+        ad_bars = _raw_trend_bars_ad(codes, today)
+    except Exception as exc:
+        logger.warning("唐奇安观察 AmazingData 不可用，改用东财: %s", exc)
+        ad_bars = {}
     observations = {}
-    for asset in _baseline():
-        if asset.code == "CASH":
-            continue
-        try:
-            bars = _raw_trend_bars(asset.code, now.strftime("%Y-%m-%d"))
-            observations[asset.code] = donchian_observation(bars, now=now)
-        except Exception as exc:
-            logger.warning("唐奇安观察 %s 不可用: %s", asset.code, exc)
-            observations[asset.code] = {"state": None, "error": "行情不可用"}
+    for code in codes:
+        observation = None
+        if code in ad_bars:
+            try:
+                observation = dict(donchian_observation(ad_bars[code], now=now),
+                                   source="AmazingData")
+            except Exception as exc:
+                logger.warning("唐奇安观察 %s AmazingData 行情不可用: %s", code, exc)
+        if observation is None:
+            try:
+                bars = _raw_trend_bars(code, today)
+                observation = dict(donchian_observation(bars, now=now), source="东财")
+            except Exception as exc:
+                logger.warning("唐奇安观察 %s 不可用: %s", code, exc)
+                observation = {"state": None, "error": "行情不可用"}
+        observations[code] = observation
+    counts = Counter(item.get("source", "不可用") for item in observations.values())
+    logger.info("唐奇安观察来源：%s", "，".join(f"{name} {n} 只" for name, n in counts.items()))
     return observations
 
 

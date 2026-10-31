@@ -6,6 +6,13 @@ import pytest
 from src.etf import allocation as eo
 from src.etf.trend import donchian_observation
 from src.etf.rebalancer import RebalancePlan
+from src.etf.config import CORE_BASELINE
+
+
+@pytest.fixture(autouse=True)
+def baseline_for_trend_tests(monkeypatch):
+    monkeypatch.setattr(eo, "_baseline", lambda: CORE_BASELINE)
+    monkeypatch.setattr(eo, "_raw_trend_bars_ad", lambda codes, end: {})
 
 
 def history():
@@ -71,6 +78,47 @@ def test_fetch_failure_is_isolated_and_uses_each_configured_etf(monkeypatch):
     assert observations["513180"]["state"] is False
     assert "513380" not in calls
     assert "CASH" not in calls
+
+
+def test_amazingdata_is_primary_and_eastmoney_only_fills_missing(monkeypatch):
+    from data_provider import bars as provider
+
+    calls = []
+
+    def fetch(code, end):
+        calls.append(code)
+        return history()
+
+    monkeypatch.setattr(eo, "_raw_trend_bars_ad", lambda codes, end: {"513180": history()})
+    monkeypatch.setattr(provider, "get_etf_daily_em", fetch)
+    observations = eo._fetch_trend_observations()
+    assert observations["513180"]["source"] == "AmazingData"
+    assert "513180" not in calls
+    assert set(calls) == {a.code for a in CORE_BASELINE if a.code not in ("CASH", "513180")}
+    assert all(item["source"] == "东财" for code, item in observations.items() if code != "513180")
+
+
+def test_amazingdata_bulk_failure_falls_back_to_eastmoney(monkeypatch):
+    from data_provider import bars as provider
+
+    def unavailable(codes, end):
+        raise RuntimeError("login failed")
+
+    monkeypatch.setattr(eo, "_raw_trend_bars_ad", unavailable)
+    monkeypatch.setattr(provider, "get_etf_daily_em", lambda code, end: history())
+    observations = eo._fetch_trend_observations()
+    assert observations["513180"]["state"] is False
+    assert all(item["source"] == "东财" for item in observations.values())
+
+
+def test_amazingdata_series_too_short_falls_back_to_eastmoney(monkeypatch):
+    from data_provider import bars as provider
+
+    monkeypatch.setattr(eo, "_raw_trend_bars_ad",
+                        lambda codes, end: {"513180": history().iloc[:20]})
+    monkeypatch.setattr(provider, "get_etf_daily_em", lambda code, end: history())
+    observations = eo._fetch_trend_observations()
+    assert observations["513180"]["source"] == "东财"
 
 
 def test_report_columns_share_snapshot_and_do_not_change_target_or_plan(monkeypatch):

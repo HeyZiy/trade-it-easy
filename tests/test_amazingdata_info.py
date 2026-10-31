@@ -368,3 +368,33 @@ def test_factor_result_is_windowed_even_though_sdk_requires_cache(monkeypatch, t
     result = info.fetch_adj_factors(["600001"], "2026-01-01", "2026-09-30")
     assert (result.index < pd.Timestamp("2026-01-01")).sum() == 1
     assert result.index.max() <= pd.Timestamp("2026-09-30")
+
+
+def test_etf_hfq_bars_accumulate_event_factors(monkeypatch):
+    dates = pd.to_datetime(["2026-10-12", "2026-10-13", "2026-10-14"])
+    kline = pd.DataFrame({"code": "516560.SH", "kline_time": dates,
+                          "open": [1., 2., 3.], "high": [2., 3., 4.],
+                          "low": [.5, 1., 2.], "close": [1., 2., 3.],
+                          "volume": [10., 10., 10.], "amount": [1e5, 1e5, 1e5]})
+    # 事件乘数：除权日 2.0，次日回到 1.0，必须累积相乘。
+    factors = pd.DataFrame({"516560.SH": [1.0, 2.0, 1.0]}, index=dates)
+    monkeypatch.setattr(info, "fetch_kline",
+                        lambda codes, begin, end: {"516560": kline})
+    monkeypatch.setattr(info, "fetch_adj_factors",
+                        lambda codes, begin, end: factors)
+    bars = info.fetch_etf_hfq_bars(["516560"], "2026-10-14")
+    assert bars["516560"]["date"].tolist() == ["2026-10-12", "2026-10-13", "2026-10-14"]
+    assert bars["516560"]["hfq_close"].tolist() == [1.0, 4.0, 6.0]
+    assert bars["516560"]["hfq_high"].tolist() == [2.0, 6.0, 8.0]
+    assert bars["516560"]["hfq_low"].tolist() == [0.5, 2.0, 4.0]
+
+
+def test_etf_hfq_bars_omit_codes_without_factors(monkeypatch):
+    dates = pd.to_datetime(["2026-10-12", "2026-10-13"])
+    kline = pd.DataFrame({"code": "516560.SH", "kline_time": dates,
+                          "high": [2., 3.], "low": [1., 1.], "close": [1.5, 2.5]})
+    monkeypatch.setattr(info, "fetch_kline",
+                        lambda codes, begin, end: {"516560": kline})
+    monkeypatch.setattr(info, "fetch_adj_factors",
+                        lambda codes, begin, end: pd.DataFrame())
+    assert info.fetch_etf_hfq_bars(["516560"], "2026-10-13") == {}

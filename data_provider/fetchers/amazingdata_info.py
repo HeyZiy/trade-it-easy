@@ -304,6 +304,42 @@ def fetch_kline(codes: List[str], begin_date: str, end_date: str) -> Dict[str, p
                     result[_plain_code(tgw)] = df
     return result
 
+
+def fetch_etf_hfq_bars(codes: List[str], end_date: str) -> Dict[str, pd.DataFrame]:
+    """ETF 供应商后复权 OHLC（date/hfq_high/hfq_low/hfq_close），供通道观察。
+
+    get_adj_factor 给的是事件当日乘数（除权日 1.98，次日回到 1.0），必须按日
+    累积相乘再乘原始 OHLC；直接乘当日因子会把除权日算成暴跌。
+    缺行情、缺因子或复权价异常的代码不返回，由调用方按失败处理（不补旧价）。
+    """
+    begin = (pd.Timestamp(end_date) - pd.DateOffset(years=3)).strftime('%Y-%m-%d')
+    klines = fetch_kline(codes, begin, end_date)
+    factors = fetch_adj_factors(codes, begin, end_date)
+    factor_columns = {_plain_code(column): column for column in factors.columns}
+    bars: Dict[str, pd.DataFrame] = {}
+    for code, raw in klines.items():
+        column = factor_columns.get(code)
+        if column is None:
+            continue
+        dates = pd.to_datetime(raw['kline_time'], errors='coerce').dt.normalize()
+        if dates.isna().any() or dates.duplicated().any():
+            continue
+        prices = raw[['high', 'low', 'close']].apply(pd.to_numeric, errors='coerce')
+        prices.index = pd.DatetimeIndex(dates)
+        prices = prices.sort_index()
+        factor = factors[column].reindex(prices.index).ffill()
+        if factor.isna().any():
+            continue
+        adjusted = prices.mul(factor.cumprod(), axis=0)
+        if (adjusted.isna().any().any() or (adjusted <= 0).any().any()
+                or (adjusted.high < adjusted.low).any()):
+            continue
+        out = adjusted.rename(columns=lambda column: f'hfq_{column}')
+        out.insert(0, 'date', prices.index.strftime('%Y-%m-%d'))
+        bars[code] = out.reset_index(drop=True)
+    return bars
+
+
 def fetch_code_list(security_type: str = "EXTRA_STOCK_A_SH_SZ",
                     asof: Optional[str] = None) -> List[str]:
     """沪深 A 股全集；指定日期时查询该日历史代码表，不依赖实时代码表缓存。"""
