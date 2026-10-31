@@ -1,14 +1,10 @@
 """ETF账户台账：期初快照、人工流水、收盘估值和调仓建议。"""
 
-from contextlib import contextmanager
 from datetime import date
 import hashlib
 import json
 import math
-import os
 from pathlib import Path
-import tempfile
-import time
 
 from data_provider import canonical_stock_code
 from data_provider.security_names import security_name
@@ -38,58 +34,27 @@ def _day(value):
     return value
 
 
-@contextmanager
-def _locked(path):
-    """网页和收盘任务共用进程间锁，整次读改写串行完成。"""
-    path = Path(path)
-    path.parent.mkdir(parents=True, exist_ok=True)
-    with path.with_suffix(".json.lock").open("a+b") as stream:
-        if os.name == "nt":
-            import msvcrt
-            stream.seek(0, 2)
-            if stream.tell() == 0:
-                stream.write(b"0")
-                stream.flush()
-            stream.seek(0)
-            msvcrt.locking(stream.fileno(), msvcrt.LK_LOCK, 1)
-        else:
-            import fcntl
-            fcntl.flock(stream, fcntl.LOCK_EX)
-        try:
-            yield
-        finally:
-            if os.name == "nt":
-                stream.seek(0)
-                msvcrt.locking(stream.fileno(), msvcrt.LK_UNLCK, 1)
-            else:
-                fcntl.flock(stream, fcntl.LOCK_UN)
+from src.json_store import locked as _locked, save as _json_save
+from src import portfolio_config
 
 
 def _save(path, state):
-    handle, temporary = tempfile.mkstemp(dir=Path(path).parent, suffix=".tmp")
-    try:
-        with os.fdopen(handle, "w", encoding="utf-8") as stream:
-            json.dump(state, stream, ensure_ascii=False, indent=2, allow_nan=False)
-            stream.flush()
-            os.fsync(stream.fileno())
-        for attempt in range(6):
-            try:
-                os.replace(temporary, path)
-                break
-            except PermissionError:
-                # Windows 索引/杀毒可能短暂占用刚关闭的文件，保留原子替换语义。
-                if os.name != "nt" or attempt == 5:
-                    raise
-                time.sleep(0.05)
-    finally:
-        if os.path.exists(temporary):
-            os.unlink(temporary)
+    if "_config_revision" in state:
+        if portfolio_config.current_revision(portfolio_config.path_for(path)) != state["_config_revision"]:
+            raise ValueError("配置已更新，请刷新后重试")
+        state = {k: v for k, v in state.items() if k not in {"targets", "budgets", "_config", "_config_revision"}}
+    _json_save(path, state)
 
 
 def load(path=ACCOUNT_PATH):
     if not Path(path).exists():
         raise FileNotFoundError("ETF账户尚未初始化")
-    return json.loads(Path(path).read_text(encoding="utf-8"))
+    state = json.loads(Path(path).read_text(encoding="utf-8"))
+    config = portfolio_config.load(portfolio_config.path_for(path))
+    state.update(targets={r["code"]: r["weight"] for r in config["core"]},
+                 budgets=config["budgets"], _config=config,
+                 _config_revision=portfolio_config.revision(config))
+    return state
 
 
 def revision(state, asof=None):
@@ -98,6 +63,8 @@ def revision(state, asof=None):
     if asof is None:
         facts["budgets"] = state.get("budgets", {})
         facts["targets"] = state.get("targets", {})
+        if "_config_revision" in state:
+            facts["configuration"] = state["_config_revision"]
         if "rotation_signal" in state:
             facts["rotation_signal"] = state["rotation_signal"]
     return hashlib.sha256(json.dumps(facts, sort_keys=True, ensure_ascii=False).encode()).hexdigest()
@@ -140,6 +107,12 @@ def initialize(path, *, asof, cash, positions, targets=None, budgets=None, cash_
     with _locked(path):
         if Path(path).exists():
             raise ValueError("ETF账户台账已存在，禁止覆盖初始化")
+        config_path = portfolio_config.path_for(path)
+        if config_path.exists():
+            raise ValueError("账户配置已存在，请使用迁移或已有配置初始化")
+        config = portfolio_config.from_legacy(state)
+        portfolio_config.create(config_path, config)
+        state.update(_config=config, _config_revision=portfolio_config.revision(config))
         _save(path, state)
     return state
 
@@ -255,8 +228,7 @@ def snapshot(state, asof, prices=None):
 def suggestions(state, view):
     from src.etf.rebalancer import ETFRebalancer
 
-    engine = ETFRebalancer()
-    engine.baseline = baseline(state)
+    engine = ETFRebalancer(baseline(state))
     plan = engine.build_plan(state["targets"], view["positions"], view["equity"], prices=view["prices"])
     records = sorted(state["records"], key=lambda r: r["date"])
     valid = [r for r in records if _positive(r.get("nav")) and not r["issues"]
@@ -308,17 +280,7 @@ def suggestions(state, view):
 
 
 def baseline(state):
-    from src.etf.config import AssetAllocation, AssetType
-
-    result = []
-    for code, weight in state["targets"].items():
-        asset_type = AssetType.EQUITY
-        if code == "CASH":
-            asset_type = AssetType.CASH
-        elif code == "159934":
-            asset_type = AssetType.GOLD
-        result.append(AssetAllocation(code, asset_type, weight, 0))
-    return result
+    return portfolio_config.allocations(state["_config"])
 
 
 def strategy_views(state, view, *, today=None):
@@ -452,8 +414,8 @@ def set_budgets(path, payload):
             raise ValueError("预算配置无效")
         if any(type(w) not in (int, float) or not math.isfinite(w) or not 0 <= w <= 1 for w in budgets.values()) or sum(budgets.values()) > 1:
             raise ValueError("预算合计不能超过100%")
-        state["budgets"] = budgets
-        _save(path, state)
+        config = {**state["_config"], "budgets": budgets}
+        portfolio_config.save_config(portfolio_config.path_for(path), config, state["_config_revision"])
 
 
 def dismiss(path, payload):
@@ -506,7 +468,7 @@ def account_data(path):
                          **({"name": security_name(e["code"])} if e.get("code") else {})}
                        for e in reversed(state["events"])][:20],
             "start_date": state["initial"]["date"], "initial_equity": state["initial"]["equity"],
-            "revision": revision(state), "suggestions": [],
+            "revision": revision(state), "config_revision": state["_config_revision"], "suggestions": [],
             "strategies": strategy_views(state, view),
             "valuation_date": latest["date"] if latest else state["initial"]["date"],
             "has_events": bool(state["events"]), "benchmark_name": None, "warnings": warnings,

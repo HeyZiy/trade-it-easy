@@ -85,3 +85,8 @@ CLAUDE.md
 
 # 行情源证券简称缓存
 data/security_names.sqlite3*
+
+# 生效配置与修改历史不随代码发布
+data/etf_config.json*
+data/etf_config.history/
+!config/etf_config.example.json

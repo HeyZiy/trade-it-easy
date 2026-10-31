@@ -6,7 +6,8 @@ import pytest
 from src.etf import allocation as eo
 from src.etf.trend import donchian_observation
 from src.etf.rebalancer import RebalancePlan
-from src.etf.config import CORE_BASELINE
+from src.etf.config import example_baseline
+CORE_BASELINE = example_baseline()
 
 
 @pytest.fixture(autouse=True)
@@ -136,6 +137,7 @@ def test_report_columns_share_snapshot_and_do_not_change_target_or_plan(monkeypa
         raise AssertionError("报告渲染不应重新取数")
 
     monkeypatch.setattr(eo, "_raw_valuation_rows", unexpected_fetch)
+    original_target=dict(target)
     output = eo._holding_overview(ctx)
     assert "| 唐奇安20/10 | 估值 |" in output
     assert "**× ★**" in output
@@ -144,7 +146,7 @@ def test_report_columns_share_snapshot_and_do_not_change_target_or_plan(monkeypa
     assert "2026-10-14 收盘" in output
     assert "PE 8.0 / 股息 5.0% / 利差 +3.0pt（偏低）" in output
     assert "中证红利" in eo._valuation_reference(ctx)
-    assert alloc["target"]["513180"] == .05
+    assert alloc["target"] == original_target
     assert alloc["plan"] is plan and plan.orders == []
 
 

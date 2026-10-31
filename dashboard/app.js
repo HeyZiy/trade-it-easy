@@ -167,7 +167,7 @@ function fundedStrategyPage(strategy) {
   const stats = [[finite(strategy.budget) ? money(strategy.budget) : '待设置','目标资产 / 元'],[money(strategy.invested),'持仓市值 / 元'],[`${strategy.pnl>0?'+':''}${money(strategy.pnl)}`,'累计盈亏 / 元'],[money(strategy.cash),'策略现金 / 元']];
   const observation = strategy.observation;
   const observationSection = observation ? `${chartSection(observation, '独立模拟，不计入ETF账户')}<section class="section"><div class="section-heading"><h2>模拟持仓</h2></div>${positionTable(observation.positions)}</section>` : '';
-  return `<div class="stats">${stats.map(([value,label])=>`<div class="stat"><span>${label}</span><b>${esc(value)}</b></div>`).join('')}</div><section class="section"><div class="section-heading"><h2>${esc(strategy.name)} · 持仓</h2><span class="subtle">${esc(strategy.status)}</span><button type="button" id="manual-entry" class="text-button">＋ 记账</button></div>${strategyPositionTable(strategy)}</section><section class="section"><div class="section-heading"><h2>待执行建议</h2></div>${strategy.id === 'rotation' && !strategy.suggestions?.length ? `<div class="empty">${esc(strategy.advice_status || '等待交易日更新')}</div>` : suggestionCards(strategy.suggestions || [])}</section>${observationSection}`;
+  return `<div class="stats">${stats.map(([value,label])=>`<div class="stat"><span>${label}</span><b>${esc(value)}</b></div>`).join('')}</div><section class="section"><div class="section-heading"><h2>${esc(strategy.name)} · 持仓</h2><span class="subtle">${esc(strategy.status)}</span>${strategy.id==='core'?'<button type="button" id="core-settings" class="text-button">编辑配置</button>':''}<button type="button" id="manual-entry" class="text-button">＋ 记账</button></div>${strategyPositionTable(strategy)}</section><section class="section"><div class="section-heading"><h2>待执行建议</h2></div>${strategy.id === 'rotation' && !strategy.suggestions?.length ? `<div class="empty">${esc(strategy.advice_status || '等待交易日更新')}</div>` : suggestionCards(strategy.suggestions || [])}</section>${observationSection}`;
 }
 
 function allocatedPositionTable(rows) {
@@ -305,6 +305,8 @@ function bindAccountActions(view) {
   document.querySelector('#manual-entry').onclick = () => openEntry(account, null, strategy);
   const budgetButton = document.querySelector('#budget-settings');
   if (budgetButton) budgetButton.onclick = () => openBudgets(account);
+  const coreButton = document.querySelector('#core-settings');
+  if (coreButton) coreButton.onclick = () => openConfiguration();
   const cashButton = document.querySelector('#cash-settings');
   if (cashButton) cashButton.onclick = () => openCashAllocation(account);
   bindOverviewCharts(account);
@@ -387,32 +389,8 @@ function openEntry(account, suggestion, strategy='unassigned') {
   update(); dialog.showModal();
 }
 
-function openBudgets(account) {
-  const dialog = document.querySelector('#budget-dialog');
-  const form = document.querySelector('#budget-form');
-  const error = document.querySelector('#budget-error');
-  form.reset(); error.hidden = true;
-  for (const strategy of data.strategies) {
-    form.elements.namedItem(strategy.id).value = finite(strategy.budget_pct) ? +(strategy.budget_pct*100).toFixed(4) : '';
-  }
-  document.querySelector('#budget-cancel').onclick = () => dialog.close();
-  form.onsubmit = async event => {
-    event.preventDefault();
-    const button = form.querySelector('[type=submit]');
-    button.disabled = true; error.hidden = true;
-    const budgets = {};
-    for (const id of ['core','rotation']) {
-      const value = form.elements.namedItem(id).value;
-      if (value!=='') budgets[id]=Number(value)/100;
-    }
-    try {
-      await accountRequest('/api/etf/budgets', {revision:account.revision, budgets});
-      await reloadAccount(); dialog.close();
-    } catch (failure) {
-      error.textContent = failure.message; error.hidden=false;
-    } finally { button.disabled=false; }
-  };
-  dialog.showModal();
+function openBudgets() {
+  return openConfiguration();
 }
 
 function allocationRows(account) {
@@ -451,7 +429,7 @@ function allocationCharts(account) {
     if (delta!==null) deviation=Math.abs(delta)<.005?'已对齐':`${delta>0?'超配':'低配'} ${Math.abs(delta).toFixed(2)} 个百分点`;
     return `<div class="allocation-row"><div class="allocation-row-top"><strong>${esc(row.name)}</strong><b>${price(row.assets)} <small>元</small></b></div><div class="allocation-row-labels"><span>实际 ${actual.toFixed(1)}%</span><span>${target===null?'目标未设置':`目标 ${target.toFixed(1)}%`}</span></div><div class="allocation-track" role="img" aria-label="${esc(row.name)}实际${actual.toFixed(1)}%，${target===null?'目标未设置':`目标${target.toFixed(1)}%`}"><div class="allocation-fill allocation-${row.id}" style="width:${actual}%"></div>${target===null?'':`<i class="allocation-target" style="left:${target}%"></i>`}</div><div class="allocation-row-foot"><span>持仓 ${number(row.invested)} · 现金 ${number(row.cash)}</span><span>${deviation}</span></div></div>`;
   }).join('');
-  return `<div class="allocation-grid"><section class="section asset-panel"><div class="section-heading"><h2>资产构成</h2></div><div class="asset-layout"><svg class="asset-donut" viewBox="0 0 210 210" role="img" aria-label="账户持仓与现金占比"><circle cx="105" cy="105" r="78" fill="none" stroke="#edf1eb" stroke-width="24"/>${rings}<text id="donut-label" x="105" y="91" text-anchor="middle" class="donut-label">总资产</text><text id="donut-value" x="105" y="117" text-anchor="middle" class="donut-value">${number(account.equity)}</text><text id="donut-share" x="105" y="137" text-anchor="middle" class="donut-label">元</text></svg><div class="asset-legend">${slices.map((slice,index)=>`<button type="button" class="asset-legend-item" data-asset-index="${index}"><i style="background:${slice.color}"></i><span>${slice.name}<small>${price(slice.value)} 元</small></span><b>${ratio(slice.value,account.equity)}</b></button>`).join('')}</div></div></section><section class="section strategy-panel"><div class="section-heading"><h2>策略配比</h2><div class="allocation-actions"><button type="button" id="budget-settings" class="text-button">目标比例</button><button type="button" id="cash-settings" class="text-button">分配现金</button></div></div><div class="allocation-legend"><i></i> 实际 <i class="target-key"></i> 目标 <span>含各策略现金</span></div>${bars}</section></div>`;
+  return `<div class="allocation-grid"><section class="section asset-panel"><div class="section-heading"><h2>资产构成</h2></div><div class="asset-layout"><svg class="asset-donut" viewBox="0 0 210 210" role="img" aria-label="账户持仓与现金占比"><circle cx="105" cy="105" r="78" fill="none" stroke="#edf1eb" stroke-width="24"/>${rings}<text id="donut-label" x="105" y="91" text-anchor="middle" class="donut-label">总资产</text><text id="donut-value" x="105" y="117" text-anchor="middle" class="donut-value">${number(account.equity)}</text><text id="donut-share" x="105" y="137" text-anchor="middle" class="donut-label">元</text></svg><div class="asset-legend">${slices.map((slice,index)=>`<button type="button" class="asset-legend-item" data-asset-index="${index}"><i style="background:${slice.color}"></i><span>${slice.name}<small>${price(slice.value)} 元</small></span><b>${ratio(slice.value,account.equity)}</b></button>`).join('')}</div></div></section><section class="section strategy-panel"><div class="section-heading"><h2>策略配比</h2><div class="allocation-actions"><button type="button" id="budget-settings" class="text-button">编辑配置</button><button type="button" id="cash-settings" class="text-button">分配现金</button></div></div><div class="allocation-legend"><i></i> 实际 <i class="target-key"></i> 目标 <span>含各策略现金</span></div>${bars}</section></div>`;
 }
 
 function bindOverviewCharts(account) {
@@ -483,7 +461,7 @@ function strategyPositionTable(strategy) {
     const actual=code==='CASH'?strategy.cash:position?.market_value||0;
     const weight=strategy.target_weights[code];
     const target=finite(strategy.budget)&&finite(weight)?strategy.budget*weight:null;
-    return `<tr><td>${esc(name)}${code==='CASH'?'':`<small>${esc(code)}</small>`}</td><td>${code==='CASH'?'—':number(position?.count || 0)}</td><td>${price(position?.close)}</td><td>${money(actual)}</td><td>${pct(strategy.assets>0?actual/strategy.assets:null)}</td><td>${pct(weight)}</td><td>${money(target)}</td></tr>`;
+    return `<tr><td>${esc(name)}${code==='CASH'?'':`<small>${esc(code)}${finite(weight)?'':' · 目标外持仓'}</small>`}</td><td>${code==='CASH'?'—':number(position?.count || 0)}</td><td>${price(position?.close)}</td><td>${money(actual)}</td><td>${pct(strategy.assets>0?actual/strategy.assets:null)}</td><td>${pct(weight)}</td><td>${money(target)}</td></tr>`;
   }).join('');
   return `<div class="table-wrap"><table><thead><tr><th>资产</th><th>份额</th><th>价格 / 元</th><th>当前金额 / 元</th><th>实际比例</th><th>目标比例</th><th>目标金额 / 元</th></tr></thead><tbody>${rows}</tbody></table></div>`;
 }
@@ -515,4 +493,78 @@ function openCashAllocation(account) {
     finally {button.disabled=false;}
   };
   update();dialog.showModal();
+}
+
+async function openConfiguration() {
+  const dialog=document.querySelector('#config-dialog');
+  const form=document.querySelector('#config-form');
+  const error=document.querySelector('#config-error');
+  const save=document.querySelector('#config-save');
+  error.hidden=true;save.disabled=true;
+  document.querySelector('#config-assets').innerHTML='';
+  document.querySelector('#config-total').textContent='正在读取配置…';
+  document.querySelector('#config-cancel').onclick=()=>dialog.close();
+  dialog.showModal();
+  let result;
+  try {
+    const response=await fetch('/api/etf/config',{cache:'no-store'});
+    result=await response.json();
+    if(!response.ok) throw Error(result.error || '配置读取失败');
+  } catch(failure) {error.textContent=failure.message;error.hidden=false;return;}
+  const percentInput=value=>+(value*100).toFixed(8);
+  let draft;
+  function total() {
+    const sum=[...document.querySelectorAll('#config-assets [data-field=weight]')].reduce((n,input)=>n+Number(input.value),0);
+    const budgets=Number(form.elements.namedItem('core').value)+Number(form.elements.namedItem('rotation').value);
+    document.querySelector('#config-total').textContent=`内部合计 ${sum.toFixed(4).replace(/\.?0+$/,'')}% · 账户目标合计 ${budgets.toFixed(2)}%`;
+  }
+  function addRow(asset) {
+    const row=document.createElement('tr');
+    row.original=structuredClone(asset);
+    const options=(values,current)=>values.map(([value,label])=>`<option value="${value}" ${value===current?'selected':''}>${label}</option>`).join('');
+    row.innerHTML=`<td><input data-field="code" value="${esc(asset.code)}" pattern="CASH|[0-9]{6}" maxlength="6" required ${asset.code==='CASH'?'readonly':''} aria-label="证券代码"><small data-name>${esc(result.names[asset.code] || (asset.code==='CASH'?'现金':asset.code))}</small></td><td><input data-field="weight" type="number" value="${percentInput(asset.weight)}" min="0" max="100" step="any" required aria-label="内部权重"></td><td><details><summary>高级</summary><div class="config-advanced"><label>资产类别<select data-field="asset_type">${options([['equity','权益'],['bond','债券'],['gold','黄金'],['cash','现金']],asset.asset_type)}</select></label><label>估值来源<select data-field="valuation_kind">${options([['none','无'],['csindex','中证指数'],['overseas','海外']],asset.valuation_kind)}</select></label><label>跟踪指数<input data-field="tracked_index" value="${esc(asset.tracked_index || '')}" pattern="[0-9]{6}" maxlength="6"></label><label>减仓顺序<input data-field="volatility_rank" type="number" min="0" max="100" step="1" value="${asset.volatility_rank}" required></label><label>股息估值<select data-field="dividend_style"><option value="false" ${!asset.dividend_style?'selected':''}>否</option><option value="true" ${asset.dividend_style?'selected':''}>是</option></select></label></div></details></td><td><button type="button" class="text-button" data-remove ${asset.code==='CASH'?'disabled':''}>删除</button></td>`;
+    const field=name=>row.querySelector(`[data-field=${name}]`);
+    function update() {
+      const index=field('tracked_index'),indexed=field('valuation_kind').value==='csindex';
+      index.disabled=!indexed;index.required=indexed;
+      row.querySelector('[data-name]').textContent=result.names[field('code').value] || (field('code').value==='CASH'?'现金':field('code').value);
+      total();
+    }
+    row.oninput=update;row.onchange=update;
+    row.querySelector('[data-remove]').onclick=()=>{row.remove();total();};
+    document.querySelector('#config-assets').append(row);update();
+  }
+  function show(config) {
+    draft=structuredClone(config);
+    for(const key of ['core','rotation']) form.elements.namedItem(key).value=finite(config.budgets[key])?percentInput(config.budgets[key]):'';
+    document.querySelector('#config-assets').innerHTML='';
+    config.core.forEach(addRow);total();
+  }
+  document.querySelector('#config-add').onclick=()=>addRow({code:'',weight:0,asset_type:'equity',valuation_kind:'none',tracked_index:null,dividend_style:false,volatility_rank:0});
+  const history=document.querySelector('#config-history');
+  history.innerHTML=result.history.map((version,index)=>`<option value="${index}">${esc(new Date(version.saved_at).toLocaleString('zh-CN'))} · ${version.revision.slice(0,8)}${version.revision===result.revision?' · 当前':''}</option>`).join('');
+  history.value=Math.max(0,result.history.findIndex(version=>version.revision===result.revision));
+  document.querySelector('#config-load-history').onclick=()=>{const version=result.history[Number(history.value)];if(version)show(version.config);};
+  form.oninput=total;
+  form.onsubmit=async event=>{
+    event.preventDefault();save.disabled=true;error.hidden=true;
+    const budgets={};
+    for(const key of ['core','rotation']) {
+      const value=form.elements.namedItem(key).value;
+      if(value!=='') budgets[key]=Number(value)===percentInput(draft.budgets[key])?draft.budgets[key]:Number(value)/100;
+    }
+    const core=[...document.querySelectorAll('#config-assets tr')].map(row=>{
+      const get=key=>row.querySelector(`[data-field=${key}]`).value;
+      return {code:get('code'),weight:Number(get('weight'))===percentInput(row.original.weight)?row.original.weight:Number(get('weight'))/100,
+        asset_type:get('asset_type'),valuation_kind:get('valuation_kind'),tracked_index:get('valuation_kind')==='csindex'?get('tracked_index'):null,
+        dividend_style:get('dividend_style')==='true',volatility_rank:Number(get('volatility_rank'))};
+    });
+    try {
+      await accountRequest('/api/etf/config',{revision:result.revision,config:{schema_version:1,budgets,core}});
+      await reloadAccount();dialog.close();
+      document.querySelector('#status').textContent='配置已保存，建议已更新。';
+    } catch(failure) {error.textContent=failure.message;error.hidden=false;}
+    finally {save.disabled=false;}
+  };
+  show(result.config);save.disabled=false;
 }

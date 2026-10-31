@@ -22,7 +22,7 @@ def test_floor_lot_can_go_to_zero():
 
 # ══════════════ compare：价格注入 + 卖侧钳制 ══════════════
 
-R = ETFRebalancer()
+R = ETFRebalancer(_config.example_baseline())
 TARGET = R.calculate_target()
 
 
@@ -40,7 +40,7 @@ def test_unheld_target_buys_with_injected_price():
     orders, dev, odd = R.compare(TARGET, [], 100_000,
                                  prices={"563360": 1.0})
     o = _orders_by_code(orders)["563360"]
-    assert o.action == "buy" and o.quantity == round_lot(8500)  # 0.085 × 10万
+    assert o.action == "buy" and o.quantity == round_lot(round(TARGET["563360"] * 100_000, 2))
     assert dev > 0 and odd == []
 
 
@@ -105,7 +105,7 @@ def _at_target(total=50_000.0, **overrides):
     测不到"小幅偏离"场景。
     """
     positions = []
-    for a in _config.CORE_BASELINE:
+    for a in _config.example_baseline():
         if a.code == "CASH":
             continue
         w = overrides.get(a.code, a.neutral_weight)
@@ -134,7 +134,7 @@ def test_reason_matches_execution_decision():
     单类 2%~5% 的批次照样执行（执行门＝有指令即执行），reason 如实写触发层未达线。
     """
     # 红利 10% vs 目标 7% → 单类偏离 3%（> 2% 出指令，≤ 5% 触发层不达线）
-    plan = R.build_plan(TARGET, _at_target(**{"515180": 0.10}), 50_000)
+    plan = R.build_plan(TARGET, _at_target(**{"515180": TARGET["515180"] + .03}), 50_000)
     assert plan.orders, plan.reason
     assert plan.should is False, plan.reason
     assert "无指令" not in plan.reason and "无需" not in plan.reason, plan.reason
@@ -145,7 +145,7 @@ def test_reason_matches_execution_decision():
 def test_trigger_layer_does_not_block_execution():
     """契约：触发层只分级、不拦执行——plan.should 为 False 时 orders 仍非空，
     消费方按 orders 执行（改执行门到 should 属策略语义变更，需先裁决）。"""
-    plan = R.build_plan(TARGET, _at_target(**{"515180": 0.10}), 50_000)
+    plan = R.build_plan(TARGET, _at_target(**{"515180": TARGET["515180"] + .03}), 50_000)
     assert plan.should is False and len(plan.orders) > 0
 
 

@@ -4,8 +4,7 @@
 ETF 长期配置 — 中性基准
 ===================================
 
-中性基准反映长期信念，半年至一年审视一次。每日 gate 状态只在基准上做战术偏移，
-不改变基准本身。
+配置只从账户JSON读取；本模块保留资产类型、计算参数与展示辅助函数。
 
 类别归属：
   equity    — 权益类（进攻弹性来源）
@@ -42,58 +41,26 @@ class AssetAllocation:
         return security_name(self.code)
 
 
-# ── 中性基准配置 ──
-# 核心仓位：长期持有，半年人工对齐一次（当前表 2026-10 更新，
-# 来源见 strategy/etf_allocation.md 第二节）。权重为总资产占比。
-# 目标表里 ETF 合计 56.5%、现金子账户合计 26.8%（表内合计 83.3%），其余 16.7%
-# 属卫星/其他账户；这部分统一由"现金（以及其他账户）"桶吸收，故 CASH 写 43.5%
-# （= 26.8% 表内现金 + 16.7% 吸收），合计 100% ——模拟成绩的基准权重必须合计为 1。
-# 行业动量使用独立模拟台账，不进入核心组合的持仓、资金和成绩。
+# 当前权重与标的元数据只读取 data/etf_config.json。
+# config/etf_config.example.json 仅用于显式初始化与测试，不作运行时回退。
+def get_neutral_baseline():
+    from src.portfolio_config import load, allocations
+    return allocations(load())
 
-CORE_BASELINE: List[AssetAllocation] = [
-    # ── A股宽基 ──
-    AssetAllocation("563360", AssetType.EQUITY, 0.085, 8),
-    AssetAllocation("159680", AssetType.EQUITY, 0.01, 6),
-    AssetAllocation("515180", AssetType.EQUITY, 0.07, 10),
-    # ── 海外 ──
-    AssetAllocation("513100", AssetType.EQUITY, 0.04, 9),
-    AssetAllocation("513500", AssetType.EQUITY, 0.16, 9),
-    AssetAllocation("513800", AssetType.EQUITY, 0.03, 9),
-    AssetAllocation("513180", AssetType.EQUITY, 0.05, 5),
-    # ── 行业/主题 ──
-    AssetAllocation("159938", AssetType.EQUITY, 0.03, 4),
-    AssetAllocation("159928", AssetType.EQUITY, 0.04, 7),
-    AssetAllocation("159915", AssetType.EQUITY, 0.01, 6),
-    # ── 黄金 ──
-    AssetAllocation("159934", AssetType.GOLD,   0.04, 11),
-    # ── 现金（国债逆回购，自动理财，不买货基；含子账户 10.3% + 16.5% 与吸收的 16.7%） ──
-    AssetAllocation("CASH", AssetType.CASH,   0.435, 13),
-]
 
-# 再平衡模块使用核心仓位
-NEUTRAL_BASELINE = CORE_BASELINE
+def example_baseline():
+    from src.portfolio_config import example, allocations
+    return allocations(example())
 
-# ── 核心仓 ETF 跟踪指数（估值锚对准买入标的本身） ──
-# 口径 = 中证指数官网估值（PE/股息率，见 amazing_factors.get_csindex_valuation），
-# 指数代码已逐只经官网实测核对（2026-09）。海外 ETF（513100/513500/513800/513180）
-# 无 csindex 数据；黄金为无现金流资产，不适用估值锚。红利类估值以股息率为主锚
-# （股息是现金流本体）。这是标的级估值的唯一口径：不做兜底——未配锚或官网未取到时
-# 报告显示"无估值锚"，不用不可比的市场/行业分位冒充标的自身估值。
-TRACKED_INDEX: Dict[str, str] = {
-    "563360": "000510",  # A500ETF → 中证A500指数
-    "159680": "000852",  # 中证1000增强ETF → 中证1000指数
-    "515180": "000922",  # 红利ETF → 中证红利指数
-    "159938": "000991",  # 医药ETF → 中证全指医药卫生指数
-    "159928": "000932",  # 消费ETF → 中证主要消费指数
-}
 
-# 显式声明"取不到估值锚"的权益腿（与"忘了配锚"区分）：
-# 159915 跟踪创业板指（399006），该指数由深证信息编制，中证官网无估值文件（2026-10 实测 404）。
-NO_VALUATION_ANCHOR: FrozenSet[str] = frozenset({"159915"})
+def asset_settings(code):
+    from src.portfolio_config import load
+    return next((row for row in load()["core"] if row["code"] == code), {})
 
-# 股息策略类 ETF：估值以股息率为主锚（股息是现金流本体，PE/全市场口径易反向），
-# 展示用"股息率 − 10Y 国债利差"作跨资产参照（分位历史积累后可切换分位口径）。
-DIVIDEND_STYLE_CODES: FrozenSet[str] = frozenset({"515180"})
+
+def is_dividend_style(code):
+    return asset_settings(code).get("dividend_style", False)
+
 
 # 减仓优先级：按 volatility_rank 从高到低（创业板先减，国债/现金后减）。
 # 核心仓 = 纯机械，与市场状态完全无关——防护腿（gold/bond）同规则减仓，不因市场状态豁免
@@ -110,10 +77,6 @@ DIVIDEND_STYLE_CODES: FrozenSet[str] = frozenset({"515180"})
 REBALANCE_SINGLE_THRESHOLD = 0.05     # 单类偏离触发阈值（报告分级）
 REBALANCE_TOTAL_THRESHOLD = 0.15      # 所有偏离绝对值之和 > 15% 强制触发（报告分级）
 MIN_TRADE_DEVIATION = 0.02            # 碎股偏差过滤：< 2% 不出指令
-
-
-def get_neutral_baseline() -> List[AssetAllocation]:
-    return NEUTRAL_BASELINE
 
 
 # ── 全市场 PE 分位 → 估值档位（唯一 producer：src/etf/allocation 市场概览/持仓对照两处展示共用）。
@@ -137,5 +100,5 @@ ACCOUNT_SOURCE = AccountSource(
     ledger_path=f"data/{FILENAME}",
     label="ETF账户",
     benchmark={"name": "ETF期初权重买入持有（现金零收益，不再平衡）",
-               "weights": {a.code: a.neutral_weight for a in CORE_BASELINE}},
+               "account": "etf"},
 )

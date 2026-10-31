@@ -250,6 +250,8 @@ class Handler(BaseHTTPRequestHandler):
         from src.etf_account import FILENAME, dismiss, record_event, set_budgets
         handlers = {"/api/etf/event": record_event, "/api/etf/dismiss": dismiss,
                     "/api/etf/budgets": set_budgets}
+        from src.portfolio_config import update
+        handlers["/api/etf/config"] = update
         if self.path not in handlers:
             self.send_error(404)
             return
@@ -284,7 +286,17 @@ class Handler(BaseHTTPRequestHandler):
             self.respond("需要登录。".encode("utf-8"), "text/plain; charset=utf-8", status=401,
                          headers={"WWW-Authenticate": AUTH_REALM})
             return
-        if self.path == "/":
+        if self.path == "/api/etf/config":
+            from src.portfolio_config import data
+            from data_provider.security_names import names
+            try:
+                result = {**data(ROOT / "data" / ETF_FILENAME), "names": names()}
+            except ValueError as error:
+                self.respond(json.dumps({"error": str(error)}, ensure_ascii=False).encode(),
+                             "application/json; charset=utf-8", status=400)
+                return
+            self.respond(json.dumps(result, ensure_ascii=False).encode(), "application/json; charset=utf-8")
+        elif self.path == "/":
             self.respond((APP_ROOT / "dashboard" / "index.html").read_bytes(), "text/html; charset=utf-8")
         elif self.path in {"/assets/app.js", "/assets/styles.css"}:
             filename = self.path.rsplit("/", 1)[-1]

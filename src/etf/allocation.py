@@ -24,7 +24,7 @@ from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from typing import List, Optional
 
-from src.etf.config import DIVIDEND_STYLE_CODES, AssetType, pe_level
+from src.etf.config import is_dividend_style, AssetType, pe_level
 from src.etf_account import render_summary
 
 logger = logging.getLogger(__name__)
@@ -170,7 +170,7 @@ def _valuation_cell(row: dict) -> str:
     if row.get("div_yield") is not None:
         parts.append(f"股息 {row['div_yield']:.1f}%")
     spread = row.get("div_yield_spread")
-    if row.get("code") in DIVIDEND_STYLE_CODES and spread is not None:
+    if is_dividend_style(row.get("code")) and spread is not None:
         note = "（偏低）" if spread >= 1.5 else ""
         parts.append(f"利差 {spread:+.1f}pt{note}")
     return " / ".join(parts) or "—"
@@ -283,8 +283,7 @@ def _compute_allocation():
 
     positions = snap.positions
     total_assets = snap.total_assets
-    rebalancer = ETFRebalancer()
-    rebalancer.baseline = _baseline()
+    rebalancer = ETFRebalancer(_baseline())
     target = rebalancer.calculate_target()
 
     core_positions, rotation_mv, rotation_positions = rebalancer.split_rotation_positions(positions)

@@ -49,12 +49,16 @@
         <button id="event-save" type="submit" class="primary-button">确认记账</button>
       </form>
     </dialog>
-    <dialog id="budget-dialog" aria-labelledby="budget-title">
-      <form id="budget-form">
-        <div class="section-heading"><h2 id="budget-title">策略目标比例</h2><button id="budget-cancel" type="button" class="text-button">关闭</button></div>
-        <p class="subtle">占账户总资产的比例，留空表示未设置。修改目标不会自动调仓或分配现金。</p>
-        <div class="entry-grid"><label>核心配置 / %<input name="core" type="number" min="0" max="100" step="any"></label><label>跨资产轮动 / %<input name="rotation" type="number" min="0" max="100" step="any"></label></div>
-        <p id="budget-error" class="warning" role="alert" hidden></p><button type="submit" class="primary-button">保存比例</button>
+    <dialog id="config-dialog" class="config-dialog" aria-labelledby="config-title">
+      <form id="config-form">
+        <div class="section-heading"><h2 id="config-title">策略配置</h2><button id="config-cancel" type="button" class="text-button">关闭</button></div>
+        <p class="subtle">保存只更新目标与建议，持仓和现金不变。</p>
+        <div class="entry-grid"><label>核心配置占账户 / %<input name="core" type="number" min="0" max="100" step="any"></label><label>跨资产轮动占账户 / %<input name="rotation" type="number" min="0" max="100" step="any"></label></div>
+        <div class="section-heading"><h3>核心内部配比</h3><button id="config-add" type="button" class="text-button">＋ 添加资产</button></div>
+        <div class="table-wrap"><table class="config-table"><thead><tr><th>证券代码</th><th>权重 / %</th><th>标的设置</th><th></th></tr></thead><tbody id="config-assets"></tbody></table></div>
+        <p id="config-total" class="entry-preview"></p>
+        <details><summary>历史配置</summary><label>选择版本<select id="config-history"></select></label><button id="config-load-history" type="button" class="text-button">载入此版本</button><p class="subtle">载入后可检查、修改，保存后才生效。</p></details>
+        <p id="config-error" class="warning" role="alert" hidden></p><button type="submit" class="primary-button" id="config-save">保存配置</button>
       </form>
     </dialog>
     <dialog id="cash-dialog" aria-labelledby="cash-title">

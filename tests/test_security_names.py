@@ -62,7 +62,8 @@ def test_account_code_only_renames_without_rewriting_ledger_or_nav(tmp_path):
 
 
 def test_strategy_names_follow_cache_changes_without_reimport():
-    from src.etf.config import CORE_BASELINE
+    from src.etf.config import example_baseline
+    CORE_BASELINE = example_baseline()
     allocation=next(a for a in CORE_BASELINE if a.code=='513500')
     assert allocation.name=='513500'
     names.remember({'513500':'标普500ETF'})

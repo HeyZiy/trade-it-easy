@@ -21,7 +21,7 @@ from typing import Dict, List, Optional
 
 import pandas as pd
 
-from src.etf.config import TRACKED_INDEX, DIVIDEND_STYLE_CODES
+from src.etf.config import asset_settings, is_dividend_style
 
 logger = logging.getLogger(__name__)
 
@@ -398,7 +398,7 @@ def get_csindex_valuation(index_code: str) -> Optional[dict]:
 # ── ETF 估值参考 ──
 
 # 海外 ETF（无 csindex 数据，标"海外"）
-_OVERSEAS_CODES = frozenset({"513100", "513500", "513800", "513180"})
+
 
 
 def _etf_pe_info(etf_code: str) -> Optional[dict]:
@@ -411,10 +411,11 @@ def _etf_pe_info(etf_code: str) -> Optional[dict]:
     """
     code = str(etf_code).zfill(6)
 
-    if code in _OVERSEAS_CODES:
+    settings = asset_settings(code)
+    if settings.get("valuation_kind") == "overseas":
         return {"source_type": "overseas", "pe": None, "source_name": "海外"}
 
-    index_code = TRACKED_INDEX.get(code)
+    index_code = settings.get("tracked_index")
     if not index_code:
         return None
     val = get_csindex_valuation(index_code)
@@ -443,7 +444,7 @@ def etf_valuation_rows(etf_list) -> list:
         level_text = ""
         if info is None:
             level_text = "无估值锚（未配跟踪指数或中证官网未取到）"
-        elif str(etf.code).zfill(6) in DIVIDEND_STYLE_CODES:
+        elif is_dividend_style(str(etf.code).zfill(6)):
             if info.get("div_yield_spread") is not None:
                 level_text = f"利差 {info['div_yield_spread']:+.1f}pt（≥1.5 视同低估）"
             elif info.get("div_yield") is not None:

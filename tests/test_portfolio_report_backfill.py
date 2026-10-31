@@ -4,7 +4,8 @@ from datetime import datetime, timedelta, timezone
 
 import pytest
 
-from src.etf.config import CORE_BASELINE
+from src.etf.config import example_baseline
+CORE_BASELINE = example_baseline()
 from src.trade_ledger.closing_prices import ClosingPrices
 from src.trade_ledger.ledger import TradeRecord, append_trade
 from src.trade_ledger.performance import collect_close, load_performance, performance_path
@@ -28,6 +29,7 @@ def accounts(tmp_path, monkeypatch):
     append_trade(TradeRecord("2026-09-22", "510300", "测试ETF", "buy", 100, 10), main)
     # 账户事实的缝＝模拟账户描述符（src/account_sources 各家单点），不再逐家戳源模块常量。
     monkeypatch.setattr("src.etf.config.ACCOUNT_SOURCE.ledger_path", str(main))
+    monkeypatch.setattr("src.etf.config.ACCOUNT_SOURCE.benchmark", BENCHMARK)
     monkeypatch.setattr("src.quality_pool.config.ACCOUNT_SOURCE.ledger_path", str(pool))
     monkeypatch.setattr("src.etf.rotation.ACCOUNT_SOURCE.ledger_path", str(rotation))
     monkeypatch.setattr(entry, "get_trading_dates", calendar)

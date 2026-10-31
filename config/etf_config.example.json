@@ -1,0 +1,126 @@
+{
+  "schema_version": 1,
+  "budgets": {
+    "core": 0.83,
+    "rotation": 0.07
+  },
+  "core": [
+    {
+      "code": "513500",
+      "weight": 0.1920768307322929,
+      "asset_type": "equity",
+      "tracked_index": null,
+      "valuation_kind": "overseas",
+      "dividend_style": false,
+      "volatility_rank": 9
+    },
+    {
+      "code": "513100",
+      "weight": 0.048019207683073224,
+      "asset_type": "equity",
+      "tracked_index": null,
+      "valuation_kind": "overseas",
+      "dividend_style": false,
+      "volatility_rank": 9
+    },
+    {
+      "code": "513800",
+      "weight": 0.03601440576230492,
+      "asset_type": "equity",
+      "tracked_index": null,
+      "valuation_kind": "overseas",
+      "dividend_style": false,
+      "volatility_rank": 9
+    },
+    {
+      "code": "563360",
+      "weight": 0.10204081632653061,
+      "asset_type": "equity",
+      "tracked_index": "000510",
+      "valuation_kind": "csindex",
+      "dividend_style": false,
+      "volatility_rank": 8
+    },
+    {
+      "code": "515180",
+      "weight": 0.08403361344537816,
+      "asset_type": "equity",
+      "tracked_index": "000922",
+      "valuation_kind": "csindex",
+      "dividend_style": true,
+      "volatility_rank": 10
+    },
+    {
+      "code": "513180",
+      "weight": 0.060024009603841535,
+      "asset_type": "equity",
+      "tracked_index": null,
+      "valuation_kind": "overseas",
+      "dividend_style": false,
+      "volatility_rank": 5
+    },
+    {
+      "code": "159928",
+      "weight": 0.048019207683073224,
+      "asset_type": "equity",
+      "tracked_index": "000932",
+      "valuation_kind": "csindex",
+      "dividend_style": false,
+      "volatility_rank": 7
+    },
+    {
+      "code": "512010",
+      "weight": 0.024009603841536612,
+      "asset_type": "equity",
+      "tracked_index": "000913",
+      "valuation_kind": "csindex",
+      "dividend_style": false,
+      "volatility_rank": 4
+    },
+    {
+      "code": "159680",
+      "weight": 0.012004801920768306,
+      "asset_type": "equity",
+      "tracked_index": "000852",
+      "valuation_kind": "csindex",
+      "dividend_style": false,
+      "volatility_rank": 6
+    },
+    {
+      "code": "159948",
+      "weight": 0.012004801920768306,
+      "asset_type": "equity",
+      "tracked_index": null,
+      "valuation_kind": "none",
+      "dividend_style": false,
+      "volatility_rank": 6
+    },
+    {
+      "code": "159934",
+      "weight": 0.048019207683073224,
+      "asset_type": "gold",
+      "tracked_index": null,
+      "valuation_kind": "none",
+      "dividend_style": false,
+      "volatility_rank": 11
+    },
+    {
+      "code": "513120",
+      "weight": 0.012004801920768306,
+      "asset_type": "equity",
+      "tracked_index": null,
+      "valuation_kind": "none",
+      "dividend_style": false,
+      "volatility_rank": 0
+    },
+    {
+      "code": "CASH",
+      "weight": 0.3217286914765906,
+      "asset_type": "cash",
+      "tracked_index": null,
+      "valuation_kind": "none",
+      "dividend_style": false,
+      "volatility_rank": 13
+    }
+  ]
+}

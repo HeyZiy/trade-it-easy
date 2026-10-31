@@ -9,7 +9,8 @@ import pytest
 
 from src.etf import allocation
 from src.etf.rebalancer import RebalanceOrder, RebalancePlan
-from src.etf.config import CORE_BASELINE
+from src.etf.config import example_baseline
+CORE_BASELINE = example_baseline()
 
 
 def _order(action="sell", code="510300", name="沪深300ETF"):

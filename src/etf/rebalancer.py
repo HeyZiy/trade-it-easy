@@ -25,7 +25,6 @@ from dataclasses import dataclass
 from typing import Dict, List, Optional, Tuple
 
 from src.etf.config import (
-    NEUTRAL_BASELINE,
     MIN_TRADE_DEVIATION, REBALANCE_SINGLE_THRESHOLD,
     REBALANCE_TOTAL_THRESHOLD,
 )
@@ -70,8 +69,8 @@ class RebalancePlan:
 class ETFRebalancer:
     """ETF 再平衡引擎（纯计算：构造零依赖，行情经参数注入）"""
 
-    def __init__(self):
-        self.baseline = NEUTRAL_BASELINE
+    def __init__(self, baseline):
+        self.baseline = list(baseline)
 
     # ── 计算目标配比 ──
 

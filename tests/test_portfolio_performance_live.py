@@ -11,7 +11,8 @@ import os
 
 import pytest
 
-from src.etf.config import CORE_BASELINE
+from src.etf.config import example_baseline
+CORE_BASELINE = example_baseline()
 from src.trade_ledger.closing_prices import ClosingPrices
 from src.trade_ledger.ledger import TradeRecord, append_trade
 from src.trade_ledger.performance import collect_close, render_summary

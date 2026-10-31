@@ -132,15 +132,23 @@ def test_every_equity_leg_has_a_valuation_exit():
     半年人工对齐基准时新增权益 ETF 若忘了配 TRACKED_INDEX，不会报错只会少一行数字，
     故在此钉住（黄金/现金按设计不适用估值锚，不在断言范围）。
     """
-    from src.etf.config import CORE_BASELINE, NO_VALUATION_ANCHOR, TRACKED_INDEX
+    from src.etf.config import example_baseline
+    from src.portfolio_config import load
+    CORE_BASELINE = example_baseline()
+    rows=load()["core"]
+    TRACKED_INDEX={r["code"]:r["tracked_index"] for r in rows if r["tracked_index"]}
+    NO_VALUATION_ANCHOR={r["code"] for r in rows if r["valuation_kind"]=="none"}
     equity = {a.code for a in CORE_BASELINE if a.asset_type == "equity"}
-    declared = set(TRACKED_INDEX) | set(af._OVERSEAS_CODES) | set(NO_VALUATION_ANCHOR)
+    declared = set(TRACKED_INDEX) | {r["code"] for r in rows if r["valuation_kind"]=="overseas"} | set(NO_VALUATION_ANCHOR)
     assert equity <= declared, f"无估值出口（无锚、非海外、未显式声明）: {sorted(equity - declared)}"
 
 
 def test_no_orphan_tracked_anchor():
     """TRACKED_INDEX 不留孤儿锚：基准删掉的标的其锚代码应一并撤下。"""
-    from src.etf.config import CORE_BASELINE, TRACKED_INDEX
+    from src.etf.config import example_baseline
+    from src.portfolio_config import load
+    CORE_BASELINE=example_baseline()
+    TRACKED_INDEX={r["code"]:r["tracked_index"] for r in load()["core"] if r["tracked_index"]}
     baseline = {a.code for a in CORE_BASELINE}
     assert set(TRACKED_INDEX) <= baseline, \
         f"锚指向已不在基准里的标的: {sorted(set(TRACKED_INDEX) - baseline)}"
@@ -148,7 +156,10 @@ def test_no_orphan_tracked_anchor():
 
 def test_no_valuation_anchor_codes_are_in_baseline():
     """显式"无锚"声明不留孤儿：标的移出基准后该声明应一并撤下。"""
-    from src.etf.config import CORE_BASELINE, NO_VALUATION_ANCHOR
+    from src.etf.config import example_baseline
+    from src.portfolio_config import load
+    CORE_BASELINE=example_baseline()
+    NO_VALUATION_ANCHOR={r["code"] for r in load()["core"] if r["valuation_kind"]=="none"}
     baseline = {a.code for a in CORE_BASELINE}
     assert set(NO_VALUATION_ANCHOR) <= baseline, \
         f"无锚声明指向已不在基准里的标的: {sorted(set(NO_VALUATION_ANCHOR) - baseline)}"
@@ -156,17 +167,22 @@ def test_no_valuation_anchor_codes_are_in_baseline():
 
 def test_anchor_value_looks_like_index_code():
     """锚值须为 6 位指数代码（csindex 按它取数）。"""
-    from src.etf.config import TRACKED_INDEX
+    from src.portfolio_config import load
+    TRACKED_INDEX={r["code"]:r["tracked_index"] for r in load()["core"] if r["tracked_index"]}
     assert all(len(str(v)) == 6 and str(v).isdigit() for v in TRACKED_INDEX.values()), \
         TRACKED_INDEX
 
 
 def test_baseline_weights_sum_to_unity():
-    from src.etf.config import CORE_BASELINE
+    from src.etf.config import example_baseline
+    CORE_BASELINE=example_baseline()
     assert sum(a.neutral_weight for a in CORE_BASELINE) == pytest.approx(1.0)
 
 
 def test_dividend_style_codes_are_in_baseline():
     """利差备注只服务基准内标的，漂移了就是死配置。"""
-    from src.etf.config import CORE_BASELINE, DIVIDEND_STYLE_CODES
+    from src.etf.config import example_baseline
+    from src.portfolio_config import load
+    CORE_BASELINE=example_baseline()
+    DIVIDEND_STYLE_CODES={r["code"] for r in load()["core"] if r["dividend_style"]}
     assert set(DIVIDEND_STYLE_CODES) <= {a.code for a in CORE_BASELINE}
