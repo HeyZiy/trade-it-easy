@@ -64,7 +64,7 @@ def _raw_valuation_rows(equity_etfs):
 
 
 def _raw_snapshot():
-    """名义台账读侧快照：持仓+价格（src.trade_ledger）。"""
+    """优先读取核心实际账户，未初始化时兼容模拟台账。"""
     from src.real_account import ACCOUNT_PATH, strategy_snapshot
     if ACCOUNT_PATH.exists():
         return strategy_snapshot(ACCOUNT_PATH)
@@ -244,9 +244,9 @@ def _fetch_missing_prices(baseline: List, positions: List[dict]) -> dict:
 
 
 def _compute_allocation():
-    """计算目标配比 + 再平衡 plan（供对照展示与自动执行复用）
+    """计算目标配比与再平衡计划，供持仓对照和建议展示。
 
-    持仓/资金读名义成交台账推导（derive 供料与持仓 dict 同形）。
+    持仓与资金优先读取实际账户，未初始化时从模拟流水推导。
     目标 = 中性基准，无动态择时；**不读环境快照**（核心仓纯机械）。
     行情取数在此编排层一次取齐（prices），决策核 rebalancer 保持零 I/O。
 
@@ -435,15 +435,13 @@ def _deploy_cash_section(ctx: WeekContext) -> str:
     return "\n".join(lines)
 
 
-# ── 自动调仓执行 ──
+# ── 实际账户建议说明与模拟模式兼容入口 ──
 
 def _execute_batch(alloc: dict, ledger_path=None, dry_run: bool = False) -> str:
-    """执行核心调仓批次：批次语义（收敛/安全校验/先卖后买/逐单记账）
-    全权委托 trade_ledger.execute_batch，本函数只装配指令与渲染结果。
+    """实际账户只返回建议说明，由用户确认成交记账。
 
-    只记名义台账，
-    真实账户由用户按报告百分比手动执行。
-    dry_run=True 时同渲染指令、零台账写入。
+    未初始化实际账户时兼容模拟批次，委托 trade_ledger.execute_batch 完成
+    收敛、安全校验、先卖后买及逐单记账；dry_run 只渲染，不写模拟流水。
     """
     from src.trade_ledger import BatchOrder, execute_batch
 

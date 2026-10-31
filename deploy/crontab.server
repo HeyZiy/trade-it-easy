@@ -36,7 +36,7 @@
 # ── 质量池模拟：每交易日09:30启动，计算后按实时价先卖后买、处理退出，统一推送 ──
 30 9 * * 1-5 cd /root/trade-it-easy && flock -n /tmp/quality-pool.lock /root/miniconda/envs/rt/bin/python quality_pool.py > /dev/null 2>> logs/cron_error.log
 
-# ── ETF 周度观察 + 自动调仓：每周一 14:40（尾盘批次：台账尾盘价成交形态；
+# ── ETF 周度观察：每周一 14:40 生成报告与配置建议；核心实际账户由人工确认成交记账 ──
 40 14 * * 1 cd /root/trade-it-easy && flock -n /tmp/etf.lock /root/miniconda/envs/rt/bin/python etf_observe.py > /dev/null 2>> logs/cron_error.log
 
 # ── ETF 跨资产动量轮动（独立模拟账户）：每交易日 10:40（研究线决策时点；台账影子成交→推送）──
