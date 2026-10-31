@@ -175,8 +175,7 @@ def _report_files(root) -> list:
     report_dir = root / "reports"
     reports = []
     for prefix, label in (("etf_weekly", "核心配置"), ("industry_momentum", "行业动量"),
-                          ("etf_rotation", "ETF 跨资产轮动"), ("quality_pool", "质量池"),
-                          ("portfolio_close", "收盘成绩")):
+                          ("etf_rotation", "ETF 跨资产轮动"), ("quality_pool", "质量池")):
         files = sorted(report_dir.glob(prefix + "_????????.md"), reverse=True)
         if files:
             reports.append({"name": label, "file": files[0].name,

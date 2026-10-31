@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 """
 ===================================
-ETF 跨资产动量轮动 — 每日模拟账户入口
+ETF 跨资产动量轮动 — 账户建议与独立模拟入口
 ===================================
 
 把研究线 `research/studies/etf_rotation/unified_coverage.py`（聚宽日频策略）
@@ -13,15 +13,16 @@ ETF 跨资产动量轮动 — 每日模拟账户入口
    合格候选按分数降序，第一名即目标（0 < score < 5，跳水记 0）；
 3. 规则：无合格候选清仓；持仓不是第一名则先卖后买换入新第一名；
    仍是第一名则不动（单只全仓，无止损/止盈/再平衡）；
-4. 指令经 `trade_ledger.execute_batch` 记入本策略台账（account=etf_rotation，
-   信号当日现价影子成交形态），真实账户按报告手动执行；
-5. 渲染报告 → reports/ 落盘 + 推送。
+4. 同一行情为ETF账户的轮动持仓与已分配现金生成建议，不写成交；
+5. 独立模拟指令经 `trade_ledger.execute_batch` 记入本策略台账（account=etf_rotation，
+   信号当日现价模拟成交），与ETF账户的人工成交记录分开；
+6. 渲染报告 → reports/ 落盘 + 推送。
 
 执行约定：
 - 决策时点与聚宽研究线一致为 10:40（cron 对齐）；现价缺失时收盘价只供展示，
   本次不调仓。运行时刻不同只影响当次决策价，不改变规则；
-- 独立策略账户 = 独立流水文件（单池名义期初 100 万），与主台账 core/satellite
-  互不可见；account 标签只做复盘归因；
+- 独立策略账户 = 独立流水文件（单池名义期初 100 万），与ETF账户资金和成交记录
+  互不合并；account 标签只做复盘归因；
 - 通用批次安全校验（卖出 ≤ 台账持仓、买入额 ≤ 现金 + 卖出回款）单点在
   execute_batch；本入口额外 fail-closed：无截面数据或持仓缺价时整次不调仓，
   避免把取数故障记成"清仓"；
@@ -29,8 +30,8 @@ ETF 跨资产动量轮动 — 每日模拟账户入口
   扣费；现金分红按登记日份额确认，发放日前记应收。
 
 运行：
-    python etf_rotation.py            # 记账 + 推送
-    python etf_rotation.py --dry-run  # 只出指令不记账
+    python etf_rotation.py            # 更新账户建议 + 独立模拟记账 + 推送
+    python etf_rotation.py --dry-run  # 预览建议和模拟指令，不保存账户或模拟流水
 """
 
 import argparse
@@ -38,6 +39,7 @@ import io
 import logging
 import sys
 from datetime import date, datetime
+from pathlib import Path
 from typing import List, Optional
 
 from src.config import setup_env
@@ -60,6 +62,24 @@ from src.trade_ledger.performance import (        # noqa: E402
 
 logger = logging.getLogger(__name__)
 LABEL = "ETF跨资产动量轮动"
+
+
+def _account_advice(trade_date, rows, prices, diag, *, dry_run=False, error=None):
+    from src.etf_account import ACCOUNT_PATH
+    from src.etf.rotation_advice import publish
+
+    try:
+        return publish(trade_date, rows, prices, diag, path=Path(ACCOUNT_PATH),
+                       dry_run=dry_run, error=error)
+    except Exception:
+        logger.exception("ETF账户轮动建议生成失败")
+        if not dry_run:
+            try:
+                publish(trade_date, [], {}, {}, path=Path(ACCOUNT_PATH),
+                        error="账户建议生成失败，等待更新")
+            except Exception:
+                logger.exception("ETF账户建议暂停状态保存失败")
+        return "账户建议生成失败，请检查日志"
 
 
 def _execute(orders: List[EtfOrder], trade_date: str, *,
@@ -107,7 +127,13 @@ def run(dry_run: bool = False, trade_date: Optional[str] = None) -> str:
     """每日闭环：台账持仓 → 截面判定 → 安全校验 → 记账 → 报告。"""
     trade_date = trade_date or date.today().isoformat()
     decision_date = date.fromisoformat(trade_date)
-    rows, prices, diag = rotation_snapshot(decision_date=decision_date)
+    try:
+        rows, prices, diag = rotation_snapshot(decision_date=decision_date)
+    except Exception:
+        if not dry_run:
+            _account_advice(trade_date, [], {}, {}, error="行情更新失败，暂停建议")
+        raise
+    account_advice = _account_advice(trade_date, rows, prices, diag, dry_run=dry_run)
 
     trades = load_trades(LEDGER_PATH)
     distributions = dividend_records(trades, diag.get("dividends", {}), trade_date)
@@ -133,6 +159,12 @@ def run(dry_run: bool = False, trade_date: Optional[str] = None) -> str:
         "",
         f"**生成时间**: {datetime.now().strftime('%Y-%m-%d %H:%M')}"
         f"{'（dry-run，未记账）' if dry_run else ''}",
+        "",
+        "## ETF账户 · 待执行建议",
+        "",
+        account_advice,
+        "",
+        "## 独立模拟",
         "",
         render_summary(LEDGER_PATH, label=LABEL),
         "",
@@ -233,7 +265,7 @@ def run(dry_run: bool = False, trade_date: Optional[str] = None) -> str:
 
 def parse_arguments() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description='ETF 跨资产动量轮动 — 每日模拟账户（截面判定 + 台账记账 + 出报告）',
+        description='ETF 跨资产轮动 — 账户建议、独立模拟与报告',
     )
     add_standard_flags(parser)
     return parser.parse_args()
@@ -244,7 +276,7 @@ def main() -> int:
     setup_logging(log_prefix="etf_rotation", debug=args.debug)
 
     logger.info("=" * 60)
-    logger.info("ETF 跨资产动量轮动 — 每日模拟账户启动")
+    logger.info("ETF 跨资产轮动 — 账户建议与独立模拟启动")
     logger.info(f"运行时间: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
     logger.info("=" * 60)
 

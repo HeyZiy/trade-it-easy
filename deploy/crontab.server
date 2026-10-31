@@ -39,7 +39,7 @@
 # ── ETF 周度观察：每周一 14:40 生成报告与配置建议；成交由人工确认，统一记入ETF账户 ──
 40 14 * * 1 cd /root/trade-it-easy && flock -n /tmp/etf.lock /root/miniconda/envs/rt/bin/python etf_observe.py > /dev/null 2>> logs/cron_error.log
 
-# ── ETF 跨资产动量轮动（独立模拟账户）：每交易日 10:40（研究线决策时点；台账影子成交→推送）──
+# ── ETF 跨资产轮动：每交易日 10:40 更新账户建议、独立模拟台账并推送 ──
 40 10 * * 1-5 cd /root/trade-it-easy && flock -n /tmp/etf-rotation.lock /root/miniconda/envs/rt/bin/python etf_rotation.py > /dev/null 2>> logs/cron_error.log
 
 # ── 行业动量轮动（卫星仓）：每交易日 14:50 尾盘（截面排名→卖出/买入→推送）──

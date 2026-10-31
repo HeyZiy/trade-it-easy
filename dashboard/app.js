@@ -167,7 +167,7 @@ function fundedStrategyPage(strategy) {
   const stats = [[finite(strategy.budget) ? money(strategy.budget) : '待设置','目标资产 / 元'],[money(strategy.invested),'持仓市值 / 元'],[`${strategy.pnl>0?'+':''}${money(strategy.pnl)}`,'累计盈亏 / 元'],[money(strategy.cash),'策略现金 / 元']];
   const observation = strategy.observation;
   const observationSection = observation ? `${chartSection(observation, '独立模拟，不计入ETF账户')}<section class="section"><div class="section-heading"><h2>模拟持仓</h2></div>${positionTable(observation.positions)}</section>` : '';
-  return `<div class="stats">${stats.map(([value,label])=>`<div class="stat"><span>${label}</span><b>${esc(value)}</b></div>`).join('')}</div><section class="section"><div class="section-heading"><h2>${esc(strategy.name)} · 持仓</h2><span class="subtle">${esc(strategy.status)}</span><button type="button" id="manual-entry" class="text-button">＋ 记账</button></div>${allocatedPositionTable(strategy.positions)}</section>${strategyWeightsTable(strategy)}<section class="section"><div class="section-heading"><h2>待执行建议</h2></div>${strategy.id === 'rotation' ? '<div class="empty">账户建议尚未接入</div>' : suggestionCards(strategy.suggestions || [])}</section>${observationSection}`;
+  return `<div class="stats">${stats.map(([value,label])=>`<div class="stat"><span>${label}</span><b>${esc(value)}</b></div>`).join('')}</div><section class="section"><div class="section-heading"><h2>${esc(strategy.name)} · 持仓</h2><span class="subtle">${esc(strategy.status)}</span><button type="button" id="manual-entry" class="text-button">＋ 记账</button></div>${allocatedPositionTable(strategy.positions)}</section>${strategyWeightsTable(strategy)}<section class="section"><div class="section-heading"><h2>待执行建议</h2></div>${strategy.id === 'rotation' && !strategy.suggestions?.length ? `<div class="empty">${esc(strategy.advice_status || '等待交易日更新')}</div>` : suggestionCards(strategy.suggestions || [])}</section>${observationSection}`;
 }
 
 function allocatedPositionTable(rows) {
@@ -203,31 +203,19 @@ function render() {
   const chartStage = document.querySelector('#chart-stage');
   if (chartStage) chartObserver.observe(chartStage);
   const prefix = REPORT_PREFIX[account?.id];
-  const report = data.reports.find(row => row.file.startsWith(prefix)) || data.reports[0];
+  const section = document.querySelector('.reports-section');
+  section.hidden = !prefix;
+  reportRequest?.abort();
+  selectedReport = null;
+  const report = prefix && data.reports.find(row => row.file.startsWith(prefix));
+  document.querySelector('#report-panel').hidden = !report;
+  document.querySelector('#report-empty').hidden = !!report;
   if (report) selectReport(report.file);
 }
 
 function reportKind(file) {
-  if (file.startsWith('portfolio_close_')) return '收盘汇总';
   if (file.startsWith('etf_weekly_')) return '周度配置';
   return '策略日报';
-}
-
-function renderReportTabs() {
-  document.querySelector('#report-list').innerHTML = data.reports.map((report,index) => `<button type="button" role="tab" id="report-tab-${index}" aria-controls="report-panel" aria-selected="${report.file===selectedReport}" class="report-tab ${report.file===selectedReport ? 'active' : ''}" data-file="${esc(report.file)}"><strong>${esc(report.name)}</strong><time>${esc(reportDate(report.date))}</time></button>`).join('');
-  const buttons = [...document.querySelectorAll('.report-tab')];
-  buttons.forEach((button,index) => {
-    button.onclick = () => selectReport(button.dataset.file);
-    button.onkeydown = event => {
-      if (!['ArrowLeft','ArrowRight','ArrowUp','ArrowDown'].includes(event.key)) return;
-      event.preventDefault();
-      const next=(index+(['ArrowLeft','ArrowUp'].includes(event.key) ? -1 : 1)+buttons.length)%buttons.length;
-      selectReport(buttons[next].dataset.file);
-      document.querySelector(`#report-tab-${next}`).focus();
-    };
-  });
-  const active = buttons.find(button => button.dataset.file===selectedReport);
-  if (active) document.querySelector('#report-panel').setAttribute('aria-labelledby',active.id);
 }
 
 function measureReport() {
@@ -254,7 +242,6 @@ async function selectReport(file) {
   reportRequest?.abort();
   selectedReport=file;
   const report=data.reports.find(row => row.file===file);
-  renderReportTabs();
   document.querySelector('#report-kind').textContent=reportKind(file);
   document.querySelector('#report-name').textContent=report.name;
   document.querySelector('#report-date').textContent=reportDate(report.date);
@@ -295,9 +282,6 @@ fetch('/api/overview',{cache:'no-store'}).then(response => {
   document.querySelector('#status').textContent=`读取于 ${new Date(data.generated_at).toLocaleString('zh-CN')}`;
   document.querySelector('#app').hidden=false;
   document.querySelector('#states').innerHTML=data.states.map(state => `<p><strong>${esc(state.name)}</strong> · ${esc(state.detail)}</p>`).join('');
-  if (!data.reports.length) {
-    document.querySelector('.report-shell').innerHTML='<div class="empty">暂无报告，策略运行后会在这里更新。</div>';
-  }
   render();
 }).catch(() => { document.querySelector('#status').textContent='数据读取失败，请刷新页面重试。'; });
 

@@ -97,6 +97,8 @@ def revision(state, asof=None):
     if asof is None:
         facts["budgets"] = state.get("budgets", {})
         facts["targets"] = state.get("targets", {})
+        if "rotation_signal" in state:
+            facts["rotation_signal"] = state["rotation_signal"]
     return hashlib.sha256(json.dumps(facts, sort_keys=True, ensure_ascii=False).encode()).hexdigest()
 
 
@@ -320,7 +322,7 @@ def baseline(state):
     return result
 
 
-def strategy_views(state, view):
+def strategy_views(state, view, *, today=None):
     """汇总策略名下的持仓与现金；目标比例只决定预算，不自动分配资金。"""
     result = []
     for key, name in (("core", "核心配置"), ("rotation", "跨资产轮动")):
@@ -342,6 +344,10 @@ def strategy_views(state, view):
         row.update(cash=owned_cash, assets=actual_assets,
                    actual_pct=actual_assets / view["equity"] if view["equity"] else None,
                    deviation=round(actual_assets - row["budget"], 2) if row["budget"] is not None else None)
+        if row["id"] == "rotation":
+            from src.etf.rotation_advice import advice
+            row["suggestions"], row["advice_status"] = advice(state, row, today or _today())
+            row["signal_date"] = state.get("rotation_signal", {}).get("date")
         if row["remaining_budget"] is None:
             row["status"] = "目标比例待设置"
             continue
@@ -426,6 +432,15 @@ def record_event(path, payload):
                 raise ValueError("暂不支持全额清户，请保留正的账户资产")
             event["amount"] = amount
             event["strategy"] = strategy
+        signal = state.get("rotation_signal")
+        if side == "buy" and event.get("strategy") == "rotation" and signal and not signal.get("buy_intent"):
+            # 第一笔实际成交时锁定本轮份额；尚未成交时，现金或预算变化仍可完整重算。
+            planned = strategy_views(state, view)[1]["suggestions"]
+            buy = next((item for item in planned if item["side"] == "buy" and item["code"] == event["code"]), None)
+            if buy:
+                held = sum(p["count"] for p in view["strategy_positions"]
+                           if p["strategy"] == "rotation" and p["code"] == event["code"])
+                signal["buy_intent"] = {"code": buy["code"], "qty": held + buy["qty"]}
         state["events"].append(event)
         _save(path, state)
         return event
@@ -450,7 +465,7 @@ def dismiss(path, payload):
         state = load(path)
         if payload.get("revision") != revision(state):
             raise ValueError("账户已更新，请刷新后重新核对")
-        views = strategy_views(state, snapshot(state, date.today().isoformat()))
+        views = strategy_views(state, snapshot(state, _today().isoformat()))
         available = {r["id"] for strategy in views for r in strategy["suggestions"]}
         if payload.get("id") not in available:
             raise ValueError("建议已变化，请刷新后重试")
@@ -480,7 +495,7 @@ def collect_close(path, asof, close_prices, *, dry_run=False):
 
 def account_data(path):
     state = load(path)
-    today = date.today().isoformat()
+    today = _today().isoformat()
     view = snapshot(state, today)
     records = sorted([r for r in state["records"] if r["date"] <= today], key=lambda r: r["date"])
     valid = [r for r in records if _positive(r.get("nav")) and not r["issues"]
