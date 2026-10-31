@@ -1,8 +1,8 @@
 # -*- coding: utf-8 -*-
 """周度批次——ETF 核心仓统一调仓闭环（规格唯一来源 strategy/etf_allocation.md）。
 
-单动词 interface：run(dry_run) -> str，一次完成 名义台账快照 → 阈值再平衡计划 →
-名义记账 → 周报；入口 etf_observe 只剩旗标/闸门/落盘/推送。
+单动词 interface：run(dry_run) -> str，完成账户快照 → 再平衡建议 → 周报。
+核心实际账户由人工确认成交；未初始化实际账户时保留模拟记账兼容路径。
 
 数据 seam（测试注入假数据的唯一入口，家法同 quality_pool/feeds.py）：
 每个外部取数一个 *_raw 薄包装（函数内懒导入），测试经 monkeypatch 替换本模块的
@@ -32,6 +32,11 @@ from src.trade_ledger.performance import render_summary
 
 logger = logging.getLogger(__name__)
 
+
+def _baseline():
+    from src.real_account import ACCOUNT_PATH, baseline, load
+    return baseline(load(ACCOUNT_PATH)) if ACCOUNT_PATH.exists() else CORE_BASELINE
+
 # ── 数据 seam：每个外部取数一个薄包装（懒导入），测试只替换这里 ──
 
 def _raw_market_pe():
@@ -60,6 +65,9 @@ def _raw_valuation_rows(equity_etfs):
 
 def _raw_snapshot():
     """名义台账读侧快照：持仓+价格（src.trade_ledger）。"""
+    from src.real_account import ACCOUNT_PATH, strategy_snapshot
+    if ACCOUNT_PATH.exists():
+        return strategy_snapshot(ACCOUNT_PATH)
     from src.trade_ledger import snapshot_with_prices
     return snapshot_with_prices()
 
@@ -110,7 +118,7 @@ def _build_week_context() -> WeekContext:
     except Exception:
         erp = None
     erp_pct = erp.get("erp_pct") if erp else None
-    equity_etfs = [a for a in CORE_BASELINE if a.asset_type == AssetType.EQUITY]
+    equity_etfs = [a for a in _baseline() if a.asset_type == AssetType.EQUITY]
     return WeekContext(market_pe=market_pe, y10=y10, erp_pct=erp_pct,
                        alloc=_compute_allocation(), trends=_fetch_trend_observations(),
                        valuations=_raw_valuation_rows(equity_etfs))
@@ -122,7 +130,7 @@ def _fetch_trend_observations() -> dict:
 
     now = datetime.now(timezone(timedelta(hours=8))).replace(tzinfo=None)
     observations = {}
-    for asset in CORE_BASELINE:
+    for asset in _baseline():
         if asset.code == "CASH":
             continue
         try:
@@ -256,6 +264,7 @@ def _compute_allocation():
     positions = snap.positions
     total_assets = snap.total_assets
     rebalancer = ETFRebalancer()
+    rebalancer.baseline = _baseline()
     target = rebalancer.calculate_target()
 
     core_positions, rotation_mv, rotation_positions = rebalancer.split_rotation_positions(positions)
@@ -323,7 +332,7 @@ def _holding_overview(ctx: WeekContext) -> str:
 
     order_map = {o.code: o for o in orders}
     valuation_map = {r["code"]: r for r in ctx.valuations}
-    for asset in CORE_BASELINE:
+    for asset in _baseline():
         code = asset.code
         tgt = target.get(code, 0.0) * 100
         cur = current_map.get(code, 0.0)
@@ -352,10 +361,10 @@ def _holding_overview(ctx: WeekContext) -> str:
                  "当日新信号对应下一交易日开盘，不代表实际持仓或本周新增买卖指令。")
     lines.append("> ★ 恒生科技：当前样本中唐奇安20/10改善了持有体验，为重点观察规则。")
     lines.append("> 估值展示跟踪指数PE/股息率；红利沿用股息率减10年国债利差≥1.5pt视同低估的现有口径。"
-                 "其余标的暂无高低判定，—表示无数据或不适用。两列独立参考，不合成评分，不参与名义调仓。")
+                 "其余标的暂无高低判定，—表示无数据或不适用。两列独立参考，不合成评分，不参与调仓建议。")
     dated = {}
     unavailable = []
-    for asset in CORE_BASELINE:
+    for asset in _baseline():
         if asset.code == "CASH":
             continue
         observation = ctx.trends.get(asset.code, {})
@@ -374,7 +383,7 @@ def _holding_overview(ctx: WeekContext) -> str:
         lines.append("")
         lines.append("> 卫星持仓（现金桶吸收，不参与核心再平衡）："
                      + "、".join(f"{p.get('name', '')}({p.get('code', '')})" for p in rotation_positions))
-    baseline_codes = {a.code for a in CORE_BASELINE}
+    baseline_codes = {a.code for a in _baseline()}
     extra = [f"{p.get('name', '')}({p.get('code', '')})" for p in alloc["core_positions"]
              if p.get("code") not in baseline_codes]
     if extra:
@@ -407,6 +416,8 @@ def _deploy_cash_section(ctx: WeekContext) -> str:
     （目标权重见持仓对照表）；名义台账口径的缺口由旧钱再平衡处理。
     新钱为真实资金、独立于名义台账，到账后人工在真实账户操作。
     """
+    from src.real_account import ACCOUNT_PATH
+    actual = ACCOUNT_PATH.exists()
     lines = ["## 新钱投放参考（估值分位，仅数据）", ""]
     market_pe = ctx.market_pe
     if market_pe:
@@ -416,8 +427,10 @@ def _deploy_cash_section(ctx: WeekContext) -> str:
     else:
         lines.append("全市场估值数据不可用。")
     lines.append("")
-    lines.append("> 入金后按基准目标权重补入：缺口 = 目标权重 x 总资产 - 实际市值；名义台账的缺口见执行前持仓对照。")
-    lines.append("> 到账后在真实账户人工操作（再平衡批次只记名义台账，与新钱无关），不自动执行。")
+    lines.append("> 入金后先在网页记录资金转入，再参考重新计算的配置缺口。" if actual else
+                 "> 入金后按基准目标权重补入：缺口 = 目标权重 x 总资产 - 实际市值。")
+    lines.append("> 券商成交后在网页填写实际份额、均价和手续费，更新持仓与现金。" if actual else
+                 "> 到账后在真实账户人工操作，不自动执行。")
     lines.append("")
     return "\n".join(lines)
 
@@ -433,6 +446,10 @@ def _execute_batch(alloc: dict, ledger_path=None, dry_run: bool = False) -> str:
     dry_run=True 时同渲染指令、零台账写入。
     """
     from src.trade_ledger import BatchOrder, execute_batch
+
+    from src.real_account import ACCOUNT_PATH
+    if ACCOUNT_PATH.exists() and ledger_path is None:
+        return "## 本次建议\n\n调仓建议已展示在网页；实际份额和现金仅在确认成交后更新。"
 
     plan = alloc["plan"]
 
@@ -488,7 +505,7 @@ def _execute_batch(alloc: dict, ledger_path=None, dry_run: bool = False) -> str:
 # ── 报告生成（单动词 interface）──
 
 def run(dry_run: bool = False) -> str:
-    """生成完整周报（orders 非空时自动执行调仓并附结果；dry_run 只渲染不记账）
+    """生成周报；实际账户只出建议，兼容未初始化实际账户时的模拟模式。
 
     取数一次装配进 WeekContext，各节纯渲染。
     """
@@ -497,12 +514,14 @@ def run(dry_run: bool = False) -> str:
     ctx = _build_week_context()
     alloc = ctx.alloc
 
+    from src.real_account import ACCOUNT_PATH, render_summary as actual_summary
+    summary = actual_summary(ACCOUNT_PATH) if ACCOUNT_PATH.exists() else render_summary(label="核心配置")
     sections = [
         f"# ETF 周度观察 — {datetime.now().strftime('%Y-%m-%d')}",
         "",
         f"**生成时间**: {now}{'（dry-run，未记账）' if dry_run else ''}",
         "",
-        render_summary(label="核心配置"),
+        summary,
     ]
 
     # 执行门保持现状："orders 非空即执行"；plan.should 为触发层结论，当前仅进报告。

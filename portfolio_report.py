@@ -1,4 +1,4 @@
-"""次日盘前采集上一交易日模拟成绩；只写成绩记录，不改交易台账、不下单、不发送通知。
+"""次日盘前采集各账户上一交易日成绩；不改持仓、不下单、不发送通知。
 
 默认运行还会回补目标日之前最近 5 个交易日的不完整记录；手动 --date 只采指定日。
 """
@@ -65,7 +65,13 @@ def run(*, asof=None, dry_run=False, now=None, backfill=False):
         raise ValueError("目标日期不是已确认交易日")
     feed = ClosingPrices()
     accounts = all_accounts()
-    sections = [f"# 模拟收盘日报 — {target}", ""]
+    from pathlib import Path
+    from src.real_account import (ACCOUNT_PATH, collect_close as collect_actual_close,
+                                  load as load_actual, render_summary as actual_summary, revision)
+    if ACCOUNT_PATH.exists():
+        from src.trade_ledger.ledger import DEFAULT_LEDGER_PATH
+        accounts = [a for a in accounts if Path(a.ledger_path) != DEFAULT_LEDGER_PATH]
+    sections = [f"# 账户收盘日报 — {target}", ""]
     notes = []
     errors = 0
     window = _backfill_dates(target) if backfill else []
@@ -115,6 +121,27 @@ def run(*, asof=None, dry_run=False, now=None, backfill=False):
             errors += 1
     if notes:
         sections += ["## 本次回补（目标日之前）", "", *notes]
+    if ACCOUNT_PATH.exists():
+        try:
+            actual = load_actual(ACCOUNT_PATH)
+            for day in window:
+                if day >= target or day.isoformat() <= actual["initial"]["date"]:
+                    continue
+                old = _record(actual, day.isoformat())
+                if not _complete(old) or old.get("revision") != revision(actual, day.isoformat()):
+                    actual = collect_actual_close(ACCOUNT_PATH, day.isoformat(), feed.close_prices,
+                                                  dry_run=dry_run)
+            actual = collect_actual_close(ACCOUNT_PATH, target.isoformat(), feed.close_prices,
+                                          dry_run=dry_run)
+            if target.isoformat() >= actual["initial"]["date"]:
+                sections.insert(1, actual_summary(ACCOUNT_PATH))
+            row = _record(actual, target.isoformat())
+            if row and row.get("issues"):
+                errors += 1
+                sections.append("## 核心配置估值提示\n\n" + "；".join(row["issues"]))
+        except Exception:
+            logger.exception("真实账户收盘采集失败，保留已有估值")
+            errors += 1
     if dry_run:
         sections.append("试运行：未保存收盘记录。")
     return "\n\n".join(sections), errors

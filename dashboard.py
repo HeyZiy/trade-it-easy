@@ -1,4 +1,4 @@
-"""Private, read-only dashboard for the server's nominal strategy accounts."""
+"""Private dashboard with actual core bookkeeping and independent strategy accounts."""
 
 import argparse
 import base64
@@ -25,7 +25,7 @@ ROOT = Path(os.environ.get("TRADE_DASHBOARD_ROOT", APP_ROOT)).resolve()
 # （test_display_table_covers_registry_accounts 强制两侧对齐）。
 DISPLAY = (
     ("trade_ledger.jsonl", "core", "核心配置"),
-    ("trade_ledger_industry_momentum.jsonl", "satellite", "行业动量（模拟）"),
+    ("trade_ledger_industry_momentum.jsonl", "satellite", "行业动量"),
     ("trade_ledger_etf_rotation.jsonl", "rotation", "ETF 跨资产轮动"),
     ("trade_ledger_quality_pool_v2.jsonl", "quality", "质量池轮动"),
 )
@@ -33,7 +33,7 @@ DISPLAY = (
 # 四个策略分别读取独立台账；核心配置不包含行业模拟记录。
 STRATEGIES = (
     ("core", "核心配置", "core", None),
-    ("satellite", "行业动量（模拟）", "satellite", None),
+    ("satellite", "行业动量", "satellite", None),
     ("rotation", "ETF 跨资产轮动", "rotation", None),
     ("quality", "质量池轮动", "quality", None),
 )
@@ -150,6 +150,7 @@ def strategy_view(key, name, account, tag):
         positions = [p for p in positions if p.get("account") == tag]
         trades = [t for t in trades if t.get("account") == tag]
     return {"id": key, "name": name, "ledger": account.get("id"),
+            "kind": account.get("kind", "simulated"),
             "positions": positions, "trades": trades[:20],
             "performance": performance,
             "history": account.get("history", []),
@@ -200,16 +201,21 @@ def _state_detail(filename: str, state) -> str:
 
 
 def dashboard_data(root=ROOT):
+    from src.real_account import FILENAME, account_data as actual_account_data
+    actual_path = root / "data" / FILENAME
     accounts = []
     for filename, key, name in _display_accounts():
         try:
-            data = account_data(root, filename)
+            data = (actual_account_data(actual_path) if key == "core" and actual_path.exists()
+                    else account_data(root, filename))
         except Exception:
             logging.exception("读取账户失败: %s", key)
             data = {"error": "账户数据读取失败，请检查服务器日志。", "positions": [], "trades": []}
-        accounts.append({"id": key, "name": name, **data})
+        mode = "actual" if key == "core" and actual_path.exists() else "simulated"
+        accounts.append({"id": key, "name": name, "kind": mode, **data})
     by_id = {account["id"]: account for account in accounts}
-    strategies = [strategy_view(key, name, by_id.get(ledger), tag)
+    strategies = [by_id[ledger] if key == "core" and actual_path.exists()
+                  else strategy_view(key, name, by_id.get(ledger), tag)
                   for key, name, ledger, tag in STRATEGIES]
     reports = _report_files(root)
     states = []
@@ -227,6 +233,44 @@ def dashboard_data(root=ROOT):
 
 
 class Handler(BaseHTTPRequestHandler):
+    def do_POST(self):
+        user, password = auth_config()
+        if not password:
+            self.respond(b'{}', "application/json", status=503)
+            return
+        if not authorized(self.headers.get("Authorization", ""), user, password):
+            time.sleep(AUTH_DELAY)
+            self.respond(b'{}', "application/json", status=401, headers={"WWW-Authenticate": AUTH_REALM})
+            return
+        # 自定义头不属于简单跨站请求，浏览器必须先通过同源预检。
+        if (self.headers.get("X-Trade-Request") != "dashboard"
+                or self.headers.get("Content-Type") != "application/json"):
+            self.respond(b'{}', "application/json", status=403)
+            return
+        from src.real_account import FILENAME, dismiss, record_event
+        handlers = {"/api/core/event": record_event, "/api/core/dismiss": dismiss}
+        if self.path not in handlers:
+            self.send_error(404)
+            return
+        try:
+            length = int(self.headers.get("Content-Length", "0"))
+            if not 0 < length <= 16384:
+                raise ValueError("请求内容过长或为空")
+            payload = json.loads(self.rfile.read(length))
+            if not isinstance(payload, dict):
+                raise ValueError("记账内容须为对象")
+            handlers[self.path](ROOT / "data" / FILENAME, payload)
+        except (ValueError, TypeError, KeyError) as error:
+            self.respond(json.dumps({"error": str(error)}, ensure_ascii=False).encode(),
+                         "application/json; charset=utf-8", status=400)
+            return
+        except Exception:
+            logging.exception("核心账户写入失败")
+            self.respond(json.dumps({"error": "保存失败，请刷新核对后重试。"}, ensure_ascii=False).encode(),
+                         "application/json; charset=utf-8", status=500)
+            return
+        self.respond(b'{"ok":true}', "application/json; charset=utf-8")
+
     def do_GET(self):
         user, password = auth_config()
         if not password:

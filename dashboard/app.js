@@ -6,9 +6,10 @@ const signed = value => `${value > 0 ? '+' : ''}${value.toFixed(2)}`;
 const percent = nav => finite(nav) && nav > 0 ? `${signed((nav - 1) * 100)}%` : '—';
 const excess = (nav, base) => finite(nav) && finite(base) ? `${signed((nav - base) * 100)} 个百分点` : '—';
 const ratio = (part, whole) => finite(part) && finite(whole) && whole > 0 ? `${(part / whole * 100).toFixed(1)}%` : '—';
+const accountName = account => `${account?.name || '账户'}${account?.kind === 'simulated' ? '（模拟）' : ''}`;
 const reportDate = value => /^\d{8}$/.test(value) ? `${value.slice(0,4)}-${value.slice(4,6)}-${value.slice(6)}` : value;
 const timestamp = day => Date.parse(`${day}T00:00:00Z`);
-const SIDES = {buy:'买入', sell:'卖出', dividend:'分红'};
+const SIDES = {buy:'买入', sell:'卖出', dividend:'分红', deposit:'入金', withdraw:'出金'};
 const REPORT_PREFIX = {core:'etf_weekly_', satellite:'industry_momentum_', rotation:'etf_rotation_', quality:'quality_pool_'};
 let data, selected = 0, chartRange = 'all', chartObserver;
 let selectedReport, reportRequest;
@@ -35,16 +36,16 @@ function warnings(account) {
 
 function chartSection(account) {
   return `<section class="section chart-section" aria-labelledby="chart-title">
-    <div class="section-heading"><div><div class="eyebrow">PERFORMANCE</div><h2 id="chart-title">${esc(account?.name || '账户')} · 收益走势</h2></div>
+    <div class="section-heading"><div><div class="eyebrow">PERFORMANCE</div><h2 id="chart-title">${esc(accountName(account))} · 收益走势</h2></div>
       <div class="range-buttons" role="group" aria-label="收益曲线时间范围">${[['30','近30天'],['90','近90天'],['all','全部']].map(([value,label]) => `<button type="button" data-range="${value}" class="${chartRange === value ? 'active' : ''}" aria-pressed="${chartRange === value}">${label}</button>`).join('')}</div></div>
     <div class="chart-summary" aria-live="polite">
       <div class="chart-metric primary"><small><i class="legend-line"></i>账户累计收益</small><b id="chart-nav">—</b></div>
-      <div class="chart-metric benchmark"><small><i class="legend-line benchmark"></i>同期基准</small><b id="chart-base">—</b></div>
-      <div class="chart-metric"><small>超额 / 百分点</small><b id="chart-excess">—</b></div>
+      <div class="chart-metric benchmark" ${account?.kind === 'actual' ? 'hidden' : ''}><small><i class="legend-line benchmark"></i>同期基准</small><b id="chart-base">—</b></div>
+      <div class="chart-metric" ${account?.kind === 'actual' ? 'hidden' : ''}><small>超额 / 百分点</small><b id="chart-excess">—</b></div>
     </div><div id="chart-date" class="chart-date"></div>
     <div id="chart-stage" class="chart-stage"></div>
     <input id="chart-cursor" class="chart-slider" type="range" aria-label="选择日期查看收益" hidden>
-    <div class="chart-foot"><span>基准：${esc(account?.benchmark_name || '同期基准')}</span><span>收盘累计口径 · 拖动查看日期</span></div>
+    <div class="chart-foot"><span>${account?.kind === 'actual' ? `建账起点：${esc(account.start_date)}` : `基准：${esc(account?.benchmark_name || '同期基准')}`}</span><span>收盘累计口径 · 拖动查看日期</span></div>
   </section>`;
 }
 
@@ -130,13 +131,31 @@ function drawChart(account) {
 function summaryPage() {
   const core = data.accounts.find(account => account.id==='core');
   const rows = data.accounts.map(account => {
-    const p = account.performance;
-    return `<tr><td>${esc(account.name)}</td><td>${percent(p?.nav)}</td><td>${percent(p?.benchmark_nav)}</td><td>${excess(p?.nav,p?.benchmark_nav)}</td><td>${ratio(p?.invested,p?.equity)}</td><td>${esc(p?.date)}</td></tr>`;
+    const p = account.kind === 'actual' ? {...account.performance, ...account} : account.performance;
+    return `<tr><td>${esc(accountName(account))}</td><td>${percent(p?.nav)}</td><td>${percent(p?.benchmark_nav)}</td><td>${excess(p?.nav,p?.benchmark_nav)}</td><td>${ratio(p?.invested,p?.equity)}</td><td>${esc(p?.date)}</td></tr>`;
   }).join('');
-  return `${data.accounts.map(warnings).join('')}${chartSection(core)}<section class="section"><div class="section-heading"><h2>账户一览</h2><span class="subtle">分别统计，不合并收益</span></div><div class="table-wrap"><table><thead><tr><th>账户</th><th>收益</th><th>基准</th><th>超额</th><th>仓位</th><th>成绩日期</th></tr></thead><tbody>${rows}</tbody></table></div></section>`;
+  const real = core?.kind === 'actual' ? realAccountDetails(core) : '';
+  return `${data.accounts.map(warnings).join('')}${chartSection(core)}${real}<section class="section"><div class="section-heading"><h2>账户一览</h2><span class="subtle">分别统计，不合并收益</span></div><div class="table-wrap"><table><thead><tr><th>账户</th><th>收益</th><th>基准</th><th>超额</th><th>仓位</th><th>成绩日期</th></tr></thead><tbody>${rows}</tbody></table></div></section>`;
+}
+
+function realAccountDetails(account) {
+  const money = value => finite(value) ? value.toLocaleString('zh-CN', {minimumFractionDigits:2, maximumFractionDigits:2}) : '—';
+  const stats = [[money(account.equity),'总资产 / 元'],[money(account.invested),'持仓市值 / 元'],[money(account.cash),'现金 / 元'],[ratio(account.invested,account.equity),'仓位']];
+  const rows = account.positions.map(row => `<tr><td>${esc(row.name)}<small>${esc(row.code)}</small></td><td>${number(row.count)}</td><td>${price(row.close)}</td><td>${money(row.market_value)}</td><td>${ratio(row.market_value,account.equity)}</td></tr>`).join('');
+  const cards = (account.suggestions || []).map((item,index) => `<article class="suggestion-card"><div class="suggestion-top"><span class="side-label ${item.side}">${SIDES[item.side]}</span><strong>${esc(item.name)}</strong><small>${esc(item.code)}</small></div><div class="suggestion-quantity">${number(item.qty)} <span>份 · 约 ${money(item.amount)} 元</span></div><p>${esc(item.reason)}</p><div class="suggestion-actions"><button type="button" class="primary-button" data-fill="${index}">记录成交</button><button type="button" class="text-button" data-dismiss="${index}">本轮忽略</button></div></article>`).join('');
+  return `<div class="stats">${stats.map(([value,label]) => `<div class="stat"><span>${label}</span><b>${value}</b></div>`).join('')}</div>
+    <section class="section"><div class="section-heading"><div><div class="eyebrow">NEXT ACTION</div><h2>待执行建议</h2></div><button type="button" id="manual-entry" class="text-button">＋ 手动记账</button></div><p class="subtle">按当前已记录持仓与估值计算，仅供自行下单参考。成交后填实际份额、均价及费用；部分成交后重新计算剩余建议。</p><div class="suggestion-grid">${cards || '<div class="empty">暂无待执行建议，保持当前配置。</div>'}</div></section>
+    <section class="section"><div class="section-heading"><h2>账户持仓</h2><span class="subtle">最近完整估值 ${esc(account.valuation_date)}</span></div><p class="subtle">份额和现金以已记录成交为准，金额使用最近估值及后续成交价估算。${esc(account.start_date)} 起计算收益，历史成本未录入。</p><div class="table-wrap"><table><thead><tr><th>标的</th><th>份额</th><th>估值参考价</th><th>市值 / 元</th><th>资产占比</th></tr></thead><tbody>${rows}</tbody></table></div></section>
+    <section class="section"><div class="section-heading"><h2>近期流水</h2><span class="subtle">仅显示已确认记录</span></div>${actualTradeTable(account.trades)}</section>`;
+}
+
+function actualTradeTable(rows) {
+  if (!rows.length) return '<div class="empty">已建立期初持仓，后续成交与资金变动将记录在这里。</div>';
+  return `<div class="table-wrap"><table><thead><tr><th>日期</th><th>类型 / 标的</th><th>份额</th><th>成交均价 / 金额</th><th>手续费</th></tr></thead><tbody>${rows.map(row => `<tr><td>${esc(row.date)}</td><td>${esc(SIDES[row.side])}<small>${esc(row.name || '账户资金')}</small></td><td>${number(row.qty)}</td><td>${price(row.price ?? row.amount)}</td><td>${price(row.fee)}</td></tr>`).join('')}</tbody></table></div>`;
 }
 
 function strategyPage(account) {
+  if (account.kind === 'actual') return `${warnings(account)}${chartSection(account)}${realAccountDetails(account)}`;
   const p = account.performance;
   const priced = account.positions.filter(row => finite(row.close)).length;
   const closeNote = account.positions.length && priced===account.positions.length ? `收盘价截至 ${esc(p?.date)}` : '价格缺失时按成本占比展示';
@@ -147,11 +166,12 @@ function strategyPage(account) {
 function render() {
   chartObserver?.disconnect();
   const tabs = [{id:'summary',name:'汇总'},...data.strategies];
-  document.querySelector('#tabs').innerHTML = tabs.map((tab,index) => `<button type="button" class="${index===selected ? 'active' : ''}" aria-pressed="${index===selected}" data-index="${index}">${esc(tab.name)}</button>`).join('');
+  document.querySelector('#tabs').innerHTML = tabs.map((tab,index) => `<button type="button" class="${index===selected ? 'active' : ''}" aria-pressed="${index===selected}" data-index="${index}">${esc(accountName(tab))}</button>`).join('');
   document.querySelectorAll('#tabs button').forEach(button => button.onclick=() => { selected=Number(button.dataset.index); render(); });
   const account = selected===0 ? data.accounts.find(row => row.id==='core') : data.strategies[selected-1];
   document.querySelector('#account').innerHTML = selected===0 ? summaryPage() : strategyPage(account);
   drawChart(account);
+  bindAccountActions(account);
   document.querySelectorAll('[data-range]').forEach(button => button.onclick=() => {
     chartRange=button.dataset.range;
     document.querySelectorAll('[data-range]').forEach(item => { item.classList.toggle('active',item.dataset.range===chartRange); item.setAttribute('aria-pressed',item.dataset.range===chartRange); });
@@ -257,3 +277,80 @@ fetch('/api/overview',{cache:'no-store'}).then(response => {
   }
   render();
 }).catch(() => { document.querySelector('#status').textContent='数据读取失败，请刷新页面重试。'; });
+
+async function accountRequest(path, payload) {
+  const response = await fetch(path, {method:'POST', headers:{'Content-Type':'application/json','X-Trade-Request':'dashboard'}, body:JSON.stringify(payload)});
+  const result = await response.json();
+  if (!response.ok) throw Error(result.error || '保存失败，请刷新核对后重试。');
+}
+
+async function reloadAccount() {
+  const response = await fetch('/api/overview', {cache:'no-store'});
+  if (!response.ok) throw Error('记录已提交，页面刷新失败，请刷新核对。');
+  data = await response.json();
+  render();
+}
+
+function bindAccountActions(account) {
+  if (account?.kind !== 'actual') return;
+  document.querySelector('#manual-entry').onclick = () => openEntry(account);
+  document.querySelectorAll('[data-fill]').forEach(button => button.onclick = () => openEntry(account, account.suggestions[Number(button.dataset.fill)]));
+  document.querySelectorAll('[data-dismiss]').forEach(button => button.onclick = async () => {
+    button.disabled = true;
+    try {
+      await accountRequest('/api/core/dismiss', {revision:account.revision, id:account.suggestions[Number(button.dataset.dismiss)].id});
+      await reloadAccount();
+    } catch (error) {
+      document.querySelector('#status').textContent = error.message;
+      button.disabled = false;
+    }
+  });
+}
+
+function openEntry(account, suggestion) {
+  const dialog = document.querySelector('#event-dialog');
+  const form = document.querySelector('#event-form');
+  const error = document.querySelector('#event-error');
+  const save = document.querySelector('#event-save');
+  form.reset(); error.hidden = true; save.disabled = false;
+  let requestId = crypto.randomUUID();
+  const field = name => form.elements.namedItem(name);
+  field('date').value = new Intl.DateTimeFormat('en-CA', {timeZone:'Asia/Shanghai',year:'numeric',month:'2-digit',day:'2-digit'}).format(new Date());
+  field('date').min = account.start_date;
+  field('date').max = field('date').value;
+  if (suggestion) {
+    for (const key of ['side','code','name','qty']) field(key).value = suggestion[key];
+  }
+  // 建议价格只用于估算，实际成交均价必须由用户填写。
+  function update() {
+    const trade = ['buy','sell'].includes(field('side').value);
+    document.querySelectorAll('[data-trade-field]').forEach(label => { label.hidden=!trade; label.querySelector('input').disabled=!trade; });
+    document.querySelector('[data-cash-field]').hidden = trade;
+    field('amount').disabled = trade;
+    const amount = trade ? Number(field('qty').value) * Number(field('price').value) : Number(field('amount').value);
+    const fee = trade ? Number(field('fee').value) : 0;
+    const delta = ['buy','withdraw'].includes(field('side').value) ? -amount-fee : amount-fee;
+    document.querySelector('#event-preview').textContent = amount>0 ? `本笔现金${delta>=0?'增加':'减少'} ${price(Math.abs(delta))} 元；记账后现金约 ${price(account.cash+delta)} 元。` : '填写实际发生数据后，在这里核对现金变化。';
+  }
+  form.oninput = () => { requestId=crypto.randomUUID(); error.hidden=true; update(); };
+  form.onchange = update;
+  document.querySelector('#event-cancel').onclick = () => dialog.close();
+  form.onsubmit = async event => {
+    event.preventDefault();
+    save.disabled = true; error.hidden = true;
+    const side = field('side').value;
+    const payload = {request_id:requestId, revision:account.revision, date:field('date').value, side};
+    if (['buy','sell'].includes(side)) {
+      Object.assign(payload, {code:field('code').value, name:field('name').value, qty:Number(field('qty').value), price:Number(field('price').value), fee:Number(field('fee').value)});
+    } else payload.amount=Number(field('amount').value);
+    try {
+      await accountRequest('/api/core/event', payload);
+      await reloadAccount();
+      dialog.close();
+      document.querySelector('#status').textContent = '已记账，持仓、现金和建议已更新。';
+    } catch (failure) {
+      error.textContent = failure.message; error.hidden=false; save.disabled=false;
+    }
+  };
+  update(); dialog.showModal();
+}

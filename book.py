@@ -43,6 +43,10 @@ def _ledger_path(args):
 
 
 def cmd_open(args) -> int:
+    from src.real_account import ACCOUNT_PATH
+    if ACCOUNT_PATH.exists() and args.path is None and args.account == "core":
+        print("核心配置已切换为实际账户，请在网页使用手动记账。")
+        return 1
     weight_pct = args.weight
     if not 0 < weight_pct <= 100:
         print(f"❌ 权重须在 (0,100]，收到 {weight_pct}")
@@ -64,6 +68,10 @@ def cmd_open(args) -> int:
 
 
 def cmd_view(args) -> int:
+    from src.real_account import ACCOUNT_PATH, render_summary
+    if ACCOUNT_PATH.exists() and args.path is None and args.account in (None, "core"):
+        print(render_summary(ACCOUNT_PATH))
+        return 0
     trades = load_trades(_ledger_path(args))
     as_of = args.as_of or date.today().isoformat()
     snap = derive(trades, as_of=as_of)  # 无现价：市值按 0，权重列按成本口径

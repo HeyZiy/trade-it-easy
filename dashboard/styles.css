@@ -119,7 +119,7 @@ footer { padding-top: 25px; font-size: 11px; color: #a0ab98; }
   .range-buttons button { padding: 5px 8px; }
   .chart-foot span:first-child { max-width: 100%; }
   .chart-stage { height: 245px; }
-  .stats { padding-top: 16px; }
+  .stats { padding-top: 16px; grid-template-columns: repeat(2, minmax(0, 1fr)); row-gap: 16px; }
   .stat { padding: 2px 10px; }
   .stat b { font-size: 16px; }
   .reports-section { padding-bottom: 0; }
@@ -132,3 +132,22 @@ footer { padding-top: 25px; font-size: 11px; color: #a0ab98; }
   .report-prose { font-size: 12px; }
 }
 @media (prefers-reduced-motion: reduce) { * { scroll-behavior: auto !important; } }
+.suggestion-grid { display: grid; grid-template-columns: repeat(auto-fit,minmax(240px,1fr)); gap: 14px; }
+.suggestion-card { border: 1px solid var(--border); border-radius: 10px; padding: 18px; background: #fafcf9; }
+.suggestion-top { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.suggestion-top small { color: var(--muted); }
+.side-label { border-radius: 4px; padding: 3px 6px; font-size: 11px; background: #e9f0e9; color: var(--green); }
+.side-label.sell { background: #f5eddf; color: #946b31; }
+.suggestion-quantity { font-size: 22px; margin-top: 16px; font-variant-numeric: tabular-nums; }
+.suggestion-quantity span { font-size: 12px; color: var(--muted); }
+.suggestion-card p { color: var(--muted); font-size: 12px; }
+.suggestion-actions { display: flex; align-items: center; gap: 14px; margin-top: 18px; }
+.primary-button { border: 0; background: var(--green); color: white; padding: 10px 16px; border-radius: 7px; }
+button:disabled { opacity: .55; cursor: wait; }
+dialog { width: min(560px,calc(100% - 24px)); max-height: calc(100dvh - 24px); border: 1px solid var(--border); border-radius: 14px; padding: 26px; color: inherit; }
+dialog::backdrop { background: #153e3566; }
+.entry-grid { display: grid; grid-template-columns: repeat(2,minmax(0,1fr)); gap: 16px; margin: 22px 0; }
+.entry-grid label { display: grid; gap: 7px; font-size: 12px; color: var(--muted); }
+.entry-grid input,.entry-grid select { min-width: 0; width: 100%; padding: 10px; font: inherit; font-size: 14px; color: #1d3530; background: white; border: 1px solid #ccd8cf; border-radius: 6px; }
+.entry-preview { background: #f3f6f1; border-radius: 8px; padding: 14px; font-size: 13px; line-height: 1.6; }
+@media (max-width: 400px) { dialog { padding: 18px; } .entry-grid { gap: 12px; } }

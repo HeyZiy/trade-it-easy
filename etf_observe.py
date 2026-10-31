@@ -4,8 +4,7 @@
 ETF 周度观察报告 — 估值导向
 ==================================
 
-定位：每周一次，自动执行统一调仓批次（周度批次）——对名义成交台账记账
-（影子成交，非真实下单；真实账户按报告百分比手动执行）。
+定位：每周生成配置建议；接入实际账户后只出建议，由用户确认实际成交记账。
 
 周度批次闭环（台账快照 → 再平衡计划 → 名义记账 → 周报）在 src/etf/allocation，
 本入口只剩旗标/闸门/落盘/推送；规格唯一来源 strategy/etf_allocation.md。
@@ -56,7 +55,7 @@ def main():
         logger.info("非交易日 --force：本次只读，不写台账")
 
     logger.info("=" * 60)
-    logger.info("ETF 周度观察报告（自动调仓）")
+    logger.info("ETF 周度观察报告（配置建议）")
     logger.info(f"时间: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
     logger.info("=" * 60)
 

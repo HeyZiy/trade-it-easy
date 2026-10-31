@@ -161,7 +161,8 @@ class ETFRebalancer:
             if abs(deviation) < MIN_TRADE_DEVIATION:
                 continue
 
-            amount = deviation * total_assets
+            # 先收敛到分，避免 799.9999999999998 元被整手取整少算一手。
+            amount = round(deviation * total_assets, 2)
             cur_price = cur.get("current_price", 0) or 0
             if cur_price <= 0:
                 cur_price = prices.get(code, 0) or 0
