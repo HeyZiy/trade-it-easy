@@ -503,7 +503,7 @@ function openCashAllocation(account) {
   document.querySelector('#cash-cancel').onclick=()=>dialog.close();
   document.querySelector('#cash-fill-target').onclick=()=>{
     const core=data.strategies.find(strategy=>strategy.id==='core');
-    if (finite(core?.budget) && finite(core.target_weights?.CASH)) form.elements.namedItem('core').value=(core.budget*core.target_weights.CASH).toFixed(2);
+    if (finite(core?.budget)) form.elements.namedItem('core').value=Math.max(0,core.budget-core.invested).toFixed(2);
     update();
   };
   form.onsubmit=async event=>{
