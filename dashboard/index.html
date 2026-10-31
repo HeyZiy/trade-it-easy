@@ -29,19 +29,17 @@
         </div>
       </section>
       <details class="state-section"><summary>策略运行状态</summary><div id="states"></div></details>
-      <footer>账户数据仅供记录与观察，页面不执行交易。</footer>
     </div>
     <dialog id="event-dialog" aria-labelledby="event-title">
       <form id="event-form">
-        <div class="section-heading"><h2 id="event-title">记录实际成交</h2><button type="button" id="event-cancel" class="text-button">关闭</button></div>
-        <p class="subtle">请按券商成交记录填写，保存后更新实际份额与现金。</p>
+        <div class="section-heading"><h2 id="event-title">记录成交</h2><button type="button" id="event-cancel" class="text-button">关闭</button></div>
         <div class="entry-grid">
           <label>记账类型<select name="side"><option value="buy">买入</option><option value="sell">卖出</option><option value="dividend">现金分红到账</option><option value="deposit">资金转入</option><option value="withdraw">资金转出</option></select></label>
-          <label>实际发生日期<input name="date" type="date" required></label>
+          <label>发生日期<input name="date" type="date" required></label>
           <label data-trade-field>证券代码<input name="code" inputmode="numeric" pattern="[0-9]{6}" maxlength="6" required></label>
           <label data-trade-field>标的名称<input name="name" maxlength="80" required></label>
-          <label data-trade-field>实际成交份额<input name="qty" type="number" min="1" step="1" required></label>
-          <label data-trade-field>实际成交均价 / 元<input name="price" type="number" min="0.000001" step="any" required></label>
+          <label data-trade-field>成交份额<input name="qty" type="number" min="1" step="1" required></label>
+          <label data-trade-field>成交均价 / 元<input name="price" type="number" min="0.000001" step="any" required></label>
           <label data-trade-field>手续费 / 元<input name="fee" type="number" min="0" step="0.01" value="0" required></label>
           <label data-cash-field hidden>到账 / 转出金额 / 元<input name="amount" type="number" min="0.01" step="0.01" required disabled></label>
         </div>

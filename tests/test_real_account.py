@@ -237,8 +237,8 @@ def test_stale_or_incomplete_prices_hide_reference_shares(account, monkeypatch):
 
 
 @pytest.mark.parametrize('targets,expected', [
-    ({'588000': .1, '510300': .9}, '需先完成减持'),
-    ({'510300': .9}, '现金仍不足'),
+    ({'588000': .1, '510300': .9}, '需先卖出回款'),
+    ({'510300': .9}, '现金不足'),
 ])
 def test_buy_suggestions_do_not_treat_projected_sales_as_actual_cash(account, targets, expected):
     path = account.parent / 'funding.json'

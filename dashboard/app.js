@@ -142,15 +142,15 @@ function realAccountDetails(account) {
   const money = value => finite(value) ? value.toLocaleString('zh-CN', {minimumFractionDigits:2, maximumFractionDigits:2}) : '—';
   const stats = [[money(account.equity),'总资产 / 元'],[money(account.invested),'持仓市值 / 元'],[money(account.cash),'现金 / 元'],[ratio(account.invested,account.equity),'仓位']];
   const rows = account.positions.map(row => `<tr><td>${esc(row.name)}<small>${esc(row.code)}</small></td><td>${number(row.count)}</td><td>${price(row.close)}</td><td>${money(row.market_value)}</td><td>${ratio(row.market_value,account.equity)}</td></tr>`).join('');
-  const cards = (account.suggestions || []).map((item,index) => `<article class="suggestion-card"><div class="suggestion-top"><span class="side-label ${item.side}">${item.side==='sell'?'减持':'增持'}</span><strong>${esc(item.name)}</strong><small>${esc(item.code)}</small></div><div class="suggestion-quantity">约 ${number(item.gap_amount)} <span>元</span></div><p>当前 ${(item.current_pct*100).toFixed(1)}% · 目标 ${(item.target_pct*100).toFixed(1)}% · ${esc(item.reason)}</p><p class="suggestion-reference">${item.price_issue ? esc(item.price_issue) : `按参考价 ${price(item.price)} 元，约 ${number(item.qty)} 份，预计${item.side==='sell'?'回收':'使用'} ${money(item.amount)} 元`}</p><p class="subtle">估值参考日 ${esc(item.price_date)}，含后续已记录成交价</p>${item.cash_note ? `<p class="cash-note">${esc(item.cash_note)}</p>` : ''}<div class="suggestion-actions"><button type="button" class="primary-button" data-fill="${index}">记录成交</button><button type="button" class="text-button" data-dismiss="${index}">本轮忽略</button></div></article>`).join('');
+  const cards = (account.suggestions || []).map((item,index) => `<article class="suggestion-card"><div class="suggestion-top"><span class="side-label ${item.side}">${item.side==='sell'?'减持':'增持'}</span><strong>${esc(item.name)}</strong><small>${esc(item.code)}</small></div><div class="suggestion-quantity">约 ${number(item.gap_amount)} <span>元</span></div><p>当前 ${(item.current_pct*100).toFixed(1)}% · 目标 ${(item.target_pct*100).toFixed(1)}%</p><p class="suggestion-reference">${item.price_issue ? esc(item.price_issue) : `约 ${number(item.qty)} 份 · 约 ${money(item.amount)} 元`}</p><p class="subtle">${esc(item.price_date)} · ${price(item.price)} 元</p>${item.cash_note ? `<p class="cash-note">${esc(item.cash_note)}</p>` : ''}<div class="suggestion-actions"><button type="button" class="primary-button" data-fill="${index}">记录成交</button><button type="button" class="text-button" data-dismiss="${index}">本轮忽略</button></div></article>`).join('');
   return `<div class="stats">${stats.map(([value,label]) => `<div class="stat"><span>${label}</span><b>${value}</b></div>`).join('')}</div>
-    <section class="section"><div class="section-heading"><div><div class="eyebrow">NEXT ACTION</div><h2>待执行建议</h2></div><button type="button" id="manual-entry" class="text-button">＋ 手动记账</button></div><p class="subtle">每天更新估值，周一集中检查配置；记账后重新计算。以配置金额缺口为参考，实际下单前核对价格，成交后填写实际份额、均价及费用。</p><div class="suggestion-grid">${cards || '<div class="empty">暂无待执行建议，保持当前配置。</div>'}</div></section>
-    <section class="section"><div class="section-heading"><h2>账户持仓</h2><span class="subtle">最近完整估值 ${esc(account.valuation_date)}</span></div><p class="subtle">份额和现金以已记录成交为准，金额使用最近估值及后续成交价估算。${esc(account.start_date)} 起计算收益，历史成本未录入。</p><div class="table-wrap"><table><thead><tr><th>标的</th><th>份额</th><th>估值参考价</th><th>市值 / 元</th><th>资产占比</th></tr></thead><tbody>${rows}</tbody></table></div></section>
-    <section class="section"><div class="section-heading"><h2>近期流水</h2><span class="subtle">仅显示已确认记录</span></div>${actualTradeTable(account.trades)}</section>`;
+    <section class="section"><div class="section-heading"><div><div class="eyebrow">NEXT ACTION</div><h2>待执行建议</h2></div><button type="button" id="manual-entry" class="text-button">＋ 手动记账</button></div><div class="suggestion-grid">${cards || '<div class="empty">暂无待执行建议，保持当前配置。</div>'}</div></section>
+    <section class="section"><div class="section-heading"><h2>账户持仓</h2><span class="subtle">估值 ${esc(account.valuation_date)}</span></div><p class="subtle">收益起点 ${esc(account.start_date)} · 成本未录入</p><div class="table-wrap"><table><thead><tr><th>标的</th><th>份额</th><th>估值价格</th><th>市值 / 元</th><th>资产占比</th></tr></thead><tbody>${rows}</tbody></table></div></section>
+    <section class="section"><div class="section-heading"><h2>近期流水</h2><span class="subtle">最近 20 笔</span></div>${actualTradeTable(account.trades)}</section>`;
 }
 
 function actualTradeTable(rows) {
-  if (!rows.length) return '<div class="empty">已建立期初持仓，后续成交与资金变动将记录在这里。</div>';
+  if (!rows.length) return '<div class="empty">暂无流水</div>';
   return `<div class="table-wrap"><table><thead><tr><th>日期</th><th>类型 / 标的</th><th>份额</th><th>成交均价 / 金额</th><th>手续费</th></tr></thead><tbody>${rows.map(row => `<tr><td>${esc(row.date)}</td><td>${esc(SIDES[row.side])}<small>${esc(row.name || '账户资金')}</small></td><td>${number(row.qty)}</td><td>${price(row.price ?? row.amount)}</td><td>${price(row.fee)}</td></tr>`).join('')}</tbody></table></div>`;
 }
 
@@ -330,7 +330,8 @@ function openEntry(account, suggestion) {
     const amount = trade ? Number(field('qty').value) * Number(field('price').value) : Number(field('amount').value);
     const fee = trade ? Number(field('fee').value) : 0;
     const delta = ['buy','withdraw'].includes(field('side').value) ? -amount-fee : amount-fee;
-    document.querySelector('#event-preview').textContent = amount>0 ? `本笔现金${delta>=0?'增加':'减少'} ${price(Math.abs(delta))} 元；记账后现金约 ${price(account.cash+delta)} 元。` : '填写实际发生数据后，在这里核对现金变化。';
+    document.querySelector('#event-preview').hidden = !(amount > 0);
+    document.querySelector('#event-preview').textContent = amount>0 ? `现金${delta>=0?'增加':'减少'} ${price(Math.abs(delta))} 元 · 余额 ${price(account.cash+delta)} 元` : '';
   }
   form.oninput = () => { requestId=crypto.randomUUID(); error.hidden=true; update(); };
   form.onchange = update;

@@ -194,9 +194,9 @@ def suggestions(state, view):
                        records[-1]["revision"] != revision(state, records[-1]["date"]))))
     price_issue = None
     if outdated:
-        price_issue = "估值已超过7天，参考份额待更新"
+        price_issue = "估值超过7天，待更新"
     elif incomplete:
-        price_issue = "最新估值不完整，参考份额待更新"
+        price_issue = "估值不完整，待更新"
     rev, result = revision(state), []
     for order in plan.orders:
         identity = hashlib.sha256(f"{rev}:{len(state['records'])}:{order.code}:{order.action}:{order.qty}".encode()).hexdigest()[:24]
@@ -220,13 +220,12 @@ def suggestions(state, view):
             continue
         amount = item["amount"]
         if amount <= cash:
-            item["cash_note"] = "现有现金可覆盖参考成交额，另需预留手续费"
             cash -= amount
         elif amount <= projected:
-            item["cash_note"] = "需先完成减持并确认回款，再核对买入金额及手续费"
+            item["cash_note"] = "需先卖出回款"
             cash = 0
         else:
-            item["cash_note"] = "按整组建议估算现金仍不足，请缩小买入金额或先补充资金"
+            item["cash_note"] = "现金不足，需补充资金或减少买入"
             cash = 0
         projected -= amount
     return result
