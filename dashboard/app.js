@@ -167,7 +167,7 @@ function fundedStrategyPage(strategy) {
   const stats = [[finite(strategy.budget) ? money(strategy.budget) : '待设置','目标资产 / 元'],[money(strategy.invested),'持仓市值 / 元'],[`${strategy.pnl>0?'+':''}${money(strategy.pnl)}`,'累计盈亏 / 元'],[money(strategy.cash),'策略现金 / 元']];
   const observation = strategy.observation;
   const observationSection = observation ? `${chartSection(observation, '独立模拟，不计入ETF账户')}<section class="section"><div class="section-heading"><h2>模拟持仓</h2></div>${positionTable(observation.positions)}</section>` : '';
-  return `<div class="stats">${stats.map(([value,label])=>`<div class="stat"><span>${label}</span><b>${esc(value)}</b></div>`).join('')}</div><section class="section"><div class="section-heading"><h2>${esc(strategy.name)} · 持仓</h2><span class="subtle">${esc(strategy.status)}</span><button type="button" id="manual-entry" class="text-button">＋ 记账</button></div>${allocatedPositionTable(strategy.positions)}</section>${strategyWeightsTable(strategy)}<section class="section"><div class="section-heading"><h2>待执行建议</h2></div>${strategy.id === 'rotation' && !strategy.suggestions?.length ? `<div class="empty">${esc(strategy.advice_status || '等待交易日更新')}</div>` : suggestionCards(strategy.suggestions || [])}</section>${observationSection}`;
+  return `<div class="stats">${stats.map(([value,label])=>`<div class="stat"><span>${label}</span><b>${esc(value)}</b></div>`).join('')}</div><section class="section"><div class="section-heading"><h2>${esc(strategy.name)} · 持仓</h2><span class="subtle">${esc(strategy.status)}</span><button type="button" id="manual-entry" class="text-button">＋ 记账</button></div>${strategyPositionTable(strategy)}</section><section class="section"><div class="section-heading"><h2>待执行建议</h2></div>${strategy.id === 'rotation' && !strategy.suggestions?.length ? `<div class="empty">${esc(strategy.advice_status || '等待交易日更新')}</div>` : suggestionCards(strategy.suggestions || [])}</section>${observationSection}`;
 }
 
 function allocatedPositionTable(rows) {
@@ -472,10 +472,10 @@ function bindOverviewCharts(account) {
   });
 }
 
-function strategyWeightsTable(strategy) {
-  if (!strategy.target_weights) return '';
+function strategyPositionTable(strategy) {
+  if (!strategy.target_weights) return allocatedPositionTable(strategy.positions);
   const wallet = data.accounts[0];
-  const codes=[...new Set([...Object.keys(strategy.target_weights),...strategy.positions.map(row=>row.code)])];
+  const codes=[...new Set([...strategy.positions.map(row=>row.code),...Object.keys(strategy.target_weights).filter(code=>code!=='CASH'),'CASH'])];
   const pct=value=>finite(value)?`${(value*100).toFixed(2)}%`:'—';
   const rows=codes.map(code=>{
     const position=strategy.positions.find(row=>row.code===code);
@@ -483,9 +483,9 @@ function strategyWeightsTable(strategy) {
     const actual=code==='CASH'?strategy.cash:position?.market_value||0;
     const weight=strategy.target_weights[code];
     const target=finite(strategy.budget)&&finite(weight)?strategy.budget*weight:null;
-    return `<tr><td>${esc(name)}</td><td>${pct(weight)}</td><td>${pct(strategy.assets>0?actual/strategy.assets:null)}</td><td>${money(target)}</td><td>${money(actual)}</td></tr>`;
+    return `<tr><td>${esc(name)}${code==='CASH'?'':`<small>${esc(code)}</small>`}</td><td>${code==='CASH'?'—':number(position?.count || 0)}</td><td>${price(position?.close)}</td><td>${money(actual)}</td><td>${pct(strategy.assets>0?actual/strategy.assets:null)}</td><td>${pct(weight)}</td><td>${money(target)}</td></tr>`;
   }).join('');
-  return `<section class="section"><div class="section-heading"><h2>策略内部配比</h2></div><div class="table-wrap"><table><thead><tr><th>资产</th><th>目标比例</th><th>实际比例</th><th>目标金额 / 元</th><th>当前金额 / 元</th></tr></thead><tbody>${rows}</tbody></table></div></section>`;
+  return `<div class="table-wrap"><table><thead><tr><th>资产</th><th>份额</th><th>价格 / 元</th><th>当前金额 / 元</th><th>实际比例</th><th>目标比例</th><th>目标金额 / 元</th></tr></thead><tbody>${rows}</tbody></table></div>`;
 }
 
 function openCashAllocation(account) {
