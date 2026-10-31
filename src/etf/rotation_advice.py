@@ -11,12 +11,13 @@ from src.etf.rotation import (
     ACCOUNT, COMMISSION, MIN_COMMISSION, RotationRow, affordable_shares, plan_rotation, top_candidate,
 )
 from src.etf.momentum import EtfOrder
+from data_provider.security_names import security_name
 
 
 def make_signal(day, rows, prices, diag, error=None):
     # 非合格标的可能包含 NaN；JSON 中统一为空，不影响候选排序。
     facts = [{key: (None if isinstance(value, float) and not math.isfinite(value) else value)
-              for key, value in asdict(row).items()} for row in rows]
+              for key, value in asdict(row).items() if key != "name"} for row in rows]
     return {"date": day, "rows": facts,
             "prices": {code: value for code, value in prices.items()
                        if isinstance(value, (int, float)) and math.isfinite(value) and value > 0},
@@ -45,7 +46,7 @@ def advice(state, strategy, today):
 
     prices = signal["prices"]
     positions = [{**row, "account": ACCOUNT} for row in strategy["positions"]]
-    rows = [RotationRow(**row) for row in signal["rows"]]
+    rows = [RotationRow(**{**row, "name": security_name(row["code"])}) for row in signal["rows"]]
     if any(row["code"] not in prices for row in positions) or any(
             row.eligible and (row.code not in prices or row.price != prices[row.code]) for row in rows):
         return [], "持仓或候选价格缺失，等待更新"

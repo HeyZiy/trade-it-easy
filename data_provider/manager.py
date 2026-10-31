@@ -72,6 +72,8 @@ def realtime_quotes(codes: List[str],
         px = getattr(quote, "price", None)
         if px is not None and math.isfinite(px) and px > 0:
             prices[code] = float(px)
+    from .security_names import remember
+    remember(names)
     return prices, names
 
 
@@ -244,7 +246,11 @@ class DataFetcherManager:
         # 跨源合并（A 股按 source_priority）抽离为与 manager 解耦的纯函数。
         # 未来剪除日线杂活后，调用方只需持有 fetcher 集合即可直接调用，不再依赖本类。
         source_priority = self._realtime_source_priority.split(',')
-        return merge_realtime_quotes(stock_code, self._fetchers, source_priority)
+        quote = merge_realtime_quotes(stock_code, self._fetchers, source_priority)
+        if quote is not None:
+            from .security_names import remember
+            remember({stock_code: quote.name})
+        return quote
 
     def get_market_stats(self) -> Dict[str, Any]:
         """获取市场涨跌统计（自动切换数据源）；全部源无数据返回 {}。"""

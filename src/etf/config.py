@@ -18,6 +18,7 @@ from dataclasses import dataclass
 from typing import Dict, FrozenSet, List
 
 from src.account_sources import AccountSource
+from data_provider.security_names import security_name
 from src.etf_account import FILENAME
 
 # ── 类别枚举 ──
@@ -32,10 +33,13 @@ class AssetType:
 @dataclass
 class AssetAllocation:
     code: str           # 证券代码（6 位）
-    name: str           # 名称
     asset_type: str     # AssetType
     neutral_weight: float  # 中性基准权重（0.0 ~ 1.0）
     volatility_rank: int   # 波动率排名（1=最高波动，用于减仓优先级）
+
+    @property
+    def name(self):
+        return security_name(self.code)
 
 
 # ── 中性基准配置 ──
@@ -48,22 +52,22 @@ class AssetAllocation:
 
 CORE_BASELINE: List[AssetAllocation] = [
     # ── A股宽基 ──
-    AssetAllocation("563360", "A500ETF",                AssetType.EQUITY, 0.085, 8),
-    AssetAllocation("159680", "中证1000增强ETF",         AssetType.EQUITY, 0.01, 6),
-    AssetAllocation("515180", "红利ETF",                AssetType.EQUITY, 0.07, 10),
+    AssetAllocation("563360", AssetType.EQUITY, 0.085, 8),
+    AssetAllocation("159680", AssetType.EQUITY, 0.01, 6),
+    AssetAllocation("515180", AssetType.EQUITY, 0.07, 10),
     # ── 海外 ──
-    AssetAllocation("513100", "纳指ETF",                AssetType.EQUITY, 0.04, 9),
-    AssetAllocation("513500", "标普500ETF",              AssetType.EQUITY, 0.16, 9),
-    AssetAllocation("513800", "南方东证ETF（TOPIX）",    AssetType.EQUITY, 0.03, 9),
-    AssetAllocation("513180", "恒生科技ETF华夏",        AssetType.EQUITY, 0.05, 5),
+    AssetAllocation("513100", AssetType.EQUITY, 0.04, 9),
+    AssetAllocation("513500", AssetType.EQUITY, 0.16, 9),
+    AssetAllocation("513800", AssetType.EQUITY, 0.03, 9),
+    AssetAllocation("513180", AssetType.EQUITY, 0.05, 5),
     # ── 行业/主题 ──
-    AssetAllocation("159938", "医药ETF",                AssetType.EQUITY, 0.03, 4),
-    AssetAllocation("159928", "消费ETF",                AssetType.EQUITY, 0.04, 7),
-    AssetAllocation("159915", "创业板ETF",              AssetType.EQUITY, 0.01, 6),
+    AssetAllocation("159938", AssetType.EQUITY, 0.03, 4),
+    AssetAllocation("159928", AssetType.EQUITY, 0.04, 7),
+    AssetAllocation("159915", AssetType.EQUITY, 0.01, 6),
     # ── 黄金 ──
-    AssetAllocation("159934", "黄金ETF",                AssetType.GOLD,   0.04, 11),
+    AssetAllocation("159934", AssetType.GOLD,   0.04, 11),
     # ── 现金（国债逆回购，自动理财，不买货基；含子账户 10.3% + 16.5% 与吸收的 16.7%） ──
-    AssetAllocation("CASH",   "现金/逆回购",              AssetType.CASH,   0.435, 13),
+    AssetAllocation("CASH", AssetType.CASH,   0.435, 13),
 ]
 
 # 再平衡模块使用核心仓位

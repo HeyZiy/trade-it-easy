@@ -42,6 +42,7 @@ from src.etf.momentum import (DIVE_RATIO, SCORE_DAYS, EtfOrder,
                               momentum_score)
 from src.mx.executor import floor_lot
 from src.account_sources import AccountSource
+from data_provider.security_names import security_name
 from src.trading_calendar import latest_trading_day_on_or_before
 
 # ── 研究线参数（research/studies/etf_rotation/study_etf_fit_jq.py；
@@ -63,25 +64,25 @@ MIN_COMMISSION = 5.0     # 新成交最低佣金5元
 SCORE_HINT = "10:40"     # 研究线的决策时点；部署 cron 应对齐（报告里展示）
 
 # 15 只池成员：(代码, 名称, 资产类别)。名称用短名，报告可读；代码为 6 位裸码。
-POOL: Tuple[Tuple[str, str, str], ...] = (
-    ("510300", "沪深300", "国内权益"),
-    ("159915", "创业板", "国内权益"),
-    ("515180", "红利", "国内权益"),
-    ("512100", "中证1000", "国内权益"),
-    ("588000", "科创50", "国内权益"),
-    ("513500", "标普500", "海外权益"),
-    ("513100", "纳指100", "海外权益"),
-    ("159920", "恒生", "海外权益"),
-    ("513520", "日经225", "海外权益"),
-    ("513030", "德国DAX", "海外权益"),
-    ("518880", "黄金", "商品"),
-    ("159980", "有色期货", "商品"),
-    ("159985", "豆粕期货", "商品"),
-    ("511090", "30年国债", "利率"),
-    ("511010", "5年国债", "利率"),
+POOL_SPECS = (
+    ("510300", "国内权益"),
+    ("159915", "国内权益"),
+    ("515180", "国内权益"),
+    ("512100", "国内权益"),
+    ("588000", "国内权益"),
+    ("513500", "海外权益"),
+    ("513100", "海外权益"),
+    ("159920", "海外权益"),
+    ("513520", "海外权益"),
+    ("513030", "海外权益"),
+    ("518880", "商品"),
+    ("159980", "商品"),
+    ("159985", "商品"),
+    ("511090", "利率"),
+    ("511010", "利率"),
 )
+POOL: Tuple[Tuple[str, str, str], ...] = tuple((code, security_name(code), group) for code, group in POOL_SPECS)
 
-NAME_BY_CODE: Dict[str, str] = {code: name for code, name, _ in POOL}
 GROUP_BY_CODE: Dict[str, str] = {code: group for code, _, group in POOL}
 
 
@@ -192,7 +193,7 @@ def build_rows(bars: Dict[str, pd.DataFrame], prices: Dict[str, float], *,
             price = intraday_close if intraday_close is not None else tail[-1]
             realtime_missing += 1
         score = momentum_score(tail, price)
-        rows.append(RotationRow(code=code, name=name, group=group,
+        rows.append(RotationRow(code=code, name=security_name(code), group=group,
                                 close=tail[-1], price=price, score=score))
 
     for row in rows:
@@ -378,7 +379,7 @@ def dividend_records(trades, events_by_code, as_of):
             if not entitled:
                 continue
             event_id = f"fund-dividend:{code}:{event['date']}"
-            record = TradeRecord(event["date"], code, NAME_BY_CODE.get(code, code),
+            record = TradeRecord(event["date"], code, security_name(code),
                                  "dividend", entitled, amount, account=ACCOUNT,
                                  event_id=event_id, pay_date=event["pay_date"],
                                  reasons=[f"权益登记日 {registered}，红利发放日 {event['pay_date']}"])

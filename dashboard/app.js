@@ -334,7 +334,7 @@ function openEntry(account, suggestion, strategy='unassigned') {
   field('date').max = field('date').value;
   field('strategy').value = strategy;
   if (suggestion) {
-    for (const key of ['side','code','name','qty']) field(key).value = suggestion[key];
+    for (const key of ['side','code','qty']) field(key).value = suggestion[key];
   }
   // 建议价格只用于估算，实际成交均价必须由用户填写。
   function update() {
@@ -342,7 +342,7 @@ function openEntry(account, suggestion, strategy='unassigned') {
     const assign = field('side').value === 'assign';
     document.querySelectorAll('[data-trade-field]').forEach(label => {
       const input = label.querySelector('input,select');
-      const shown = trade || (assign && !['price','fee','name'].includes(input.name));
+      const shown = trade || (assign && !['price','fee'].includes(input.name));
       label.hidden = !shown; input.disabled = !shown;
     });
     field('strategy').parentElement.hidden = false;
@@ -370,7 +370,7 @@ function openEntry(account, suggestion, strategy='unassigned') {
     if (side==='assign') {
       Object.assign(payload, {code:field('code').value, qty:Number(field('qty').value), strategy:field('strategy').value, from_strategy:field('from_strategy').value});
     } else if (['buy','sell'].includes(side)) {
-      Object.assign(payload, {code:field('code').value, name:field('name').value, qty:Number(field('qty').value), price:Number(field('price').value), fee:Number(field('fee').value), strategy:field('strategy').value});
+      Object.assign(payload, {code:field('code').value, qty:Number(field('qty').value), price:Number(field('price').value), fee:Number(field('fee').value), strategy:field('strategy').value});
     } else {
       payload.amount=Number(field('amount').value);
       payload.strategy=field('strategy').value;

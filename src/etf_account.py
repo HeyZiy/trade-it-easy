@@ -11,6 +11,7 @@ import tempfile
 import time
 
 from data_provider import canonical_stock_code
+from data_provider.security_names import security_name
 
 FILENAME = "etf_account.json"
 ACCOUNT_PATH = Path("data") / FILENAME
@@ -120,7 +121,7 @@ def initialize(path, *, asof, cash, positions, targets=None, budgets=None, cash_
         if (strategy, code) in codes or not _positive(count) or int(count) != count:
             raise ValueError("代码不得重复，份额须为正整数")
         codes.add((strategy, code))
-        rows.append({"code": code, "name": item["name"], "count": int(count), "price": price, "strategy": strategy})
+        rows.append({"code": code, "count": int(count), "price": price, "strategy": strategy})
     if not rows:
         raise ValueError("初始化持仓不能为空")
     targets = {canonical_stock_code(c): float(w) for c, w in (targets or {}).items()}
@@ -160,7 +161,7 @@ def snapshot(state, asof, prices=None):
     initial = state["initial"]
     cash, units = initial["cash"], initial["equity"]
     cash_by_strategy = _cash_allocation(initial.get("cash_allocations", {}), cash)
-    held = {(r.get("strategy", "unassigned"), r["code"]): {**r, "strategy": r.get("strategy", "unassigned"), "avail_count": r["count"]} for r in initial["positions"]}
+    held = {(r.get("strategy", "unassigned"), r["code"]): {**r, "name": security_name(r["code"]), "strategy": r.get("strategy", "unassigned"), "avail_count": r["count"]} for r in initial["positions"]}
     marks = {r["code"]: r["price"] for r in initial["positions"]}
     net_capital = {"core": 0.0, "rotation": 0.0, "unassigned": 0.0}
     for row in initial["positions"]:
@@ -205,8 +206,8 @@ def snapshot(state, asof, prices=None):
         else:
             code, qty, price = event["code"], event["qty"], event["price"]
             strategy = event.get("strategy", "unassigned")
-            row = held.setdefault((strategy, code), {"code": code, "name": event["name"], "strategy": strategy, "count": 0, "avail_count": 0})
-            row["name"] = event["name"]
+            row = held.setdefault((strategy, code), {"code": code, "name": security_name(event["code"]), "strategy": strategy, "count": 0, "avail_count": 0})
+            row["name"] = security_name(event["code"])
             marks[code] = price
             if side == "buy":
                 row["count"] += qty
@@ -309,16 +310,14 @@ def suggestions(state, view):
 def baseline(state):
     from src.etf.config import AssetAllocation, AssetType
 
-    names = {r["code"]: r["name"] for r in state["initial"]["positions"]}
     result = []
     for code, weight in state["targets"].items():
         asset_type = AssetType.EQUITY
-        name = names.get(code, code)
         if code == "CASH":
-            asset_type, name = AssetType.CASH, "现金"
+            asset_type = AssetType.CASH
         elif code == "159934":
             asset_type = AssetType.GOLD
-        result.append(AssetAllocation(code, name, asset_type, weight, 0))
+        result.append(AssetAllocation(code, asset_type, weight, 0))
     return result
 
 
@@ -417,10 +416,7 @@ def record_event(path, payload):
                 raise ValueError("该策略现金不足，请先分配现金")
             if side == "sell" and round(view["cash_by_strategy"][strategy] + qty * price - fee, 2) < 0:
                 raise ValueError("该策略现金不足以扣除费用")
-            name = str(payload.get("name", "")).strip()
-            if not name or len(name) > 80:
-                raise ValueError("请填写有效的标的名称")
-            event.update(code=code, name=name, qty=int(qty), price=price, fee=float(fee), strategy=strategy)
+            event.update(code=code, qty=int(qty), price=price, fee=float(fee), strategy=strategy)
         else:
             strategy = payload.get("strategy", "unassigned")
             if strategy not in {"core", "rotation", "unassigned"}:
@@ -506,8 +502,9 @@ def account_data(path):
     if records and (not latest or latest["date"] != records[-1]["date"]):
         warnings.append("最新成绩待重新估值，曲线保留最近有效数据。")
     return {"id": "etf", "name": "ETF账户", "can_record": True, **view,
-            "performance": latest, "trades": [{k: v for k, v in e.items() if k != "request"}
-                                              for e in reversed(state["events"])][:20],
+            "performance": latest, "trades": [{**{k: v for k, v in e.items() if k != "request"},
+                         **({"name": security_name(e["code"])} if e.get("code") else {})}
+                       for e in reversed(state["events"])][:20],
             "start_date": state["initial"]["date"], "initial_equity": state["initial"]["equity"],
             "revision": revision(state), "suggestions": [],
             "strategies": strategy_views(state, view),

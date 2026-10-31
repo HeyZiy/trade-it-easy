@@ -15,6 +15,7 @@ from pathlib import Path
 import time
 
 from src.trade_ledger.ledger import derive, load_trades
+from data_provider.security_names import security_name
 from src.trade_ledger.performance import load_performance, valid_records
 from src.etf_account import FILENAME as ETF_FILENAME, account_data as etf_account_data
 
@@ -121,9 +122,9 @@ def account_data(root, filename):
     if rows and (not latest or latest["date"] != rows[-1]["date"]):
         warnings.append("最近收盘成绩不完整或流水已变更，显示最近有效成绩。")
     return {
-        "positions": snapshot.positions, "cash": snapshot.cash,
+        "positions": [{**p, "name": security_name(p["code"])} for p in snapshot.positions], "cash": snapshot.cash,
         "receivables": snapshot.receivables,
-        "trades": [asdict(t) for t in reversed(trades)],
+        "trades": [{**asdict(t), "name": security_name(t.code)} for t in reversed(trades)],
         "performance": latest, "warnings": warnings,
         "history": history,
         "benchmark_name": performance.get("benchmark", {}).get("name", "同期基准"),

@@ -82,3 +82,6 @@ CLAUDE.md
 *.pkl
 *.json
 
+
+# 行情源证券简称缓存
+data/security_names.sqlite3*

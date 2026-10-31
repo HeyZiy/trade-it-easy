@@ -39,7 +39,6 @@
           <label hidden>分配来源<select name="from_strategy" disabled><option value="unassigned">未分配</option><option value="core">核心配置</option><option value="rotation">跨资产轮动</option></select></label>
           <label data-strategy-field>策略<select name="strategy"><option value="unassigned">未分配</option><option value="core">核心配置</option><option value="rotation">跨资产轮动</option></select></label>
           <label data-trade-field>证券代码<input name="code" inputmode="numeric" pattern="[0-9]{6}" maxlength="6" required></label>
-          <label data-trade-field>标的名称<input name="name" maxlength="80" required></label>
           <label data-trade-field>成交份额<input name="qty" type="number" min="1" step="1" required></label>
           <label data-trade-field>成交均价 / 元<input name="price" type="number" min="0.000001" step="any" required></label>
           <label data-trade-field>手续费 / 元<input name="fee" type="number" min="0" step="0.01" value="0" required></label>

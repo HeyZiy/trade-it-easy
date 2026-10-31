@@ -66,7 +66,7 @@ def test_odd_lot_leg_becomes_todo_not_abort_order():
     positions = [_pos("515180", "红利ETF", 50, 1.0, mv=50)]
     orders, _, odd = R.compare(TARGET, positions, 200)
     assert "515180" not in _orders_by_code(orders)
-    assert odd == [{"code": "515180", "name": "红利ETF", "count": 50}]
+    assert odd == [{"code": "515180", "name": "515180", "count": 50}]
 
 
 def test_sell_clamped_to_held_and_floored():

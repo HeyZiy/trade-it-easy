@@ -42,6 +42,7 @@ from datetime import date, datetime
 from pathlib import Path
 from typing import List, Optional
 
+from data_provider.security_names import security_name
 from src.config import setup_env
 from src.cron_entry import add_standard_flags, hard_exit, resolve_run_gate
 from src.logging_config import setup_logging
@@ -147,7 +148,7 @@ def run(dry_run: bool = False, trade_date: Optional[str] = None) -> str:
     held_codes = [p["code"] for p in unpriced.positions]
     missing_quotes = [code for code in held_codes if code not in prices]
     snap = derive(trades, trade_date, prices)
-    positions = snap.positions
+    positions = [{**p, "name": security_name(p["code"])} for p in snap.positions]
     total_assets = snap.total_assets
     avail_cash = snap.cash
 
@@ -255,7 +256,7 @@ def run(dry_run: bool = False, trade_date: Optional[str] = None) -> str:
         for pos in fresh:
             mv = float(pos.get("market_value", 0) or 0)
             pct = mv / total_assets * 100 if total_assets > 0 else 0
-            lines.append(f"- {pos.get('name', '')}({pos.get('code', '')}) "
+            lines.append(f"- {security_name(pos['code'])}({pos.get('code', '')}) "
                          f"{pos.get('count', 0)}股 ≈ {mv:,.0f}元（{pct:.1f}%）")
         lines.append("")
     else:
