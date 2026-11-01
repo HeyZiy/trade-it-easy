@@ -76,7 +76,7 @@ def get_industry_base() -> Optional[pd.DataFrame]:
     if info is None:
         return None
     try:
-        df = info.get_industry_base_info()
+        df = info.get_industry_base_info(local_path=LOCAL_DATA_DIR, is_local=False)
         if df is None or df.empty:
             return None
         _industry_base_cache = df
