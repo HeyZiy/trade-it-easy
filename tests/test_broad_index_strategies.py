@@ -5,7 +5,7 @@ from unittest.mock import patch
 import numpy as np
 import pandas as pd
 
-from research.studies.broad_index_strategies.common import backtest as b
+from research.studies.timing.common import backtest as b
 
 
 def prices(rows, start='2020-01-02'):

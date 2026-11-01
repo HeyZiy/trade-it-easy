@@ -3,7 +3,7 @@ import unittest
 import numpy as np
 import pandas as pd
 
-from research.studies.broad_index_strategies.common import atr_channel as a
+from research.studies.timing.common import atr_channel as a
 
 
 def prices(rows):

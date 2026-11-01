@@ -21,7 +21,7 @@ from typing import Dict, List, Optional
 
 import pandas as pd
 
-from src.etf.config import asset_settings, is_dividend_style
+from src.etf.config import AssetAllocation
 
 logger = logging.getLogger(__name__)
 
@@ -401,7 +401,7 @@ def get_csindex_valuation(index_code: str) -> Optional[dict]:
 
 
 
-def _etf_pe_info(etf_code: str) -> Optional[dict]:
+def _etf_pe_info(etf: AssetAllocation, y10: Optional[float]) -> Optional[dict]:
     """单只 ETF 的估值信息——唯一口径 = 跟踪指数自身估值（TRACKED_INDEX → csindex）。
 
     不做兜底：未配跟踪指数锚、或中证官网未取到时返回 None，由消费方显示"无估值锚"。
@@ -409,13 +409,10 @@ def _etf_pe_info(etf_code: str) -> Optional[dict]:
     优先级与警示，已收归市场级口径（get_market_pe，仅报告第一/三节使用）。
     csindex 不提供分位（决策记录见 get_csindex_valuation），故返回值无 pe_pct。
     """
-    code = str(etf_code).zfill(6)
-
-    settings = asset_settings(code)
-    if settings.get("valuation_kind") == "overseas":
+    if etf.valuation_kind == "overseas":
         return {"source_type": "overseas", "pe": None, "source_name": "海外"}
 
-    index_code = settings.get("tracked_index")
+    index_code = etf.tracked_index
     if not index_code:
         return None
     val = get_csindex_valuation(index_code)
@@ -430,27 +427,27 @@ def _etf_pe_info(etf_code: str) -> Optional[dict]:
     # 股息率与利差（股息率 − 10Y 国债，跨资产口径，零历史依赖）
     if val.get("dy") is not None:
         info["div_yield"] = val["dy"]
-        y10 = get_treasury_yield_y10()
         if y10:
             info["div_yield_spread"] = round(val["dy"] - y10, 2)
     return info
 
 
-def etf_valuation_rows(etf_list) -> list:
-    """各核心 ETF 的估值参考行（锚=跟踪指数当前 PE/股息率；跨标的不可比，仅展示）。"""
+def etf_valuation_rows(etf_list, *, y10: Optional[float]) -> list:
+    """按传入配置与国债收益率取估值参考行，不再读取生效配置；仅展示。"""
     results = []
     for etf in etf_list:
-        info = _etf_pe_info(etf.code)
+        info = _etf_pe_info(etf, y10)
         level_text = ""
         if info is None:
             level_text = "无估值锚（未配跟踪指数或中证官网未取到）"
-        elif is_dividend_style(str(etf.code).zfill(6)):
+        elif etf.dividend_style:
             if info.get("div_yield_spread") is not None:
                 level_text = f"利差 {info['div_yield_spread']:+.1f}pt（≥1.5 视同低估）"
             elif info.get("div_yield") is not None:
                 level_text = "股息率口径"
         results.append({
             "code": etf.code, "name": etf.name,
+            "dividend_style": etf.dividend_style,
             "pe": info.get("pe") if info else None,
             "div_yield": info.get("div_yield") if info else None,
             "div_yield_spread": info.get("div_yield_spread") if info else None,

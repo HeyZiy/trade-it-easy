@@ -64,18 +64,17 @@ LABEL = "ETF跨资产动量轮动"
 
 
 def _account_advice(trade_date, rows, prices, diag, *, dry_run=False, error=None):
-    from src.etf_account import ACCOUNT_PATH
-    from src.etf.rotation_advice import publish
+    from src.etf_account import ACCOUNT_PATH, publish_rotation
 
     try:
-        return publish(trade_date, rows, prices, diag, path=Path(ACCOUNT_PATH),
-                       dry_run=dry_run, error=error)
+        return publish_rotation(trade_date, rows, prices, diag, path=Path(ACCOUNT_PATH),
+                                dry_run=dry_run, error=error)
     except Exception:
         logger.exception("ETF账户轮动建议生成失败")
         if not dry_run:
             try:
-                publish(trade_date, [], {}, {}, path=Path(ACCOUNT_PATH),
-                        error="账户建议生成失败，等待更新")
+                publish_rotation(trade_date, [], {}, {}, path=Path(ACCOUNT_PATH),
+                                 error="账户建议生成失败，等待更新")
             except Exception:
                 logger.exception("ETF账户建议暂停状态保存失败")
         return "账户建议生成失败，请检查日志"

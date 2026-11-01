@@ -1,11 +1,12 @@
-"""共享账户的轮动建议：保存行情事实，每次按已确认持仓重算，不写成交。"""
+"""轮动建议的完整规则：信号延续、首次成交买入计划、剩余份额与整组忽略。
+
+只接收账户提供的策略事实和版本，不读取账户文件；加锁与保存由账户 module 负责。
+"""
 
 from dataclasses import asdict
-from datetime import date
 import hashlib
 import json
 import math
-from pathlib import Path
 
 from src.etf.rotation import (
     ACCOUNT, COMMISSION, MIN_COMMISSION, RotationRow, affordable_shares, plan_rotation, top_candidate,
@@ -14,11 +15,14 @@ from src.etf.momentum import EtfOrder
 from data_provider.security_names import security_name
 
 
-def make_signal(day, rows, prices, diag, error=None):
+def make_signal(day, rows, prices, diag, error=None, *, previous=None):
+    """更新行情并延续同目标买入计划；旧日期返回 None，不覆盖已有信号。"""
+    if previous and previous["date"] > day:
+        return None
     # 非合格标的可能包含 NaN；JSON 中统一为空，不影响候选排序。
     facts = [{key: (None if isinstance(value, float) and not math.isfinite(value) else value)
               for key, value in asdict(row).items() if key != "name"} for row in rows]
-    return {"date": day, "rows": facts,
+    signal = {"date": day, "rows": facts,
             "prices": {code: value for code, value in prices.items()
                        if isinstance(value, (int, float)) and math.isfinite(value) and value > 0},
             "issues": error or (
@@ -26,13 +30,15 @@ def make_signal(day, rows, prices, diag, error=None):
                 (diag.get("decision_date") and diag["decision_date"] != day) or
                 any(diag.get("skipped", {}).get(k, 0)
                     for k in ("no_bars", "stale", "bad_close", "duplicate")) else None)}
+    target = top_candidate(rows)
+    intent = previous.get("buy_intent") if previous else None
+    if intent and (signal["issues"] or (target and target.code == intent["code"])):
+        signal["buy_intent"] = dict(intent)
+    return signal
 
 
-def advice(state, strategy, today):
+def advice(signal, strategy, today, *, account_revision, dismissed):
     """返回建议及空列表的具体原因；信号跨日失效，成交后按最新持仓重算。"""
-    from src.etf_account import revision
-
-    signal = state.get("rotation_signal")
     if not signal:
         return [], "等待交易日更新"
     if signal["date"] != today.isoformat():
@@ -95,7 +101,7 @@ def advice(state, strategy, today):
     result = []
     for order in orders:
         identity = hashlib.sha256(
-            f"rotation:{key}:{revision(state)}:{order.code}:{order.action}:{order.shares}".encode()
+            f"rotation:{key}:{account_revision}:{order.code}:{order.action}:{order.shares}".encode()
         ).hexdigest()[:24]
         current = next((p for p in positions if p["code"] == order.code), None)
         current_value = round(current["count"] * prices[order.code], 2) if current else 0
@@ -108,36 +114,30 @@ def advice(state, strategy, today):
                        "reason": order.reason,
                        "cash_note": "需先卖出回款" if order.action == "buy" and plan["sells"] else None})
     # 先卖后买属于一组建议，忽略卖出时不能留下依赖其回款的买入。
-    if any(item["id"] in state["dismissed"] for item in result):
+    if any(item["id"] in dismissed for item in result):
         return [], "本轮建议已忽略"
     return result, "先卖后买" if plan["sells"] and plan["buys"] else "建议已更新"
 
 
-def publish(day, rows, prices, diag, *, path, dry_run=False, error=None):
-    """只更新行情信号；持仓、资金、净值与流水保持不变。"""
-    from src.etf_account import _locked, _save, load, snapshot, strategy_views
+def on_event(signal, event, strategy, today, *, account_revision, dismissed):
+    """首次匹配建议的买入确定本轮目标份额；后续成交及资金变化不扩大该计划。"""
+    if (not signal or signal.get("buy_intent") or event["side"] != "buy"
+            or event.get("strategy") != "rotation"):
+        return signal
+    planned, _ = advice(signal, strategy, today,
+                        account_revision=account_revision, dismissed=dismissed)
+    buy = next((item for item in planned
+                if item["side"] == "buy" and item["code"] == event["code"]), None)
+    if buy is None:
+        return signal
+    held = sum(p["count"] for p in strategy["positions"] if p["code"] == event["code"])
+    return {**signal, "buy_intent": {"code": buy["code"], "qty": held + buy["qty"]}}
 
-    path = Path(path)
-    if not path.exists():
-        return "ETF账户尚未初始化"
-    with _locked(path):
-        state = load(path)
-        existing = state.get("rotation_signal")
-        if existing and existing["date"] > day:
-            return "已有更新日期的账户建议，本次未覆盖"
-        state["rotation_signal"] = make_signal(day, rows, prices, diag, error)
-        # 报告与网页使用同一份规划；日期由调用方明确传入。
-        view = snapshot(state, day)
-        target = top_candidate(rows)
-        previous_intent = existing.get("buy_intent") if existing else None
-        if previous_intent and (state["rotation_signal"]["issues"] or
-                                (target and target.code == previous_intent["code"])):
-            state["rotation_signal"]["buy_intent"] = previous_intent
-        strategy = strategy_views(state, view, today=date.fromisoformat(day))[1]
-        if not dry_run:
-            _save(path, state)
-    lines = [strategy["advice_status"]]
-    for item in strategy["suggestions"]:
+
+def render(suggestions, status):
+    """任务报告与网页消费同一份建议结果。"""
+    lines = [status]
+    for item in suggestions:
         action = "卖出" if item["side"] == "sell" else "买入"
         lines.append(f"- {action} {item['name']}({item['code']}) 约 {item['qty']:,} 份"
                      f" · 约 {item['amount']:,.2f} 元")

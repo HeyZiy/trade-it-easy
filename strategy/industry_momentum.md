@@ -2,8 +2,8 @@
 
 > 策略身份：日频行业横截面动量策略，交易行业相对强弱的延续。与趋势回踩可能
 > 共同暴露于同一主线，预算上不视为天然分散；账户层边界见 [overview.md](./overview.md)。
-> 现行交易规则 v3\_3\_2，实验沿革与各版本对照见
-> `research/studies/industry_momentum/`。
+> 现行交易规则 v3\_3\_2；生产规则出处（lM_v3_3_2）与现行研究基线
+> （lM_v5 最简合理版）见 `research/studies/industry_momentum/`。
 >
 > 交易规则沿用 v3\_3\_2，评分修正后的绩效待验证；生产引擎 `src/etf/industry_momentum.py`
 > 已同日对齐：退出判定从持仓期收盘序列无状态重算（score 逐日重放、保本置位

@@ -12,8 +12,8 @@ from unittest.mock import patch
 import numpy as np
 import pandas as pd
 
-from research.studies.broad_index_strategies import run_level2 as s
-from research.studies.broad_index_strategies.assets import AssetSpec
+from research.studies.timing import run_level2 as s
+from research.studies.timing.assets import AssetSpec
 
 
 def history():

@@ -1,12 +1,14 @@
 """轮动建议使用共享账户事实，绝不把独立模拟或建议当作成交。"""
+from concurrent.futures import ThreadPoolExecutor
 from datetime import date
+from threading import Barrier
 from uuid import uuid4
 
 import pytest
 
 from src import etf_account as wallet
 from src.etf.rotation import RotationRow
-from src.etf.rotation_advice import publish
+from src.etf_account import publish_rotation as publish
 
 
 @pytest.fixture
@@ -32,7 +34,7 @@ def update(path, *, code='510300', price=2, eligible=True, issue=None, dry_run=F
 
 
 def strategy(path):
-    return wallet.account_data(path)['strategies'][1]
+    return next(row for row in wallet.account_data(path)['strategies'] if row['id'] == 'rotation')
 
 
 def test_publish_changes_no_money_positions_nav_or_transactions(account):
@@ -214,3 +216,103 @@ def test_cash_increase_before_any_fill_replans_full_purchase(account):
     assert strategy(account)['suggestions'][0]['qty'] == 200
     event(account, 'cash_assign', cash_allocations={'core': 1000, 'rotation': 2000})
     assert strategy(account)['suggestions'][0]['qty'] == 900
+
+
+def test_fill_retry_cash_increase_and_signal_recovery_keep_original_remaining(account, monkeypatch):
+    event(account, 'cash_assign', cash_allocations={'core': 2500, 'rotation': 500})
+    update(account)
+    assert strategy(account)['suggestions'][0]['qty'] == 200
+    payload = dict(request_id=str(uuid4()), revision=wallet.revision(wallet.load(account)),
+                   date='2025-01-07', side='buy', strategy='rotation', code='510300',
+                   qty=100, price=2, fee=5)
+    wallet.record_event(account, payload)
+    event(account, 'cash_assign', cash_allocations={'core': 795, 'rotation': 2000})
+    before_retry = account.read_bytes()
+    wallet.record_event(account, payload)
+    assert account.read_bytes() == before_retry
+    assert strategy(account)['suggestions'][0]['qty'] == 100
+
+    update(account, issue='行情更新失败，暂停建议')
+    assert not strategy(account)['suggestions']
+    monkeypatch.setattr(wallet, '_today', lambda: date(2025, 1, 8))
+    row = RotationRow('510300', '目标', '股票', 2, 2, 1, True, 1)
+    publish('2025-01-08', [row], {'510300': 2}, {}, path=account)
+    assert strategy(account)['suggestions'][0]['qty'] == 100
+    wallet.record_event(account, dict(request_id=str(uuid4()), revision=wallet.revision(wallet.load(account)),
+                                     date='2025-01-08', side='buy', strategy='rotation', code='510300',
+                                     qty=100, price=2, fee=5))
+    assert not strategy(account)['suggestions']
+    assert strategy(account)['positions'][0]['count'] == 200
+
+
+def test_new_target_after_partial_buy_starts_its_own_remaining_plan(account, monkeypatch):
+    update(account)
+    event(account, 'buy', code='510300', qty=400, price=2, fee=5)
+    monkeypatch.setattr(wallet, '_today', lambda: date(2025, 1, 8))
+    row = RotationRow('513500', '新目标', '股票', 2, 2, 1, True, 1)
+    publish('2025-01-08', [row], {'510300': 2, '513500': 2}, {}, path=account)
+    sell, buy = strategy(account)['suggestions']
+    assert (sell['code'], sell['qty']) == ('510300', 400)
+    assert (buy['code'], buy['qty']) == ('513500', 900)
+    for side, code, qty in [('sell', '510300', 400), ('buy', '513500', 300)]:
+        wallet.record_event(account, dict(request_id=str(uuid4()), revision=wallet.revision(wallet.load(account)),
+                                         date='2025-01-08', side=side, strategy='rotation', code=code,
+                                         qty=qty, price=2, fee=5))
+    publish('2025-01-08', [row], {'510300': 2, '513500': 2}, {}, path=account)
+    remaining, = strategy(account)['suggestions']
+    assert (remaining['code'], remaining['qty']) == ('513500', 600)
+    assert all(p['code'] != '510300' for p in strategy(account)['positions'])
+
+
+def test_dismissed_switch_stays_hidden_until_target_changes(account, monkeypatch):
+    event(account, 'buy', code='513100', qty=500, price=2, fee=5)
+    monkeypatch.setattr(wallet, '_today', lambda: date(2025, 1, 8))
+    row = RotationRow('510300', '目标', '股票', 2, 2, 1, True, 1)
+    prices = {'510300': 2, '513100': 2}
+    publish('2025-01-08', [row], prices, {}, path=account)
+    sell, buy = strategy(account)['suggestions']
+    wallet.dismiss(account, dict(revision=wallet.revision(wallet.load(account)), id=sell['id']))
+    publish('2025-01-08', [row], prices, {}, path=account)
+    assert not strategy(account)['suggestions']
+    assert strategy(account)['advice_status'] == '本轮建议已忽略'
+
+    row.code = '513500'
+    publish('2025-01-08', [row], {'513500': 2, '513100': 2}, {}, path=account)
+    sell, buy = strategy(account)['suggestions']
+    assert sell['code'] == '513100' and buy['code'] == '513500'
+
+
+def test_failed_buy_does_not_fix_an_unexecuted_plan(account):
+    event(account, 'cash_assign', cash_allocations={'core': 2500, 'rotation': 500})
+    update(account)
+    before = account.read_bytes()
+    with pytest.raises(ValueError, match='现金不足'):
+        event(account, 'buy', code='510300', qty=1000, price=2, fee=5)
+    assert account.read_bytes() == before
+    event(account, 'cash_assign', cash_allocations={'core': 1000, 'rotation': 2000})
+    assert strategy(account)['suggestions'][0]['qty'] == 900
+
+
+def test_signal_publication_and_first_fill_do_not_lose_each_other(account):
+    update(account)
+    payload = dict(request_id=str(uuid4()), revision=wallet.revision(wallet.load(account)),
+                   date='2025-01-07', side='buy', strategy='rotation', code='510300',
+                   qty=400, price=2, fee=5)
+    start = Barrier(2)
+
+    def publish_again():
+        start.wait(timeout=5)
+        return update(account)
+
+    def fill():
+        start.wait(timeout=5)
+        return wallet.record_event(account, payload)
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        publication, trade = pool.submit(publish_again), pool.submit(fill)
+        publication.result(timeout=10)
+        trade.result(timeout=10)
+    remaining, = strategy(account)['suggestions']
+    assert remaining['qty'] == 500
+    assert len(wallet.load(account)['events']) == 1
+    assert strategy(account)['positions'][0]['count'] == 400

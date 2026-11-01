@@ -4,7 +4,7 @@ import unittest
 import numpy as np
 import pandas as pd
 
-from research.studies.broad_index_strategies.common import donchian as d
+from research.studies.timing.common import donchian as d
 
 
 def prices():

@@ -12,7 +12,6 @@ CORE_BASELINE = example_baseline()
 
 @pytest.fixture(autouse=True)
 def baseline_for_trend_tests(monkeypatch):
-    monkeypatch.setattr(eo, "_baseline", lambda: CORE_BASELINE)
     monkeypatch.setattr(eo, "_raw_trend_bars_ad", lambda codes, end: {})
 
 
@@ -74,7 +73,7 @@ def test_fetch_failure_is_isolated_and_uses_each_configured_etf(monkeypatch):
         return history()
 
     monkeypatch.setattr(provider, "get_etf_daily_em", fetch)
-    observations = eo._fetch_trend_observations()
+    observations = eo._fetch_trend_observations(CORE_BASELINE)
     assert observations["563360"]["state"] is None
     assert observations["513180"]["state"] is False
     assert "513380" not in calls
@@ -92,7 +91,7 @@ def test_amazingdata_is_primary_and_eastmoney_only_fills_missing(monkeypatch):
 
     monkeypatch.setattr(eo, "_raw_trend_bars_ad", lambda codes, end: {"513180": history()})
     monkeypatch.setattr(provider, "get_etf_daily_em", fetch)
-    observations = eo._fetch_trend_observations()
+    observations = eo._fetch_trend_observations(CORE_BASELINE)
     assert observations["513180"]["source"] == "AmazingData"
     assert "513180" not in calls
     assert set(calls) == {a.code for a in CORE_BASELINE if a.code not in ("CASH", "513180")}
@@ -107,7 +106,7 @@ def test_amazingdata_bulk_failure_falls_back_to_eastmoney(monkeypatch):
 
     monkeypatch.setattr(eo, "_raw_trend_bars_ad", unavailable)
     monkeypatch.setattr(provider, "get_etf_daily_em", lambda code, end: history())
-    observations = eo._fetch_trend_observations()
+    observations = eo._fetch_trend_observations(CORE_BASELINE)
     assert observations["513180"]["state"] is False
     assert all(item["source"] == "东财" for item in observations.values())
 
@@ -118,7 +117,7 @@ def test_amazingdata_series_too_short_falls_back_to_eastmoney(monkeypatch):
     monkeypatch.setattr(eo, "_raw_trend_bars_ad",
                         lambda codes, end: {"513180": history().iloc[:20]})
     monkeypatch.setattr(provider, "get_etf_daily_em", lambda code, end: history())
-    observations = eo._fetch_trend_observations()
+    observations = eo._fetch_trend_observations(CORE_BASELINE)
     assert observations["513180"]["source"] == "东财"
 
 
@@ -128,8 +127,9 @@ def test_report_columns_share_snapshot_and_do_not_change_target_or_plan(monkeypa
     alloc = {"positions": [], "total_assets": 100_000.,
              "core_positions": [], "target": target, "plan": plan}
     valuations = [{"code": "515180", "name": "红利ETF", "pe": 8.,
-                   "div_yield": 5., "div_yield_spread": 3., "source_name": "中证红利"}]
-    ctx = eo.WeekContext(None, None, None, alloc,
+                   "div_yield": 5., "div_yield_spread": 3., "source_name": "中证红利",
+                   "dividend_style": True}]
+    ctx = eo.WeekContext(None, None, None, alloc, baseline=CORE_BASELINE,
                          trends={"513180": {"state": False, "asof": "2026-10-14"}},
                          valuations=valuations)
 

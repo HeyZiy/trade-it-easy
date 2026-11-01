@@ -7,7 +7,7 @@ ETF 趋势分引擎 — 打分与订单的单点实现
 CONTEXT.md「趋势分」：25 根已完成日线收盘 + 当日现价共 26 点，对对数价格做
 加权线性回归（权重 1→2 线性升），分 = 年化涨幅 × 加权 R²；近 3 个日环比
 任一 < 0.95（跳水）清零。公式与两条研究线一致（etf_rotation 的
-unified_coverage.calculate_momentum_score、行业动量的 lM_v3_3_2/4），
+unified_coverage.calculate_momentum_score、行业动量的 lM_v3_3_2），
 消费方只调不抄。
 
 消费方（src/etf/rotation.py 跨资产轮动、src/etf/industry_momentum.py

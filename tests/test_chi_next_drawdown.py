@@ -2,7 +2,7 @@
 import numpy as np
 import pandas as pd
 
-from research.studies.broad_index_strategies.experiments import chi_next_drawdown as probe
+from research.studies.timing.experiments import chi_next_drawdown as probe
 
 
 def account():

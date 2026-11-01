@@ -76,8 +76,10 @@ def test_missing_initialization_never_uses_old_core_ledger(tmp_path, monkeypatch
     view = dashboard_data(tmp_path)['accounts'][0]
     assert view['error'] == 'ETF账户尚未初始化'
     assert not view['positions']
-    with pytest.raises(FileNotFoundError, match='尚未初始化'):
-        allocation._raw_snapshot()
+    from src import portfolio_config
+    portfolio_config.create(portfolio_config.path_for(path), portfolio_config.example())
+    _, snap = allocation._raw_snapshot()
+    assert snap is None
     assert old.read_bytes() == before
 
 

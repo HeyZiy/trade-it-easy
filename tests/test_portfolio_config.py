@@ -92,14 +92,12 @@ def test_history_can_restore_and_removed_asset_remains_held(account):
     assert config.load(config.path_for(account))==current['config']
 
 
-def test_metadata_changes_take_effect_without_restart(account,monkeypatch):
-    from src.etf.config import asset_settings
-    monkeypatch.setattr(config,'DEFAULT_PATH',config.path_for(account))
-    assert asset_settings('512010')['tracked_index']=='000913'
+def test_metadata_changes_take_effect_without_restart(account):
+    assert config.allocations(config.load(config.path_for(account)))[0].tracked_index=='000913'
     current=config.data(account);changed=deepcopy(current['config'])
     changed['core'][0]['tracked_index']='000922'
     config.update(account,{'revision':current['revision'],'config':changed})
-    assert asset_settings('512010')['tracked_index']=='000922'
+    assert config.allocations(config.load(config.path_for(account)))[0].tracked_index=='000922'
 
 
 def test_legacy_migration_is_exact_and_never_overwrites_new_config(tmp_path):

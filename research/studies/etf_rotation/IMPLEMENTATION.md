@@ -35,7 +35,7 @@
 | `python research/studies/etf_rotation/study_etf_fit_forward.py` | 本目录三个fit_*导出 | results/fit_forward_*.csv |
 | `python research/studies/etf_rotation/study_etf_fit_control.py` | 同上 | results/fit_control_*.csv与口径JSON |
 
-行业与跨资产的既有六账户导出、比较结果及行业数据面板已迁入industry_momentum；其复核说明见[行业材料入口](../industry_momentum/IMPLEMENTATION.md)，不作为跨资产策略的运行步骤。
+行业与跨资产的既有六账户导出、比较结果已于2026-11-01随行业目录断舍离清除；温度面板与37池行情现归 etf_timing 研究线使用。这些材料不作为跨资产策略的运行步骤。
 
 ## 生产入口
 

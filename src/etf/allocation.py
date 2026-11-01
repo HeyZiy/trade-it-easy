@@ -1,15 +1,14 @@
 # -*- coding: utf-8 -*-
-"""周度批次——ETF 核心仓统一调仓闭环（规格唯一来源 strategy/etf_allocation.md）。
+"""周度批次——ETF 核心配置观察与再平衡建议。
 
 单动词 interface：run() -> str，完成账户快照 → 再平衡建议 → 周报。
 ETF账户台账由用户确认成交记账，报告生成不写入成交。
 
-数据 seam（测试注入假数据的唯一入口，家法同 quality_pool/feeds.py）：
-每个外部取数一个 *_raw 薄包装（函数内懒导入），测试经 monkeypatch 替换本模块的
-*_raw 函数注入假数据，不 patch 更深的数据源模块：
+数据 seam：行情取数经 *_raw 函数进入（函数内懒导入），账户与配置由账户 module
+一次读取。完整报告可用临时账户文件与替代行情 adapter 验证：
   _raw_market_pe / _raw_treasury_yield_y10 / _raw_erp_percentile  市场估值三件套
   _raw_valuation_rows    标的级估值行（跟踪指数 PE/股息率）
-  _raw_snapshot          ETF账户台账读侧（持仓+价格快照）
+  _raw_snapshot          同一批次的生效配置与核心账户快照
   _raw_trend_bars_ad     唐奇安观察日线（AmazingData 累积复权，主源，批量）
   _raw_trend_bars        唐奇安观察日线（东财 hfq，备源）
   _raw_daily_close       补价日线收盘
@@ -24,14 +23,10 @@ from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from typing import List, Optional
 
-from src.etf.config import is_dividend_style, AssetType, pe_level
+from src.etf.config import AssetAllocation, AssetType, pe_level
 
 logger = logging.getLogger(__name__)
 
-
-def _baseline():
-    from src.etf_account import ACCOUNT_PATH, baseline, load
-    return baseline(load(ACCOUNT_PATH))
 
 # ── 数据 seam：每个外部取数一个薄包装（懒导入），测试只替换这里 ──
 
@@ -53,14 +48,14 @@ def _raw_erp_percentile():
     return get_erp_percentile()
 
 
-def _raw_valuation_rows(equity_etfs):
+def _raw_valuation_rows(equity_etfs, y10):
     """标的级估值行：跟踪指数 PE/股息率（src.etf.amazing_factors）。"""
     from src.etf.amazing_factors import etf_valuation_rows
-    return etf_valuation_rows(equity_etfs)
+    return etf_valuation_rows(equity_etfs, y10=y10)
 
 
 def _raw_snapshot():
-    """读取核心配置策略的持仓、现金与估值快照。"""
+    """一次读取配置及核心策略事实；配置无效抛出，账户不可用返回空快照。"""
     from src.etf_account import ACCOUNT_PATH, strategy_snapshot
     return strategy_snapshot(ACCOUNT_PATH)
 
@@ -95,20 +90,24 @@ def _raw_realtime_quotes(codes):
 class WeekContext:
     """一次装配的取数快照；渲染节只读此上下文，不再各自发起同主题取数。
 
-    market_pe/y10/erp_pct 单点取齐（市场宏观节估值三件套）；
+    baseline 使用启动时配置，market_pe/y10/erp_pct 单点取齐；
     alloc 为账户+决策快照（None = 台账不可读，策略参考节渲染跳过文案，不再重算链路）。
     """
     market_pe: Optional[dict]    # get_market_pe()：{pe, pe_pct, ...} 或 None
     y10: Optional[float]         # 10 年期国债收益率（%）
     erp_pct: Optional[float]     # 风险溢价自身近 5 年分位
     alloc: Optional[dict]        # _compute_allocation 快照，见其返回值（None = 台账不可读）
+    baseline: List[AssetAllocation]  # 本批次配置，计算、观察和渲染共同使用
     trends: dict = field(default_factory=dict)  # 标的自身唐奇安20/10观察快照
     valuations: list = field(default_factory=list)  # 持仓表与估值明细共用
 
 
 def _build_week_context() -> WeekContext:
-    """一次性装配全部共享取数（估值/国债/ERP/账户快照）。
-    """
+    """先固定账户和配置，再装配行情；计算与渲染均不重新读取配置。"""
+    from src.portfolio_config import allocations
+
+    config, snapshot = _raw_snapshot()
+    baseline = allocations(config)
     market_pe = _raw_market_pe()
     y10 = _raw_treasury_yield_y10()
     try:
@@ -116,13 +115,14 @@ def _build_week_context() -> WeekContext:
     except Exception:
         erp = None
     erp_pct = erp.get("erp_pct") if erp else None
-    equity_etfs = [a for a in _baseline() if a.asset_type == AssetType.EQUITY]
+    equity_etfs = [a for a in baseline if a.asset_type == AssetType.EQUITY]
     return WeekContext(market_pe=market_pe, y10=y10, erp_pct=erp_pct,
-                       alloc=_compute_allocation(), trends=_fetch_trend_observations(),
-                       valuations=_raw_valuation_rows(equity_etfs))
+                       alloc=_compute_allocation(snapshot, baseline), baseline=baseline,
+                       trends=_fetch_trend_observations(baseline),
+                       valuations=_raw_valuation_rows(equity_etfs, y10))
 
 
-def _fetch_trend_observations() -> dict:
+def _fetch_trend_observations(baseline) -> dict:
     """逐只观察自身ETF：AmazingData 复权日线为主源，东财 hfq 为备源。
 
     两源复权基有细微差异（历史约 0.3–2.4% 的信号日不同），同一只在一次报告内
@@ -132,7 +132,7 @@ def _fetch_trend_observations() -> dict:
 
     now = datetime.now(timezone(timedelta(hours=8))).replace(tzinfo=None)
     today = now.strftime("%Y-%m-%d")
-    codes = [asset.code for asset in _baseline() if asset.code != "CASH"]
+    codes = [asset.code for asset in baseline if asset.code != "CASH"]
     try:
         ad_bars = _raw_trend_bars_ad(codes, today)
     except Exception as exc:
@@ -175,7 +175,7 @@ def _valuation_cell(row: dict) -> str:
     if row.get("div_yield") is not None:
         parts.append(f"股息 {row['div_yield']:.1f}%")
     spread = row.get("div_yield_spread")
-    if is_dividend_style(row.get("code")) and spread is not None:
+    if row.get("dividend_style") and spread is not None:
         note = "（偏低）" if spread >= 1.5 else ""
         parts.append(f"利差 {spread:+.1f}pt{note}")
     return " / ".join(parts)
@@ -246,27 +246,24 @@ def _fetch_missing_prices(baseline: List, positions: List[dict]) -> dict:
     return prices
 
 
-def _compute_allocation():
+def _compute_allocation(snap, baseline):
     """计算目标配比与再平衡计划，供持仓对照和建议展示。
 
-    持仓与资金只读取ETF账户台账；未初始化时停止生成持仓建议。
+    持仓、资金与基准均来自本批次快照；账户不可用时不生成持仓建议。
     目标 = 中性基准，无动态择时；**不读环境快照**（核心仓纯机械）。
     行情取数在此编排层一次取齐（prices），决策核 rebalancer 保持零 I/O。
 
     Returns:
-        dict（台账恒可推导；读不了时返回 None → 持仓对照节渲染跳过文案）
+        dict；账户快照不可用时返回 None，持仓对照节显示跳过原因。
     """
-    try:
-        snap = _raw_snapshot()
-    except Exception as e:
-        logger.warning(f"成交台账读取失败，跳过持仓对照: {e}", exc_info=True)
+    if snap is None:
         return None
 
     from src.etf.rebalancer import ETFRebalancer
 
     positions = snap.positions
     total_assets = snap.total_assets
-    rebalancer = ETFRebalancer(_baseline())
+    rebalancer = ETFRebalancer(baseline)
     target = rebalancer.calculate_target()
 
     core_positions, _, _ = rebalancer.split_rotation_positions(positions)
@@ -316,7 +313,7 @@ def _holding_overview(ctx: WeekContext) -> str:
 
     order_map = {o.code: o for o in orders}
     valuation_map = {r["code"]: r for r in ctx.valuations}
-    for asset in _baseline():
+    for asset in ctx.baseline:
         code = asset.code
         tgt = target.get(code, 0.0) * 100
         cur = current_map.get(code, 0.0)
@@ -345,7 +342,7 @@ def _holding_overview(ctx: WeekContext) -> str:
     lines.append("> ★ 恒生科技：当前样本中唐奇安20/10改善了持有体验，为重点观察规则。")
 
     # 基准外持仓提示（未纳入对照表）
-    baseline_codes = {a.code for a in _baseline()}
+    baseline_codes = {a.code for a in ctx.baseline}
     extra = [f"{p.get('name', '')}({p.get('code', '')})" for p in alloc["core_positions"]
              if p.get("code") not in baseline_codes]
     if extra:

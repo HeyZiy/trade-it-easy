@@ -24,12 +24,6 @@
 .\.conda\python.exe -m research.tools.market_regimes --results research/studies/trend/result_v1.csv research/studies/trend/result_v3.csv --benchmark-name 沪深300 --out research/studies/trend/reports/market_regimes
 ```
 
-行业动量现有CSV的表头已经损坏，显式指定从0开始的列位置即可读取日期/策略/基准：
-
-```powershell
-.\.conda\python.exe -m research.tools.market_regimes --results research/studies/industry_momentum/result_l2_etfself.csv --format cumulative-percent --columns '#0' '#2' '#1' --out research/studies/industry_momentum/reports/market_regimes
-```
-
 离线运行提供指数CSV（`date,close`），用 `--index-name` 指定报告名称。
 指数需要覆盖收益曲线的每个交易日，并额外包含均线预热期和首日之前的收盘。
 `--index-symbol` 可改新浪指数代码；`--month-window`、`--week-window` 配置均线；

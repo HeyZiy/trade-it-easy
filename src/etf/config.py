@@ -35,6 +35,9 @@ class AssetAllocation:
     asset_type: str     # AssetType
     neutral_weight: float  # 中性基准权重（0.0 ~ 1.0）
     volatility_rank: int   # 波动率排名（1=最高波动，用于减仓优先级）
+    tracked_index: str | None = None
+    valuation_kind: str = "none"
+    dividend_style: bool = False
 
     @property
     def name(self):
@@ -51,15 +54,6 @@ def get_neutral_baseline():
 def example_baseline():
     from src.portfolio_config import example, allocations
     return allocations(example())
-
-
-def asset_settings(code):
-    from src.portfolio_config import load
-    return next((row for row in load()["core"] if row["code"] == code), {})
-
-
-def is_dividend_style(code):
-    return asset_settings(code).get("dividend_style", False)
 
 
 # 减仓优先级：按 volatility_rank 从高到低（创业板先减，国债/现金后减）。

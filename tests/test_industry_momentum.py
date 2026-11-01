@@ -7,11 +7,8 @@
 - 买 = score>0 降序补空槽等权，量价热度阈值为 101 分，不限制正常评分；
 - 卖 = score≤0连续3日、成本-8%限亏或+12%浮盈触发保本抬升；出池直评。
 """
-import ast
 from datetime import date
 import logging
-import math
-from pathlib import Path
 
 import numpy as np
 import pandas as pd
@@ -148,35 +145,6 @@ class TestMomentumScore:
         closes = [10.0 * 0.999 ** k for k in range(25)]
         s = momentum_score(closes, closes[-1] * 0.999)
         assert s < 0.0
-
-
-def test_platform_dedupe_revision_changes_only_pool_order():
-    """修正后的两组共享评分、成交台账与交易规则，只改变建池去重顺序。"""
-    root = Path(__file__).resolve().parents[1] / "research/studies/industry_momentum"
-    old = ast.parse((root / "lM_v3_3_2.py").read_text(encoding="utf-8"))
-    new = ast.parse((root / "lM_v3_3_4.py").read_text(encoding="utf-8"))
-    for tree in (old, new):
-        for node in tree.body:
-            if isinstance(node, ast.FunctionDef) and node.body and \
-                    isinstance(node.body[0], ast.Expr) and \
-                    isinstance(node.body[0].value, ast.Constant) and \
-                    isinstance(node.body[0].value.value, str):
-                node.body.pop(0)
-    old_functions = {n.name: ast.dump(n) for n in old.body if isinstance(n, ast.FunctionDef)}
-    new_functions = {n.name: ast.dump(n) for n in new.body if isinstance(n, ast.FunctionDef)}
-    assert old_functions.keys() == new_functions.keys()
-    assert [k for k in old_functions if old_functions[k] != new_functions[k]] == ["rebuild_pool"]
-    assert [ast.dump(n) for n in old.body if isinstance(n, ast.Assign)] == \
-        [ast.dump(n) for n in new.body if isinstance(n, ast.Assign)
-         and not any(isinstance(t, ast.Name) and t.id == "DEDUPE_ORDER" for t in n.targets)]
-    score_node = next(n for n in new.body if isinstance(n, ast.FunctionDef)
-                      and n.name == "momentum_score")
-    namespace = {"np": np, "math": math, "SCORE_DAYS": im.SCORE_DAYS}
-    exec(compile(ast.Module(body=[score_node], type_ignores=[]), "platform_score", "exec"), namespace)
-    score = namespace["momentum_score"]
-    for prices in (SCORE_SIGN_CASE, [1 / p for p in SCORE_SIGN_CASE],
-                   _up_closes(26), [1.0] * 26, _up_closes(25) + [1.0]):
-        assert score(prices[:-1], prices[-1]) == momentum_score(prices[:-1], prices[-1])
 
 
 # ══════════════ adjust_series：份额折算前复权 ══════════════

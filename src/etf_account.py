@@ -3,6 +3,7 @@
 from datetime import date
 import hashlib
 import json
+import logging
 import math
 from pathlib import Path
 
@@ -11,6 +12,7 @@ from data_provider.security_names import security_name
 
 FILENAME = "etf_account.json"
 ACCOUNT_PATH = Path("data") / FILENAME
+logger = logging.getLogger(__name__)
 
 
 def _today():
@@ -49,8 +51,12 @@ def _save(path, state):
 def load(path=ACCOUNT_PATH):
     if not Path(path).exists():
         raise FileNotFoundError("ETF账户尚未初始化")
-    state = json.loads(Path(path).read_text(encoding="utf-8"))
     config = portfolio_config.load(portfolio_config.path_for(path))
+    return _read_account(path, config)
+
+
+def _read_account(path, config):
+    state = json.loads(Path(path).read_text(encoding="utf-8"))
     state.update(targets={r["code"]: r["weight"] for r in config["core"]},
                  budgets=config["budgets"], _config=config,
                  _config_revision=portfolio_config.revision(config))
@@ -283,43 +289,68 @@ def baseline(state):
     return portfolio_config.allocations(state["_config"])
 
 
+def _strategy_facts(state, view, key):
+    """按策略标识提供账户事实，不计算建议；供展示、发布和成交处理共用。"""
+    name = {"core": "核心配置", "rotation": "跨资产轮动"}[key]
+    positions = [r for r in view["strategy_positions"] if r["strategy"] == key]
+    invested = round(sum(r["market_value"] for r in positions), 2)
+    weight = state.get("budgets", {}).get(key)
+    budget = round(view["equity"] * weight, 2) if weight is not None else None
+    remaining = max(0, round(budget - invested, 2)) if budget is not None else None
+    cash = view["cash_by_strategy"][key]
+    assets = round(invested + cash, 2)
+    status = ("目标比例待设置" if remaining is None
+              else "已分配" if positions or cash > 0 else "暂无持仓")
+    return {"id": key, "name": name, "account_id": "etf", "positions": positions,
+            "budget_pct": weight, "budget": budget, "invested": invested,
+            "pnl": view["strategy_pnl"][key],
+            "target_weights": dict(state["targets"]) if key == "core" else None,
+            "remaining_budget": remaining, "buying_power": min(cash, remaining) if remaining is not None else None,
+            "suggestions": [], "trades": [e for e in state["events"] if e.get("strategy") == key],
+            "history": [], "performance": None, "benchmark_name": None,
+            "cash": cash, "assets": assets, "actual_pct": assets / view["equity"] if view["equity"] else None,
+            "deviation": round(assets - budget, 2) if budget is not None else None, "status": status}
+
+
 def strategy_views(state, view, *, today=None):
-    """汇总策略名下的持仓与现金；目标比例只决定预算，不自动分配资金。"""
+    """汇总策略事实与建议；策略标识决定归属，展示顺序不参与规则判定。"""
     result = []
-    for key, name in (("core", "核心配置"), ("rotation", "跨资产轮动")):
-        positions = [r for r in view["strategy_positions"] if r["strategy"] == key]
-        invested = round(sum(r["market_value"] for r in positions), 2)
-        weight = state.get("budgets", {}).get(key)
-        budget = round(view["equity"] * weight, 2) if weight is not None else None
-        remaining = max(0, round(budget - invested, 2)) if budget is not None else None
-        result.append({"id": key, "name": name, "account_id": "etf", "positions": positions,
-                       "budget_pct": weight, "budget": budget, "invested": invested,
-                       "pnl": view["strategy_pnl"][key],
-                       "target_weights": dict(state["targets"]) if key == "core" else None,
-                       "remaining_budget": remaining, "buying_power": None,
-                       "suggestions": [], "trades": [e for e in state["events"] if e.get("strategy") == key],
-                       "history": [], "performance": None, "benchmark_name": None})
-    for row in result:
-        owned_cash = view["cash_by_strategy"][row["id"]]
-        actual_assets = round(row["invested"] + owned_cash, 2)
-        row.update(cash=owned_cash, assets=actual_assets,
-                   actual_pct=actual_assets / view["equity"] if view["equity"] else None,
-                   deviation=round(actual_assets - row["budget"], 2) if row["budget"] is not None else None)
-        if row["id"] == "rotation":
+    for key in ("core", "rotation"):
+        row = _strategy_facts(state, view, key)
+        if key == "rotation":
             from src.etf.rotation_advice import advice
-            row["suggestions"], row["advice_status"] = advice(state, row, today or _today())
+            row["suggestions"], row["advice_status"] = advice(
+                state.get("rotation_signal"), row, today or _today(),
+                account_revision=revision(state), dismissed=state["dismissed"])
             row["signal_date"] = state.get("rotation_signal", {}).get("date")
-        if row["remaining_budget"] is None:
-            row["status"] = "目标比例待设置"
-            continue
-        row["buying_power"] = min(owned_cash, row["remaining_budget"])
-        row["status"] = "已分配" if row["positions"] or owned_cash > 0 else "暂无持仓"
-        if row["id"] == "core":
-            row["target_weights"] = dict(state["targets"])
-            if row["status"] == "已分配" and row["budget"] > 0:
-                row["suggestions"] = suggestions(state, {**view, "positions": row["positions"],
-                                                        "equity": row["budget"], "cash": owned_cash})
+        if key == "core" and row["status"] == "已分配" and row["budget"] > 0:
+            row["suggestions"] = suggestions(state, {**view, "positions": row["positions"],
+                                                    "equity": row["budget"], "cash": row["cash"]})
+        result.append(row)
     return result
+
+
+def publish_rotation(day, rows, prices, diag, *, path=None, dry_run=False, error=None):
+    """锁内发布轮动信号并返回本次建议；账户写入校验与其他记账共用。"""
+    from src.etf import rotation_advice
+
+    path = Path(path or ACCOUNT_PATH)
+    if not path.exists():
+        return "ETF账户尚未初始化"
+    with _locked(path):
+        state = load(path)
+        signal = rotation_advice.make_signal(day, rows, prices, diag, error,
+                                             previous=state.get("rotation_signal"))
+        if signal is None:
+            return "已有更新日期的账户建议，本次未覆盖"
+        state["rotation_signal"] = signal
+        strategy = _strategy_facts(state, snapshot(state, day), "rotation")
+        suggestions, status = rotation_advice.advice(
+            signal, strategy, date.fromisoformat(day),
+            account_revision=revision(state), dismissed=state["dismissed"])
+        if not dry_run:
+            _save(path, state)
+    return rotation_advice.render(suggestions, status)
 
 
 def record_event(path, payload):
@@ -390,15 +421,13 @@ def record_event(path, payload):
                 raise ValueError("暂不支持全额清户，请保留正的账户资产")
             event["amount"] = amount
             event["strategy"] = strategy
-        signal = state.get("rotation_signal")
-        if side == "buy" and event.get("strategy") == "rotation" and signal and not signal.get("buy_intent"):
-            # 第一笔实际成交时锁定本轮份额；尚未成交时，现金或预算变化仍可完整重算。
-            planned = strategy_views(state, view)[1]["suggestions"]
-            buy = next((item for item in planned if item["side"] == "buy" and item["code"] == event["code"]), None)
-            if buy:
-                held = sum(p["count"] for p in view["strategy_positions"]
-                           if p["strategy"] == "rotation" and p["code"] == event["code"])
-                signal["buy_intent"] = {"code": buy["code"], "qty": held + buy["qty"]}
+        if event.get("strategy") == "rotation":
+            from src.etf.rotation_advice import on_event
+            signal = on_event(state.get("rotation_signal"), event,
+                              _strategy_facts(state, view, "rotation"), _today(),
+                              account_revision=revision(state), dismissed=state["dismissed"])
+            if signal is not None:
+                state["rotation_signal"] = signal
         state["events"].append(event)
         _save(path, state)
         return event
@@ -476,16 +505,33 @@ def account_data(path):
                          "benchmark_nav": None} for r in records]}
 
 
-def strategy_snapshot(path=ACCOUNT_PATH):
+def strategy_snapshot(path=None):
+    """读取同一批次的配置与核心账户事实，返回 (config, snapshot)。
+
+    配置校验失败直接抛出；账户不可用时 snapshot 为 None。
+    与网页写入共用账户锁，仅在读取期间持锁，派生计算在释放锁后完成。
+    """
     from src.trade_ledger.ledger import LedgerSnapshot
 
-    state = load(path)
-    view = snapshot(state, date.today().isoformat())
-    core = strategy_views(state, view)[0]
-    if core["status"] != "已分配":
-        raise ValueError("核心配置：" + core["status"])
-    return LedgerSnapshot(positions=core["positions"], entry_map={}, cash=core["buying_power"],
-                          invested=core["invested"], total_assets=core["budget"])
+    path = Path(path or ACCOUNT_PATH)
+    with _locked(path):
+        config = portfolio_config.load(portfolio_config.path_for(path))
+        try:
+            state = _read_account(path, config)
+        except Exception:
+            logger.warning("ETF账户读取失败，跳过持仓对照", exc_info=True)
+            return config, None
+    try:
+        view = snapshot(state, _today().isoformat())
+        core = _strategy_facts(state, view, "core")
+        if core["status"] != "已分配":
+            raise ValueError("核心配置：" + core["status"])
+        snap = LedgerSnapshot(positions=core["positions"], entry_map={}, cash=core["buying_power"],
+                              invested=core["invested"], total_assets=core["budget"])
+    except Exception:
+        logger.warning("ETF账户快照不可用，跳过持仓对照", exc_info=True)
+        snap = None
+    return config, snap
 
 
 def render_summary(path=ACCOUNT_PATH):

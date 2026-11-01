@@ -161,7 +161,11 @@ def migrate(account):
 
 def allocations(config):
     from src.etf.config import AssetAllocation
-    return [AssetAllocation(r["code"], r["asset_type"], r["weight"], r["volatility_rank"]) for r in config["core"]]
+    return [AssetAllocation(
+        code=r["code"], asset_type=r["asset_type"], neutral_weight=r["weight"],
+        volatility_rank=r["volatility_rank"], tracked_index=r["tracked_index"],
+        valuation_kind=r["valuation_kind"], dividend_style=r["dividend_style"],
+    ) for r in config["core"]]
 
 
 def data(account):

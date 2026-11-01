@@ -10,11 +10,11 @@ from unittest.mock import patch
 import numpy as np
 import pandas as pd
 
-from research.studies.broad_index_strategies.common import backtest as b
-from research.studies.broad_index_strategies.common import experience as e
-from research.studies.broad_index_strategies import run_level1 as h
-from research.studies.broad_index_strategies.experiments import grid_reanchor as grid
-from research.studies.broad_index_strategies.assets import AssetSpec
+from research.studies.timing.common import backtest as b
+from research.studies.timing.common import experience as e
+from research.studies.timing import run_level1 as h
+from research.studies.timing.experiments import grid_reanchor as grid
+from research.studies.timing.assets import AssetSpec
 
 
 def nav(values):

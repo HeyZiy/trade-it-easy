@@ -1,16 +1,18 @@
 # -*- coding: utf-8 -*-
 """标的级估值口径契约：只有跟踪指数锚，不做兜底。
 
-零网络：_fetch_csindex_indicator / get_treasury_yield_y10 全部 monkeypatch。
+零网络：替换 _fetch_csindex_indicator，国债收益率由调用方传入。
 """
-from collections import namedtuple
-
 import pandas as pd
 import pytest
 
 from src.etf import amazing_factors as af
+from src.etf.config import AssetAllocation, example_baseline
 
-Etf = namedtuple("Etf", "code name")
+
+def _asset(code):
+    return next((a for a in example_baseline() if a.code == code),
+                AssetAllocation(code, "equity", 0, 0))
 
 
 @pytest.fixture(autouse=True)
@@ -35,7 +37,7 @@ def test_overseas_exit_without_fetch(monkeypatch):
     calls = []
     monkeypatch.setattr(af, "_fetch_csindex_indicator",
                         lambda code: calls.append(code) or _fake_csindex_df())
-    info = af._etf_pe_info("513100")
+    info = af._etf_pe_info(_asset("513100"), 2.1)
     assert info == {"source_type": "overseas", "pe": None, "source_name": "海外"}
     assert calls == []
 
@@ -43,8 +45,7 @@ def test_overseas_exit_without_fetch(monkeypatch):
 def test_csindex_exit_carries_pe_dividend_and_no_percentile(monkeypatch):
     """跟踪指数锚：带 PE/股息率/利差，且不带 pe_pct（标的级无分位口径）。"""
     monkeypatch.setattr(af, "_fetch_csindex_indicator", lambda code: _fake_csindex_df())
-    monkeypatch.setattr(af, "get_treasury_yield_y10", lambda: 2.1)
-    info = af._etf_pe_info("515180")
+    info = af._etf_pe_info(_asset("515180"), 2.1)
     assert info["source_type"] == "csindex"
     assert info["source_name"] == "中证红利指数"
     assert info["pe"] == 7.1 and info["div_yield"] == 5.2
@@ -57,14 +58,14 @@ def test_untracked_code_returns_none_without_fetch(monkeypatch):
     calls = []
     monkeypatch.setattr(af, "_fetch_csindex_indicator",
                         lambda code: calls.append(code) or _fake_csindex_df())
-    assert af._etf_pe_info("159915") is None
+    assert af._etf_pe_info(_asset("159915"), 2.1) is None
     assert calls == []
 
 
 def test_csindex_failure_returns_none(monkeypatch):
     """官网未取到 → None，报告显示无锚，不出结论。"""
     monkeypatch.setattr(af, "_fetch_csindex_indicator", lambda code: None)
-    assert af._etf_pe_info("515180") is None
+    assert af._etf_pe_info(_asset("515180"), 2.1) is None
 
 
 # ══════════════ 失败不锁死整轮取数 ══════════════
@@ -101,7 +102,7 @@ def test_successful_valuation_is_cached(monkeypatch):
 
 def test_valuation_rows_marks_missing_anchor(monkeypatch):
     monkeypatch.setattr(af, "_fetch_csindex_indicator", lambda code: None)
-    rows = af.etf_valuation_rows([Etf("515180", "红利ETF")])
+    rows = af.etf_valuation_rows([_asset("515180")], y10=2.1)
     assert rows[0]["pe"] is None and rows[0]["div_yield"] is None
     assert rows[0]["source_name"] == ""
     assert "无估值锚" in rows[0]["level_text"]
@@ -109,8 +110,7 @@ def test_valuation_rows_marks_missing_anchor(monkeypatch):
 
 def test_valuation_rows_dividend_uses_spread_note(monkeypatch):
     monkeypatch.setattr(af, "_fetch_csindex_indicator", lambda code: _fake_csindex_df())
-    monkeypatch.setattr(af, "get_treasury_yield_y10", lambda: 2.1)
-    rows = af.etf_valuation_rows([Etf("515180", "红利ETF")])
+    rows = af.etf_valuation_rows([_asset("515180")], y10=2.1)
     assert "利差" in rows[0]["level_text"]
     assert "⭐" not in rows[0]["level_text"]      # 星标优先级文案已删
 
@@ -118,9 +118,7 @@ def test_valuation_rows_dividend_uses_spread_note(monkeypatch):
 def test_valuation_rows_keep_input_order_no_ranking(monkeypatch):
     """不再按"最便宜在前"排序：估值不决定买入顺序，顺序归基准。"""
     monkeypatch.setattr(af, "_fetch_csindex_indicator", lambda code: _fake_csindex_df())
-    monkeypatch.setattr(af, "get_treasury_yield_y10", lambda: 2.1)
-    rows = af.etf_valuation_rows([Etf("159915", "创业板ETF"),
-                                  Etf("515180", "红利ETF")])
+    rows = af.etf_valuation_rows([_asset("159915"), _asset("515180")], y10=2.1)
     assert [r["code"] for r in rows] == ["159915", "515180"]
 
 

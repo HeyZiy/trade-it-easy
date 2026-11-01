@@ -9,9 +9,9 @@ from unittest.mock import patch
 import numpy as np
 import pandas as pd
 
-from research.studies.broad_index_strategies.assets import ASSETS, AssetSpec, ValuationSource
-from research.studies.broad_index_strategies.common import backtest as b
-from research.studies.broad_index_strategies import fetch_data as f
+from research.studies.timing.assets import ASSETS, AssetSpec, ValuationSource
+from research.studies.timing.common import backtest as b
+from research.studies.timing import fetch_data as f
 
 
 class BroadIndexAssetTests(unittest.TestCase):
