@@ -12,7 +12,7 @@ ASOF = "2026-09-30"
 
 def test_industries_use_provider_and_preserve_asof_membership(monkeypatch, tmp_path):
     from pathlib import Path
-    from data_provider.fetchers import amazingdata_info as provider
+    from data_provider.fetchers.amazingdata.client import client
 
     paths, queried = [], []
     frames = {
@@ -45,7 +45,7 @@ def test_industries_use_provider_and_preserve_asof_membership(monkeypatch, tmp_p
             return {index: frames[index]}
 
     monkeypatch.setenv('AMAZING_DATA_DIR', str(tmp_path))
-    monkeypatch.setattr(provider, '_info', lambda: SDK())
+    monkeypatch.setattr(client, 'get_info_data', lambda: SDK())
     assert feeds.fetch_industries(['600001', '600002', '600003'], ASOF) == {
         '600001': 'A', '600002': 'A'}
     assert queried == ['A', 'B']

@@ -13,7 +13,7 @@ import pandas as pd
 from research.studies.value_revenue.internal.core import (
     CELL_NAMES, FACTOR_NAMES, assign_cells, interaction_regression,
 )
-from research.tools.single_factor.single_factor_test import evaluate_period, summarize_ic
+from research.tools.factor_analysis import evaluate_period, summarize_ic
 
 
 HERE = Path(__file__).resolve().parent

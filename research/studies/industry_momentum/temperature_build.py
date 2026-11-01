@@ -30,7 +30,7 @@ HERE = Path(__file__).resolve().parent
 ROOT = HERE.parents[2]
 sys.path.insert(0, str(ROOT))
 
-from data_provider.fetchers import amazingdata_info as adi  # noqa: E402
+from data_provider.fetchers.amazingdata import industries, market  # noqa: E402
 
 BEGIN, END = '2016-01-01', '2026-09-30'
 
@@ -75,7 +75,7 @@ def fetch_members() -> dict[str, pd.DataFrame]:
             return pickle.load(f)
     out: dict[str, pd.DataFrame] = {}
     for idx in sorted({i for v in SW_MAP.values() for i in v}):
-        raw = adi.fetch_industry_members(idx)
+        raw = industries.fetch_industry_members(idx)
         df = raw[idx] if isinstance(raw, dict) else raw
         df = df[['CON_CODE', 'INDATE', 'OUTDATE']].copy()
         df['INDATE'] = pd.to_numeric(df['INDATE'], errors='coerce')
@@ -102,7 +102,7 @@ def fetch_klines(codes: list[str]) -> dict[str, pd.DataFrame]:
     CHUNK = 150
     for i in range(0, len(todo), CHUNK):
         batch = todo[i:i + CHUNK]
-        got = adi.fetch_kline(batch, BEGIN, END)
+        got = market.fetch_kline(batch, BEGIN, END)
         for tgw, df in got.items():
             slim = df[['kline_time', 'close', 'high', 'amount']].copy()
             slim['date'] = pd.to_datetime(slim['kline_time']).dt.strftime('%Y%m%d')

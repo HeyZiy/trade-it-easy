@@ -135,13 +135,12 @@ v1.1.5 同时扩大候选范围、允许原来因财务缺失或未披露而排�
 | `roe_rotation_v1_1_trades.csv` / `roe_rotation_v2_trades.csv` | 对应成交明细 |
 | `pool_rotation_v1_equity.csv` / `pool_rotation_v1_trades.csv` | 质量池轮动 v1 日频收益曲线与成交明细 |
 | `reports/market_regimes/report.html` | 上述导出曲线的状态归因 |
-| `roe_factor_study_jq.py` | 单文件、不下单的池内因子诊断；已平台实跑（2026-10-06 自 tools/single_factor 迁入） |
+| `roe_factor_study_jq.py` | 单文件、不下单的池内因子诊断；已平台实跑 |
 | `pool_ic_probe_v1.py` | 池内/池外探针；比较限制见上文（同日迁入） |
 | `roe_pool.py` / `roe_factor_study.py` | 多文件研究入口，供研究环境复用（同日迁入） |
 
-ROE 因子诊断工作流与实跑判读见本目录 `README_factor_study.md`（2026-10-06 自
-tools/single_factor/README.md 拆出——研究专属驱动随研究归档，工具目录只留可复用引擎）；
-单因子引擎的运行方式参考 `../../tools/single_factor/README.md`。
+ROE 因子诊断工作流与实跑判读见本目录 `README_factor_study.md`；
+公共计算与函数接口参考 [`factor_analysis`](../../tools/factor_analysis/README.md)。
 
 ## 数据与执行局限
 

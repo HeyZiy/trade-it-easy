@@ -33,7 +33,7 @@ class ClosingPrices:
         missing = [c for c in codes if (c, asof) not in self._prices]
         stocks = [c for c in missing if is_a_stock_code(c)]
         if stocks:
-            from data_provider.fetchers.amazingdata_info import fetch_kline
+            from data_provider.fetchers.amazingdata.market import fetch_kline
             try:
                 frames = fetch_kline(stocks, asof, asof)
                 for code in stocks:

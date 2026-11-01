@@ -105,16 +105,23 @@ def assign_groups(factor, n_groups):
     empty.loc[values.index] = labels + 1
     return empty
 
+def rank_ic(factor, future_return, min_ic_stocks=20):
+    """按代码配对后的 Spearman IC；不生成收益、不补缺失。"""
+    matched = pd.concat([clean(factor).rename('factor'), clean(future_return).rename('return')],
+                        axis=1, sort=False).reindex(factor.index).dropna()
+    if (_python_builtins.len(matched) < min_ic_stocks or matched['factor'].nunique() < 2
+            or matched['return'].nunique() < 2):
+        return np.nan
+    from scipy.stats import spearmanr
+    return _python_builtins.float(spearmanr(matched['factor'], matched['return'])[0])
+
 def evaluate_period(factor, future_return, n_groups=5, min_ic_stocks=20):
     """先按因子定组，再对齐收益；不按未来缺失情况调整成员。"""
     factor, future_return = clean(factor), clean(future_return)
     members = assign_groups(factor, n_groups)
     matched = pd.concat([factor.rename('factor'), future_return.rename('return')],
-                        axis=1).reindex(factor.index).dropna()
-    ic = np.nan
-    if (_python_builtins.len(matched) >= min_ic_stocks and matched['factor'].nunique() > 1
-            and matched['return'].nunique() > 1):
-        ic = matched['factor'].rank().corr(matched['return'].rank())
+                        axis=1, sort=False).reindex(factor.index).dropna()
+    ic = rank_ic(matched['factor'], matched['return'], min_ic_stocks)
     stats = {'ic': ic, 'factor_n': _python_builtins.int(factor.notna().sum()), 'paired_n': _python_builtins.len(matched)}
     stats['coverage'] = _python_builtins.len(matched) / stats['factor_n'] if stats['factor_n'] else np.nan
     for group in _python_builtins.range(1, n_groups + 1):

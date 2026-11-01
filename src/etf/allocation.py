@@ -67,7 +67,7 @@ def _raw_snapshot():
 
 def _raw_trend_bars_ad(codes, end):
     """唐奇安观察日线，AmazingData 事件乘数累积复权（主源，批量取数）。"""
-    from data_provider.fetchers.amazingdata_info import fetch_etf_hfq_bars
+    from data_provider.fetchers.amazingdata.market import fetch_etf_hfq_bars
     return fetch_etf_hfq_bars(codes, end)
 
 

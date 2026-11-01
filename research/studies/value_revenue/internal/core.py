@@ -5,7 +5,7 @@
 import numpy as np
 import pandas as pd
 
-from research.tools.single_factor.single_factor_test import (
+from research.tools.factor_analysis import (
     assign_groups, clean, evaluate_period, membership_turnover, neutralize,
     summarize_ic,
 )

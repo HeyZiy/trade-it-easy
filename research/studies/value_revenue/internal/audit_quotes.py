@@ -186,7 +186,7 @@ def make_summary(comparison):
 
 def rounding_ic_sensitivity(comparison, snapshots, n_groups=5, min_ic_n=100):
     """固定全部原始因子和名单，仅比较报价精度造成的IC差异。"""
-    from research.tools.single_factor.single_factor_test import evaluate_period
+    from research.tools.factor_analysis import evaluate_period
     snapshots_by_signal = {signal: block.set_index('code')
                            for signal, block in snapshots.groupby('signal')}
     rows = []

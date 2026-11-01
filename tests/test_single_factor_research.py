@@ -8,18 +8,14 @@ import pandas as pd
 import pytest
 
 
-PATH = Path(__file__).resolve().parents[1] / 'research/tools/single_factor/single_factor_test.py'
-SPEC = importlib.util.spec_from_file_location('single_factor_research', PATH)
-sf = importlib.util.module_from_spec(SPEC)
-sys.modules[SPEC.name] = sf
-SPEC.loader.exec_module(sf)
+from research.tools.factor_analysis import study as sf, core
 
 
 def test_group_membership_does_not_depend_on_future_missing_returns():
     factor = pd.Series(range(10), index=list('abcdefghij'), dtype=float)
     future = factor / 100
     future.loc['a'] = np.nan
-    stats, groups = sf.evaluate_period(factor, future, 5, 5)
+    stats, groups = core.evaluate_period(factor, future, 5, 5)
     assert groups.loc['a'] == groups.loc['b'] == 1
     assert np.isnan(stats['G1'])
     assert stats['G1_n'] == 2
@@ -31,18 +27,18 @@ def test_group_membership_does_not_depend_on_future_missing_returns():
 
 def test_tied_factors_do_not_get_split_by_arbitrary_code_order():
     factor = pd.Series([0] * 10 + [1, 2, 3, 4])
-    assert sf.assign_groups(factor, 5).isna().all()
-    assert sf.assign_groups(pd.Series([2, 2]), 5).isna().all()
+    assert core.assign_groups(factor, 5).isna().all()
+    assert core.assign_groups(pd.Series([2, 2]), 5).isna().all()
 
 
 def test_negative_ic_keeps_negative_icir_and_iid_t_identity():
     series = pd.Series([-.2, -.1, -.15, -.05, -.12])
-    stats = sf.summarize_ic(series, 0)
+    stats = core.summarize_ic(series, 0)
     assert stats['icir'] < 0
     assert stats['t_iid'] == pytest.approx(stats['icir'] * np.sqrt(len(series)))
     assert stats['t_hac'] == pytest.approx(stats['t_iid'])
     series.iloc[2] = np.nan
-    assert np.isnan(sf.summarize_ic(series)['t_hac'])
+    assert np.isnan(core.summarize_ic(series)['t_hac'])
 
 
 def test_neutralization_aligns_codes_and_does_not_fill_missing_controls():
@@ -52,7 +48,7 @@ def test_neutralization_aligns_codes_and_does_not_fill_missing_controls():
     factor = 3 * np.log(cap) + (industry == 'B') * 4 + pd.Series(
         [1, -2, 1, 2, -1, -1] * 2, index=codes)
     cap.loc['l'] = np.nan
-    residual = sf.neutralize(factor, industry.iloc[::-1], cap.iloc[::-1])
+    residual = core.neutralize(factor, industry.iloc[::-1], cap.iloc[::-1])
     assert np.isnan(residual['l'])
     valid = residual.dropna()
     assert abs(valid.mean()) < 1e-12
@@ -62,8 +58,8 @@ def test_neutralization_aligns_codes_and_does_not_fill_missing_controls():
 
 def test_no_artificial_factor_when_controls_explain_everything():
     cap = pd.Series(np.exp(np.arange(10) / 10))
-    assert sf.neutralize(3 * np.log(cap), pd.Series(['A'] * 10), cap).isna().all()
-    assert sf.mad_outlier(pd.Series([1, 1, 1, 2]), 3).iloc[-1] == 2
+    assert core.neutralize(3 * np.log(cap), pd.Series(['A'] * 10), cap).isna().all()
+    assert core.mad_outlier(pd.Series([1, 1, 1, 2]), 3).iloc[-1] == 2
 
 
 def test_schedule_excludes_partial_month_and_incomplete_holding_period():

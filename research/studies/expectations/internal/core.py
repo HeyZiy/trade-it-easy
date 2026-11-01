@@ -1,7 +1,7 @@
 """低预期研究使用的日期解析和中心秩工具。"""
 import numpy as np
 import pandas as pd
-from research.tools.single_factor.single_factor_test import clean
+from research.tools.factor_analysis import clean
 
 def report_date(value):
     if pd.isna(value):

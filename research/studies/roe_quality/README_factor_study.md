@@ -1,10 +1,8 @@
 # ROE 线因子诊断工作流（roe_factor_study 家族）
 
-> 本文件 2026-10-06 自 `research/tools/single_factor/README.md` 拆出：研究专属
-> 驱动随研究归档（同目录 `roe_factor_study.py` / `roe_factor_study_jq.py` /
-> `roe_pool.py` / `pool_ic_probe_v1.py`），引擎 `single_factor_test.py` 仍在
-> `../../tools/single_factor/`。实跑结果与判读同时是本研究的信号层账目，
-> 汇总见本目录 README.md 问题二/问题三。
+研究专属驱动与候选池留在本目录，公共计算使用
+[`research.tools.factor_analysis`](../../tools/factor_analysis/README.md)。
+实跑结果与判读汇总见本目录 README.md 问题二/问题三。
 
 ## 当前推荐：回测编辑器单文件版
 
@@ -33,16 +31,13 @@ T+1日9:31读取已知开盘报价，下一轮T+1日9:31才计算已经发生的
 开盘报价不等于9:31实际撮合，也未模拟涨跌停买卖限制、成交量、滑点或税费。
 本地用模拟数据验证了候选池一致性、逐期时间边界、除权及停牌行为，未运行真实平台回测。
 
-## ROE专用入口：一次测1日、5日（多文件）
+## 仓库内研究入口：一次测1日、5日
 
-在聚宽研究环境上传以下四个文件（放同一目录）：
+`roe_factor_study.py` 在项目研究环境中调用公共函数，候选池由 `roe_pool.py`
+及 `roe_rotation_v1_1_2.py` 提供。公共计算位于 `research/tools/factor_analysis/`。
+平台直接粘贴运行继续使用上面的 `roe_factor_study_jq.py`。
 
-1. `roe_factor_study.py`（本目录）
-2. `single_factor_test.py`（`../../tools/single_factor/`）
-3. `roe_pool.py`（本目录）
-4. `roe_rotation_v1_1_2.py`（本目录）
-
-运行：
+在项目已配置数据权限的研究环境中运行：
 
 ```python
 %run roe_factor_study.py

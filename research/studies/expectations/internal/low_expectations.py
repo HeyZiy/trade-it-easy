@@ -2,7 +2,7 @@
 import numpy as np
 import pandas as pd
 from research.studies.expectations.internal.core import centered_rank, report_date
-from research.tools.single_factor.single_factor_test import clean, summarize_ic
+from research.tools.factor_analysis import clean, summarize_ic
 
 VERSION = 'low_expectations_v2_2026-10-06'
 

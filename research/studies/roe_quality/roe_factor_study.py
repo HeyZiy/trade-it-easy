@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 """聚宽研究入口：同一ROE候选池/选股日期，一次计算1日与5日强弱诊断。
 
-Notebook上传本文件、single_factor_test.py、roe_pool.py、roe_rotation_v1_1_2.py。
+仓库内调用公共因子函数；平台运行使用 roe_factor_study_jq.py。
 %run roe_factor_study.py；可先在Config中缩短区间进行数据接口验证。
 完整候选池，不取前10只；不下单，不改变原策略文件。
 """
@@ -11,12 +11,11 @@ from dataclasses import asdict
 import hashlib
 import json
 
-# 平台四文件平铺同目录直接平导入；仓库内引擎在 tools/single_factor，补路径
-_REPO_TOOLS = Path(__file__).resolve().parents[2] / 'tools' / 'single_factor'
-if _REPO_TOOLS.is_dir():
-    sys.path.insert(0, str(_REPO_TOOLS))
-
-from single_factor_test import Config, run_study, report
+# 仓库内复用公共函数；聚宽单文件运行使用 roe_factor_study_jq.py。
+_REPO_ROOT = Path(__file__).resolve().parents[3]
+if str(_REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(_REPO_ROOT))
+from research.tools.factor_analysis import Config, run_study, report
 from roe_pool import ROECandidatePool
 
 
@@ -38,9 +37,9 @@ def main(api=None, source_path=None, start=START_DATE, end=END_DATE, plot=True):
     pool = ROECandidatePool(api, source_path)
     cfg = Config(start=start, end=end, factor='momentum', lookback=1,
                  frequency='trading_days', rotate_every=pool.rotate_every,
-                 neutralize=True, output_dir=OUTPUT_DIR)
+                 neutralize=True)
     tables, snapshots = run_study(cfg, api, pool, lookbacks=(1, 5))
-    folder = Path(cfg.output_dir)
+    folder = Path(OUTPUT_DIR)
     folder.mkdir(parents=True, exist_ok=True)
     for mode, table in tables.items():
         table.to_csv(folder / ('periods_%s.csv' % mode), encoding='utf-8-sig')

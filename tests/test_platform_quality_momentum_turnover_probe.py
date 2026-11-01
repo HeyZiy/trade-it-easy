@@ -250,7 +250,7 @@ def test_snapshot_failure_is_recorded_and_sampling_clock_does_not_retry_off_grid
 
 def test_standalone_pool_and_statistics_match_authoritative_sources(world):
     _, module, _, _ = probe(world)
-    generator = BASE.parents[1] / 'tools/single_factor/platform_codegen.py'
+    generator = BASE.parents[1] / 'tools/factor_analysis/platform_codegen.py'
     spec = importlib.util.spec_from_file_location('factor_codegen', generator)
     codegen = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(codegen)
@@ -259,7 +259,7 @@ def test_standalone_pool_and_statistics_match_authoritative_sources(world):
     sources = [(BASE / 'pool_rotation_v5.py', ['PoolDataError', '_evaluate_pool', '_annualized_vol',
                 'rank_pool', 'build_pool', '_prev_trade_day', '_require_columns', '_report_date',
                 '_fetch_roe_ttm', '_history_closes', '_held']),
-               (BASE.parents[1] / 'tools/single_factor/single_factor_test.py',
+               (BASE.parents[1] / 'tools/factor_analysis/core.py',
                 ['clean', 'assign_groups', 'summarize_ic'])]
     for path, names in sources:
         authoritative = ast.parse(codegen.protect_builtins(path.read_text(encoding='utf-8')))

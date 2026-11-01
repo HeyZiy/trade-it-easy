@@ -31,7 +31,7 @@ HERE = Path(__file__).resolve().parent
 ROOT = HERE.parents[2]
 sys.path.insert(0, str(ROOT))
 
-from data_provider.fetchers import amazingdata_info as adi  # noqa: E402
+from data_provider.fetchers.amazingdata import fundamentals as adi  # noqa: E402
 
 BEGIN, END = '2014-01-01', '2026-09-30'
 MEMBERS_CACHE = HERE / '_cache' / 'temperature_members.pkl'

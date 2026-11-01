@@ -1,7 +1,7 @@
 """生成聚宽投资研究内的独立报价审计脚本，不需要重跑策略。"""
 from pathlib import Path
 
-from research.tools.single_factor.platform_codegen import definitions, protect_builtins
+from research.tools.factor_analysis.platform_codegen import definitions, protect_builtins
 
 
 HERE = Path(__file__).resolve().parent

@@ -5,7 +5,8 @@ import pandas as pd
 import os
 from pathlib import Path
 
-from data_provider.fetchers import amazingdata_info as info
+from data_provider.fetchers.amazingdata import basics, market, industries, fundamentals as info
+from data_provider.fetchers.amazingdata.client import client
 from data_provider.fetchers.amazingdata_fetcher import AmazingDataFetcher
 
 
@@ -26,10 +27,10 @@ def test_execution_data_uses_daily_info_and_bounded_market_query(monkeypatch, ne
             # 真实 SDK 按日期嵌套返回；扁平形态也须继续兼容。
             return {20261015: {'600001.SH': frame}} if nested else {'600001.SH': frame}
 
-    monkeypatch.setattr(info.AmazingDataFetcher, 'get_base_data', lambda: SDK())
-    monkeypatch.setattr(info.AmazingDataFetcher, '_market_data', SDK())
-    monkeypatch.setattr(info, '_info', lambda: pytest.fail('不得查历史信息表'))
-    daily, snapshots = info.fetch_execution_data(
+    monkeypatch.setattr(client, 'get_base_data', lambda: SDK())
+    monkeypatch.setattr(client, 'get_market_data', lambda: SDK())
+    monkeypatch.setattr(client, 'get_info_data', lambda: pytest.fail('不得查历史信息表'))
+    daily, snapshots = market.fetch_execution_data(
         ['600001'], pd.Timestamp('2026-10-15 09:29'), pd.Timestamp('2026-10-15 09:31'))
     pd.testing.assert_frame_equal(daily, expected)
     assert snapshots['600001'].iloc[0]['last'] == 10.
@@ -51,8 +52,7 @@ def test_index_snapshot_unwraps_daily_nested_result(monkeypatch):
             return {20261030: {'399317.SZ': frame}}
 
     fetcher = object.__new__(AmazingDataFetcher)
-    monkeypatch.setattr(AmazingDataFetcher, '_ensure_login', lambda self: None)
-    monkeypatch.setattr(AmazingDataFetcher, '_market_data', SDK())
+    monkeypatch.setattr(client, 'get_market_data', lambda *args: SDK())
     snap = fetcher.get_index_snapshot('sz399317', dt.date(2026, 10, 30))
     assert snap['close'] == 10.5
     assert snap['trade_time'] == '2026-10-30 15:00:00'
@@ -73,7 +73,7 @@ def test_signal_universe_uses_exact_date_and_cleans_sdk_cache(monkeypatch, tmp_p
         def get_code_list(self, *args):
             pytest.fail('Historical signal must not query the current universe')
 
-    monkeypatch.setattr(info.AmazingDataFetcher, 'get_base_data', lambda: SDK())
+    monkeypatch.setattr(client, 'get_base_data', lambda: SDK())
     monkeypatch.setenv('AMAZING_DATA_DIR', str(tmp_path))
     from src.quality_pool import feeds
     assert feeds.fetch_universe('2026-10-09') == {'600519', '000001'}
@@ -106,18 +106,18 @@ def test_industry_sdk_cache_is_temporary(monkeypatch, tmp_path, method, args, fe
                 return expected.copy()
             return request
 
-    monkeypatch.setattr(info, '_info', lambda: SDK())
+    monkeypatch.setattr(client, 'get_info_data', lambda: SDK())
     monkeypatch.setenv('AMAZING_DATA_DIR', str(tmp_path))
-    result = getattr(info, fetch)(*args)
+    result = getattr(industries, fetch)(*args)
     pd.testing.assert_frame_equal(result, expected)
     assert request_paths and all(not p.exists() for p in request_paths)
     assert list(tmp_path.iterdir()) == []
 
 
 @pytest.mark.parametrize('fetch,args,method', [
-    (info.fetch_industry_base, (), 'get_industry_base_info'),
-    (info.fetch_industry_members, ('801010.SI',), 'get_industry_constituent'),
-    (info.fetch_code_list, ('EXTRA_STOCK_A_SH_SZ', '2026-10-09'), 'get_hist_code_list'),
+    (industries.fetch_industry_base, (), 'get_industry_base_info'),
+    (industries.fetch_industry_members, ('801010.SI',), 'get_industry_constituent'),
+    (basics.fetch_code_list, ('EXTRA_STOCK_A_SH_SZ', '2026-10-09'), 'get_hist_code_list'),
 ])
 def test_sdk_write_failure_cleans_cache_and_retry_uses_new_directory(
         monkeypatch, tmp_path, fetch, args, method):
@@ -149,8 +149,8 @@ def test_sdk_write_failure_cleans_cache_and_retry_uses_new_directory(
 
     sdk = SDK()
     monkeypatch.setenv('AMAZING_DATA_DIR', str(cache_root))
-    monkeypatch.setattr(info, '_info', lambda: sdk)
-    monkeypatch.setattr(info.AmazingDataFetcher, 'get_base_data', lambda: sdk)
+    monkeypatch.setattr(client, 'get_info_data', lambda: sdk)
+    monkeypatch.setattr(client, 'get_base_data', lambda: sdk)
     with pytest.raises(info.DataFetchError, match='SDK write failed') as error:
         fetch(*args)
     assert error.value.__cause__ is failure
@@ -173,7 +173,7 @@ def test_nested_sdk_requests_cannot_delete_each_others_cache(monkeypatch, tmp_pa
             outer = Path(local_path)
             paths.append(outer)
             assert outer.exists()
-            pd.testing.assert_frame_equal(info.fetch_industry_members('801010.SI'), expected)
+            pd.testing.assert_frame_equal(industries.fetch_industry_members('801010.SI'), expected)
             assert outer.exists()
             assert not paths[1].exists()
             return expected
@@ -186,8 +186,8 @@ def test_nested_sdk_requests_cannot_delete_each_others_cache(monkeypatch, tmp_pa
             return expected
 
     monkeypatch.setenv('AMAZING_DATA_DIR', str(tmp_path))
-    monkeypatch.setattr(info, '_info', lambda: SDK())
-    pd.testing.assert_frame_equal(info.fetch_industry_base(), expected)
+    monkeypatch.setattr(client, 'get_info_data', lambda: SDK())
+    pd.testing.assert_frame_equal(industries.fetch_industry_base(), expected)
     assert len(paths) == 2 and all(not path.exists() for path in paths)
     assert list(tmp_path.iterdir()) == []
 
@@ -201,11 +201,11 @@ def test_temporary_cache_uses_current_config_and_creates_missing_root(monkeypatc
             assert paths[-1].exists()
             return pd.DataFrame()
 
-    monkeypatch.setattr(info, '_info', lambda: SDK())
+    monkeypatch.setattr(client, 'get_info_data', lambda: SDK())
     for name in ('first', 'second'):
         root = tmp_path / name
         monkeypatch.setenv('AMAZING_DATA_DIR', str(root))
-        info.fetch_industry_base()
+        industries.fetch_industry_base()
         assert paths[-1].parent == root
         assert list(root.iterdir()) == []
 
@@ -219,8 +219,8 @@ def test_current_code_list_does_not_create_sdk_cache(monkeypatch, tmp_path):
             return ['600519.SH', '000001.SZ']
 
     monkeypatch.setenv('AMAZING_DATA_DIR', str(root))
-    monkeypatch.setattr(info.AmazingDataFetcher, 'get_base_data', lambda: SDK())
-    assert info.fetch_code_list() == ['600519', '000001']
+    monkeypatch.setattr(client, 'get_base_data', lambda: SDK())
+    assert basics.fetch_code_list() == ['600519', '000001']
     assert not root.exists()
 
 
@@ -243,7 +243,7 @@ def test_info_requests_never_write_full_history_cache(monkeypatch, fetch, args):
                 return pd.DataFrame()
             return request
 
-    monkeypatch.setattr(info, "_info", lambda: OnlineOnly())
+    monkeypatch.setattr(client, "get_info_data", lambda: OnlineOnly())
     fetch(["600001"], *args)
 
 
@@ -260,7 +260,7 @@ def test_date_requests_normalize_sdk_shapes_and_trim_columns(monkeypatch, as_dic
                                        "UNUSED": ["large payload"]}) for c in codes}
             return frames if as_dict else pd.concat(frames.values(), ignore_index=True)
 
-    monkeypatch.setattr(info, "_info", lambda: SDK())
+    monkeypatch.setattr(client, "get_info_data", lambda: SDK())
     codes = [f"{600001 + i}" for i in range(70)]
     result = info.fetch_status(codes, "2026-10-08")
     assert len(result) == len(codes)
@@ -280,7 +280,7 @@ def test_income_copies_only_needed_fields(monkeypatch):
         def get_income(self, codes, **kwargs):
             return {codes[0]: wide}
 
-    monkeypatch.setattr(info, "_info", lambda: SDK())
+    monkeypatch.setattr(client, "get_info_data", lambda: SDK())
     result = info.fetch_income(["600001"], "2024-07-01", "2026-09-30")
     assert set(result["600001"].columns) == {
         "MARKET_CODE", "REPORTING_PERIOD", "NET_PRO_EXCL_MIN_INT_INC",
@@ -296,7 +296,7 @@ def test_restricted_dict_is_not_silently_dropped(monkeypatch):
             assert kwargs == {"begin_date": 20261008, "end_date": 20270106}
             return {codes[0]: pd.DataFrame({"LIST_DATE": ["2026-10-10"]})}
 
-    monkeypatch.setattr(info, "_info", lambda: SDK())
+    monkeypatch.setattr(client, "get_info_data", lambda: SDK())
     result = info.fetch_restricted(["600001"], "2026-10-08", "2027-01-06")
     assert result["MARKET_CODE"].tolist() == ["600001.SH"]
 
@@ -309,7 +309,7 @@ def test_server_out_of_window_status_cannot_pollute_today(monkeypatch):
                 "IS_ST_SEC": ["1", "0", "1"],
             })}
 
-    monkeypatch.setattr(info, "_info", lambda: SDK())
+    monkeypatch.setattr(client, "get_info_data", lambda: SDK())
     result = info.fetch_status(["600001"], "2026-10-08")
     assert result["TRADE_DATE"].tolist() == ["2026-10-08"]
     assert result["IS_ST_SEC"].tolist() == ["0"]
@@ -323,7 +323,7 @@ def test_equity_history_returns_only_latest_asof_record(monkeypatch):
                 "TOT_SHARE": [200.0, 300.0, 100.0],
             })}
 
-    monkeypatch.setattr(info, "_info", lambda: SDK())
+    monkeypatch.setattr(client, "get_info_data", lambda: SDK())
     result = info.fetch_equity_structure(["600001"], "1990-01-01", "2026-09-30")
     assert result["600001"]["TOT_SHARE"].tolist() == [200.0]
 
@@ -347,7 +347,7 @@ def test_installed_sdk_dates_reach_download_without_cache_mode(monkeypatch):
     sdk = ad.InfoData.__new__(ad.InfoData)
     # 每个真实方法的 globals 指向同一 SDK 模块。
     monkeypatch.setitem(ad.InfoData.get_income.__globals__, "DownloadInfoData", Download)
-    monkeypatch.setattr(info, "_info", lambda: sdk)
+    monkeypatch.setattr(client, "get_info_data", lambda: sdk)
     info.fetch_income(["600001"], "2024-07-01", "2026-09-30")
     info.fetch_balance_sheets(["600001"], "2024-07-01", "2026-09-30")
     info.fetch_equity_structure(["600001"], "1990-01-01", "2026-09-30")
@@ -363,9 +363,9 @@ def test_factor_result_is_windowed_even_though_sdk_requires_cache(monkeypatch, t
         def get_adj_factor(self, codes, **kwargs):
             return pd.DataFrame({c: 1.0 for c in codes}, index=dates)
 
-    monkeypatch.setattr(info.AmazingDataFetcher, "get_base_data", lambda: Base())
-    monkeypatch.setattr(info, "AMAZINGDATA_CACHE_DIR", str(tmp_path))
-    result = info.fetch_adj_factors(["600001"], "2026-01-01", "2026-09-30")
+    monkeypatch.setattr(client, "get_base_data", lambda: Base())
+    monkeypatch.setattr(market, "AMAZINGDATA_CACHE_DIR", str(tmp_path))
+    result = market.fetch_adj_factors(["600001"], "2026-01-01", "2026-09-30")
     assert (result.index < pd.Timestamp("2026-01-01")).sum() == 1
     assert result.index.max() <= pd.Timestamp("2026-09-30")
 
@@ -378,11 +378,11 @@ def test_etf_hfq_bars_accumulate_event_factors(monkeypatch):
                           "volume": [10., 10., 10.], "amount": [1e5, 1e5, 1e5]})
     # 事件乘数：除权日 2.0，次日回到 1.0，必须累积相乘。
     factors = pd.DataFrame({"516560.SH": [1.0, 2.0, 1.0]}, index=dates)
-    monkeypatch.setattr(info, "fetch_kline",
+    monkeypatch.setattr(market, "fetch_kline",
                         lambda codes, begin, end: {"516560": kline})
-    monkeypatch.setattr(info, "fetch_adj_factors",
+    monkeypatch.setattr(market, "fetch_adj_factors",
                         lambda codes, begin, end: factors)
-    bars = info.fetch_etf_hfq_bars(["516560"], "2026-10-14")
+    bars = market.fetch_etf_hfq_bars(["516560"], "2026-10-14")
     assert bars["516560"]["date"].tolist() == ["2026-10-12", "2026-10-13", "2026-10-14"]
     assert bars["516560"]["hfq_close"].tolist() == [1.0, 4.0, 6.0]
     assert bars["516560"]["hfq_high"].tolist() == [2.0, 6.0, 8.0]
@@ -393,8 +393,8 @@ def test_etf_hfq_bars_omit_codes_without_factors(monkeypatch):
     dates = pd.to_datetime(["2026-10-12", "2026-10-13"])
     kline = pd.DataFrame({"code": "516560.SH", "kline_time": dates,
                           "high": [2., 3.], "low": [1., 1.], "close": [1.5, 2.5]})
-    monkeypatch.setattr(info, "fetch_kline",
+    monkeypatch.setattr(market, "fetch_kline",
                         lambda codes, begin, end: {"516560": kline})
-    monkeypatch.setattr(info, "fetch_adj_factors",
+    monkeypatch.setattr(market, "fetch_adj_factors",
                         lambda codes, begin, end: pd.DataFrame())
-    assert info.fetch_etf_hfq_bars(["516560"], "2026-10-13") == {}
+    assert market.fetch_etf_hfq_bars(["516560"], "2026-10-13") == {}

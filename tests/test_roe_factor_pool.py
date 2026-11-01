@@ -8,11 +8,10 @@ import pandas as pd
 import pytest
 
 ROOT = Path(__file__).resolve().parents[1]
-sys.path.insert(0, str(ROOT / 'research/tools/single_factor'))
 sys.path.insert(0, str(ROOT / 'research/studies/roe_quality'))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from roe_pool import ROECandidatePool
-from single_factor_test import Config, run_study
+from research.tools.factor_analysis import Config, run_study
 from test_platform_roe_rotation_revisions import load_world, fundamentals
 
 

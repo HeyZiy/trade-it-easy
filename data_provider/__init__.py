@@ -19,6 +19,8 @@
 - manager.py       DataFetcherManager（持有 fetcher 集合，入口方法委托上述策略）
 - fetchers/        BaseFetcher（SUPPORTS 能力声明 + SUPPORTS_COLUMNS）+ 各数据源实现
                    （akshare / efinance / tushare / amazingdata）
+- fetchers/amazingdata_fetcher.py  AmazingData 的标准日线/指数适配
+- fetchers/amazingdata/            共享客户端及基础信息、行情、财务、行业、公告查询
 
 访问约定（两层）：
 - 统一接口（日线 / 实时报价 / 市场统计）→ 从 data_provider 顶层导入；
@@ -28,7 +30,7 @@
   → 需自持 fetcher 集合的场景（研究 / 回测）直接 import 子模块，无需构造 manager。
 
 数据源优先级（默认列表，数字越小越先试）：
-1. AmazingDataFetcher (Priority -2) - 配置了 TGW 凭证（TGW_APPID + TGW_APP_KEY）时启用
+1. AmazingDataFetcher (Priority -2) - 配置完整 TGW_* 凭证（兼容完整 AD_*）时启用
 2. AkshareFetcher (Priority 0)
 3. EfinanceFetcher (Priority 1)
 

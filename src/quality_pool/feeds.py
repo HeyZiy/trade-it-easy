@@ -54,42 +54,42 @@ EQUITY_HISTORY_BEGIN = "1990-01-01"
 # ── 原始取数（测试 monkeypatch 点：替换为本模块内的同名函数） ──
 
 def _raw_code_list(signal_date: str) -> List[str]:
-    from data_provider.fetchers.amazingdata_info import fetch_code_list
+    from data_provider.fetchers.amazingdata.basics import fetch_code_list
     return fetch_code_list("EXTRA_STOCK_A_SH_SZ", asof=signal_date)
 
 
 def _raw_status(codes: List[str], date: str) -> pd.DataFrame:
-    from data_provider.fetchers.amazingdata_info import fetch_status
+    from data_provider.fetchers.amazingdata.fundamentals import fetch_status
     return fetch_status(codes, date)
 
 
 def _raw_income(codes: List[str], begin: str, end: str) -> Dict[str, pd.DataFrame]:
-    from data_provider.fetchers.amazingdata_info import fetch_income
+    from data_provider.fetchers.amazingdata.fundamentals import fetch_income
     return fetch_income(codes, begin, end)
 
 
 def _raw_balance_sheets(codes: List[str], begin: str, end: str) -> Dict[str, pd.DataFrame]:
-    from data_provider.fetchers.amazingdata_info import fetch_balance_sheets
+    from data_provider.fetchers.amazingdata.fundamentals import fetch_balance_sheets
     return fetch_balance_sheets(codes, begin, end)
 
 
 def _raw_equity_structure(codes: List[str], begin: str, end: str) -> Dict[str, pd.DataFrame]:
-    from data_provider.fetchers.amazingdata_info import fetch_equity_structure
+    from data_provider.fetchers.amazingdata.fundamentals import fetch_equity_structure
     return fetch_equity_structure(codes, begin, end)
 
 
 def _raw_restricted(codes: List[str], begin: str, end: str) -> pd.DataFrame:
-    from data_provider.fetchers.amazingdata_info import fetch_restricted
+    from data_provider.fetchers.amazingdata.fundamentals import fetch_restricted
     return fetch_restricted(codes, begin, end)
 
 
 def _raw_adj_factors(codes: List[str], begin: str, end: str) -> pd.DataFrame:
-    from data_provider.fetchers.amazingdata_info import fetch_adj_factors
+    from data_provider.fetchers.amazingdata.market import fetch_adj_factors
     return fetch_adj_factors(codes, begin, end)
 
 
 def _raw_kline(codes: List[str], begin: str, end: str) -> Dict[str, pd.DataFrame]:
-    from data_provider.fetchers.amazingdata_info import fetch_kline
+    from data_provider.fetchers.amazingdata.market import fetch_kline
     return fetch_kline(codes, begin, end)
 
 
@@ -112,12 +112,12 @@ def fetch_universe(signal_date: str) -> Set[str]:
 
 
 def _raw_industry_base():
-    from data_provider.fetchers.amazingdata_info import fetch_industry_base
+    from data_provider.fetchers.amazingdata.industries import fetch_industry_base
     return fetch_industry_base()
 
 
 def _raw_industry_members(index_code):
-    from data_provider.fetchers.amazingdata_info import fetch_industry_members
+    from data_provider.fetchers.amazingdata.industries import fetch_industry_members
     return fetch_industry_members(index_code)
 
 
@@ -243,7 +243,7 @@ def _execution_now() -> pd.Timestamp:
 
 
 def _raw_execution_data(codes, begin, end):
-    from data_provider.fetchers.amazingdata_info import fetch_execution_data
+    from data_provider.fetchers.amazingdata.market import fetch_execution_data
     return fetch_execution_data(codes, begin, end)
 
 

@@ -12,7 +12,7 @@ AmazingData 因子封装层（ETF 周度观察专用）
 
 设计原则：
 - 所有函数失败均返回 None/空值，绝不抛出异常 —— 调用方据此降级回旧逻辑
-- 懒登录，复用 data_provider.amazingdata_fetcher 的登录态（单进程一次登录）
+- 懒登录，复用 data_provider.fetchers.amazingdata.client 的共享会话
 - 未配置 TGW 凭证时自动失效（返回 None）
 """
 
@@ -27,7 +27,7 @@ logger = logging.getLogger(__name__)
 
 # AmazingData 本地缓存目录（InfoData 接口用 HDF5 缓存，需 pytables）
 # 复用 fetcher 的解析单点：相对路径按项目根解析 + 兜底 data/AmazingData_local_data
-from data_provider.fetchers.amazingdata_fetcher import _resolve_cache_dir
+from data_provider.fetchers.amazingdata._utils import _resolve_cache_dir
 
 LOCAL_DATA_DIR = _resolve_cache_dir()
 
@@ -38,9 +38,9 @@ PERCENTILE_LOOKBACK = 1250
 def _info() -> Optional[object]:
     """获取 InfoData 实例，失败返回 None。"""
     try:
-        from data_provider.fetchers.amazingdata_fetcher import AmazingDataFetcher
+        from data_provider.fetchers.amazingdata.client import client
 
-        return AmazingDataFetcher.get_info_data()
+        return client.get_info_data()
     except Exception as e:
         logger.debug(f"AmazingData 不可用（降级）: {e}")
         return None
@@ -49,7 +49,7 @@ def _info() -> Optional[object]:
 def _is_available() -> bool:
     """AmazingData 是否可用（TGW 凭证是否配置）。"""
     try:
-        from data_provider.fetchers.amazingdata_fetcher import tgw_configured
+        from data_provider.fetchers.amazingdata.client import is_configured as tgw_configured
 
         return tgw_configured()
     except Exception:
@@ -163,7 +163,7 @@ def get_etf_share_flow(codes: List[str], lookback_days: int = 20) -> Dict[str, d
     if info is None or not codes:
         return {}
     try:
-        from data_provider.fetchers.amazingdata_fetcher import _code_to_tgw_format
+        from data_provider.fetchers.amazingdata._utils import _code_to_tgw_format
         tgw_codes = [c for c in (_code_to_tgw_format(x) for x in codes) if c]
         if not tgw_codes:
             return {}

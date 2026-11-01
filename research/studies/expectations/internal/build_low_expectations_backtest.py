@@ -2,7 +2,7 @@
 import ast
 from pathlib import Path
 
-from research.tools.single_factor.platform_codegen import definitions, protect_builtins
+from research.tools.factor_analysis.platform_codegen import definitions, protect_builtins
 
 
 HERE = Path(__file__).resolve().parent
@@ -25,7 +25,7 @@ import pandas as pd
                  if isinstance(node, ast.Assign)
                  and all(target.id != 'INPUT_PREFIX' for target in node.targets if isinstance(target, ast.Name))]
     source = (header + '\n'.join(constants) + '\n\n'
-              + definitions(HERE.parents[2] / 'tools/single_factor/single_factor_test.py', ('clean', 'summarize_ic'))
+              + definitions(HERE.parents[2] / 'tools/factor_analysis/core.py', ('clean', 'summarize_ic'))
               + '\n\n' + definitions(HERE / 'core.py', ('report_date', 'centered_rank'))
               + '\n\n' + definitions(HERE / 'low_expectations.py', (
                   'prepare_profit_features', 'freeze_profit_groups', 'stable_regression',
