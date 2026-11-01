@@ -1,4 +1,10 @@
 # -*- coding: utf-8 -*-
+# 自动生成：修改 quality_momentum/internal 中的源码，再运行
+# python -m research.studies.quality_momentum.internal.build_platform
+# 整文件粘贴到聚宽；本文件无需导入本地 research 包。
+BUILD_SOURCES_SHA256 = '{"research/studies/quality_momentum/internal/build_platform.py":"64b1e9f477c4051249337ac3babd27063c03564fd79594925b9105e897f02e5d","research/studies/quality_momentum/internal/probe_adapter.py":"63b6b104bfb2783c5b77d69fa6d12f118afa3017039e904e2fac28688e617093","research/studies/quality_momentum/internal/probe_statistics.py":"62d12d46d674410af979071e612e9c15a0e44ea31995b03a3f7ffb11746b4271","research/studies/quality_momentum/pool_rotation_v5.py":"f522e494648e1437d35f535e76f31c1ff2508b4deeb43231fa0a2086473b185f","research/tools/factor_analysis/core.py":"a816fe8bf094b01c3b39a0d7a41dab2d77df26dacee92a22fea6159f558b835f","research/tools/factor_analysis/platform_codegen.py":"2a4f066e9f051ea79a048e79cb92a35a2d258830d092699492544ea9759e4b88"}'
+
+# -*- coding: utf-8 -*-
 """聚宽日频候选探针：粘贴整个文件，2016-01-04至2026-09-01，资金100万。
 
 PROBE='earnings_response' 检验财报后相对行业表现是否持续，以及后续兑现速度。
@@ -373,29 +379,6 @@ def period_statistics(snapshot, frame):
     return rows
 
 
-def summarize_periods(periods):
-    rows = []
-    periods = periods.copy()
-    periods['signal_day'] = pd.to_datetime(periods.signal_day)
-    windows = [('full', periods), ('2020_onward', periods[periods.signal_day.dt.year.ge(2020)])]
-    windows += [(_python_builtins.str(year), block) for year, block in periods.groupby(periods.signal_day.dt.year)]
-    for window, block in windows:
-        for (scope, h, group), subset in block.groupby(['scope', 'horizon', 'group']):
-            subset = subset.sort_values('signal_day')
-            # 末尾尚未到期不是已实现收益缺失；保留数量，但不把它当统计样本。
-            mature = subset[subset.window_status.ne('censored')]
-            stats = summarize_ic(mature.return_mean, _python_builtins.int(h // ROTATE_EVERY))
-            rows.append(_python_builtins.dict(window=window, scope=scope, horizon=h, group=group,
-                             periods=_python_builtins.len(subset), censored=_python_builtins.int(subset.window_status.eq('censored').sum()),
-                             valid_periods=stats['n'], mean_return=stats['mean'],
-                             positive_period_share=stats['positive_fraction'],
-                             t_iid=stats['t_iid'], t_hac=stats['t_hac'],
-                             available_mean=_python_builtins.float(mature.return_available.mean()),
-                             coverage_mean=_python_builtins.float(mature.coverage.mean()),
-                             members_mean=_python_builtins.float(mature.n.mean()),
-                             win_available=_python_builtins.float(mature.win_available.mean()),
-                             loss15_available=_python_builtins.float(mature.loss15_available.mean())))
-    return pd.DataFrame(rows)
 
 
 def after_trading_end(context):
@@ -418,7 +401,7 @@ def on_strategy_end(context):
         resolve_snapshot(snapshot, today)
     g.pending.clear()
     if g.periods:
-        summary = summarize_periods(pd.DataFrame(g.periods).reindex(columns=PERIOD_COLUMNS))
+        summary = summarize_periods(pd.DataFrame(g.periods).reindex(columns=PERIOD_COLUMNS), ROTATE_EVERY)
         write_file(OUTPUT_PREFIX + '_summary.csv', summary.to_csv(index=False), append=False)
         main = summary[(summary.window == 'full') & (summary.group == 'low_minus_high')]
         for row in main.itertuples():
@@ -442,6 +425,8 @@ def _append_csv(kind, frame):
 
 
 def _write_settings():
+    g.settings["build_sources_sha256"] = BUILD_SOURCES_SHA256
+    g.settings['sample_every'] = ROTATE_EVERY
     frame = pd.DataFrame([_python_builtins.dict(setting=k, value=v) for k, v in g.settings.items()])
     write_file(OUTPUT_PREFIX + '_settings.csv', frame.to_csv(index=False), append=False)
 
@@ -812,24 +797,6 @@ def response_difference(left, right, scope, label):
     return row
 
 
-def response_summary(periods):
-    periods = periods.copy()
-    periods['signal_day'] = pd.to_datetime(periods.signal_day)
-    windows = [('full', periods), ('2020_onward', periods[periods.signal_day.dt.year.ge(2020)])]
-    windows += [(_python_builtins.str(year), block) for year, block in periods.groupby(periods.signal_day.dt.year)]
-    rows = []
-    for window, block in windows:
-        for (scope, h, group, metric), subset in block.groupby(['scope', 'horizon', 'group', 'metric']):
-            mature = subset.sort_values('signal_day')
-            mature = mature[mature.window_status.ne('censored')]
-            stats = summarize_ic(mature.value, _python_builtins.int(h // ROTATE_EVERY))
-            rows.append(_python_builtins.dict(
-                window=window, scope=scope, horizon=h, group=group, metric=metric,
-                periods=_python_builtins.len(subset), censored=_python_builtins.int(subset.window_status.eq('censored').sum()),
-                valid_periods=stats['n'], mean_value=stats['mean'], positive_period_share=stats['positive_fraction'],
-                t_iid=stats['t_iid'], t_hac=stats['t_hac'], available_mean=mature.available.mean(),
-                coverage_mean=mature.coverage.mean(), members_mean=mature.n.mean()))
-    return pd.DataFrame(rows)
 
 
 def end_response(context):
@@ -838,7 +805,7 @@ def end_response(context):
         resolve_snapshot(snapshot, today)
     g.pending.clear()
     if g.periods:
-        summary = response_summary(pd.DataFrame(g.periods))
+        summary = response_summary(pd.DataFrame(g.periods), ROTATE_EVERY)
         write_file(OUTPUT_PREFIX + '_summary.csv', summary.to_csv(index=False), append=False)
         main = summary[(summary.window == 'full') & (summary.scope == 'response_vs_momentum')]
         for row in main.itertuples():
@@ -849,6 +816,49 @@ def end_response(context):
     _write_settings()
     log.info('[财报反应结束] 下载4份CSV；检查覆盖率，再判断速度、收益和风险；尚无账户结论。')
 
+
+def summarize_periods(periods, sample_every=20):
+    rows = []
+    periods = periods.copy()
+    periods['signal_day'] = pd.to_datetime(periods.signal_day)
+    windows = [('full', periods), ('2020_onward', periods[periods.signal_day.dt.year.ge(2020)])]
+    windows += [(_python_builtins.str(year), block) for year, block in periods.groupby(periods.signal_day.dt.year)]
+    for window, block in windows:
+        for (scope, h, group), subset in block.groupby(['scope', 'horizon', 'group']):
+            subset = subset.sort_values('signal_day')
+            # 末尾尚未到期不是已实现收益缺失；保留数量，但不把它当统计样本。
+            mature = subset[subset.window_status.ne('censored')]
+            stats = summarize_ic(mature.return_mean, _python_builtins.int(h // sample_every))
+            rows.append(_python_builtins.dict(window=window, scope=scope, horizon=h, group=group,
+                             periods=_python_builtins.len(subset), censored=_python_builtins.int(subset.window_status.eq('censored').sum()),
+                             valid_periods=stats['n'], mean_return=stats['mean'],
+                             positive_period_share=stats['positive_fraction'],
+                             t_iid=stats['t_iid'], t_hac=stats['t_hac'],
+                             available_mean=_python_builtins.float(mature.return_available.mean()),
+                             coverage_mean=_python_builtins.float(mature.coverage.mean()),
+                             members_mean=_python_builtins.float(mature.n.mean()),
+                             win_available=_python_builtins.float(mature.win_available.mean()),
+                             loss15_available=_python_builtins.float(mature.loss15_available.mean())))
+    return pd.DataFrame(rows)
+
+def response_summary(periods, sample_every=20):
+    periods = periods.copy()
+    periods['signal_day'] = pd.to_datetime(periods.signal_day)
+    windows = [('full', periods), ('2020_onward', periods[periods.signal_day.dt.year.ge(2020)])]
+    windows += [(_python_builtins.str(year), block) for year, block in periods.groupby(periods.signal_day.dt.year)]
+    rows = []
+    for window, block in windows:
+        for (scope, h, group, metric), subset in block.groupby(['scope', 'horizon', 'group', 'metric']):
+            mature = subset.sort_values('signal_day')
+            mature = mature[mature.window_status.ne('censored')]
+            stats = summarize_ic(mature.value, _python_builtins.int(h // sample_every))
+            rows.append(_python_builtins.dict(
+                window=window, scope=scope, horizon=h, group=group, metric=metric,
+                periods=_python_builtins.len(subset), censored=_python_builtins.int(subset.window_status.eq('censored').sum()),
+                valid_periods=stats['n'], mean_value=stats['mean'], positive_period_share=stats['positive_fraction'],
+                t_iid=stats['t_iid'], t_hac=stats['t_hac'], available_mean=mature.available.mean(),
+                coverage_mean=mature.coverage.mean(), members_mean=mature.n.mean()))
+    return pd.DataFrame(rows)
 
 class PoolDataError(_python_builtins.Exception):
     pass

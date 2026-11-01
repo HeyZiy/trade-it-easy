@@ -1,8 +1,6 @@
-# 研究索引
+# 索引
 
-研究按用途分为可复用工具和具体研究。
-
-## 可复用工具：tools
+## tools
 
 完整入口见 [研究方法与数据工具](tools/README.md)。
 
@@ -17,29 +15,15 @@
 
 factor\_analysis 提供可调用函数和聚宽代码生成器；具体股票池、时间规则与参数留在 studies。趋势研究中的 tools 依赖该研究的缓存与参数，仍跟随研究目录。
 
-## 具体研究：studies
+## studies
 
 | 目录                                                                 | 研究对象                            | 当前说明                                                                                  |
 |----------------------------------------------------------------------|-------------------------------------|-------------------------------------------------------------------------------------------|
 | [roe\_quality](studies/roe_quality/README.md)                        | ROE / 质量池历史研究与 v1～v3 对照  | 已收线；保留池质量、容量及执行诊断证据；现行 v5 见 quality\_momentum                      |
-| [quality\_momentum](studies/quality_momentum/README.md)              | 经营支撑与价格兑现；现行质量动量 v5 | 日频动量全期收益与回撤胜过10组随机，优势集中于早期；第六节记录结果及证据边界              |
+| [quality\_momentum](studies/quality_momentum/README.md)              | 质量池相对强弱轮动；现行v5 | 冻结现有规则，复用已有消融；小额实盘准备，实验及旧版本归档 |
 | [value_revenue](studies/value_revenue/README.md)                     | 价值因子EP × 营收同比加速           | 第一轮独立研究；EP有收益关联，营收加速增量偏弱，交互缺乏充分支持                          |
 | [expectations](studies/expectations/README.md)                       | 低预期 × 已披露盈利维持             | 低预期＋历史盈利维持全期核查完成，未显示稳定增量；60日控制系数HAC t=−0.37                 |
 | [trend](studies/trend/README.md)                                     | 个股趋势策略                        | 已收线（v3证伪）；保留版本链、尸检与失败证据                                              |
 | [industry\_momentum](studies/industry_momentum/README.md)            | 行业 ETF 动量轮动                   | 现行lM基线；并入固定22只及行业条件诊断材料，37只混排研究已结束                            |
 | [etf\_rotation](studies/etf_rotation/README.md)                      | ETF跨资产趋势与相对强弱轮动         | 独立维护15只基线与17只能源扩充；行业材料见industry_momentum                               |
 | [broad\_index\_strategies](studies/broad_index_strategies/README.md) | 宽基ETF长期配置的持有体验与择时     | 一级比较12只ETF；二级固定参数单跑恒生科技，20/10及ATR通道改善当前样本体验，结论按标的区分 |
-
-## 研究如何形成积累
-
-研究问题可以包含多个猜想，实验用来缩小不确定性。证据不足不等于猜想已被证伪；数据审计和执行诊断也不必包装成收益猜想。
-
-新研究说明优先记录：
-
-1. 问题：想弄清什么？
-2. 实验：怎么做，改了什么？
-3. 结论：证实 / 证伪 / 证据不足，附关键数字（等有再补）。
-
-每次运行记录脚本版本、参数、资金、日期、数据口径及结果。聚宽实验继续保留可直接粘贴的完整单文件；
-
-本地从仓库根运行市场状态工具：`python -m research.tools.market_regimes --help`。

@@ -13,7 +13,7 @@ from types import ModuleType, SimpleNamespace
 
 import pandas as pd
 
-SCRIPT = Path(__file__).resolve().parents[1] / 'research/studies/quality_momentum/study_v5_daily_rotation_jq.py'
+SCRIPT = Path(__file__).resolve().parents[1] / 'research/studies/quality_momentum/experiments/study_v5_daily_rotation_jq.py'
 
 CODES = ['60000%d.XSHG' % i for i in range(8)]
 BENCH = '000906.XSHG'

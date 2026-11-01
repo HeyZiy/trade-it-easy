@@ -15,7 +15,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 from test_platform_quality_pool_v2 import world, make, BASE  # noqa: E402,F401
 
 
-SCRIPT = BASE / 'study_v5_turnover_probe_jq.py'
+SCRIPT = BASE / 'experiments/study_v5_turnover_probe_jq.py'
 
 
 def probe(world):

@@ -6,7 +6,7 @@ def definitions(path, names=None):
     source = path.read_text(encoding='utf-8')
     blocks = []
     for node in ast.parse(source).body:
-        if isinstance(node, ast.FunctionDef) and (names is None or node.name in names):
+        if isinstance(node, (ast.FunctionDef, ast.ClassDef)) and (names is None or node.name in names):
             blocks.append(ast.get_source_segment(source, node))
         elif names is None and isinstance(node, ast.Assign):
             blocks.append(ast.get_source_segment(source, node))

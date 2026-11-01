@@ -14,7 +14,7 @@ from test_platform_quality_pool_v2 import world, make, BASE  # noqa: E402,F401
 from test_platform_pool_rotation import PoolPortfolio  # noqa: E402
 
 
-SCRIPT = BASE / 'study_v5_rank_control_jq.py'
+SCRIPT = BASE / 'experiments/study_v5_rank_control_jq.py'
 
 
 def control(world, seeds=(1, 2), mode='compare'):
@@ -265,12 +265,13 @@ def test_mode_and_frequency_guard_and_unattributed_order_fail_loudly(world):
 
 
 def test_reused_v5_data_and_selection_rules_have_not_drifted():
+    from research.tools.factor_analysis.platform_codegen import protect_builtins
     original = (BASE / 'pool_rotation_v5.py').read_text(encoding='utf-8-sig')
     study = SCRIPT.read_text(encoding='utf-8')
     assert hashlib.sha256(original.encode('utf-8')).hexdigest() in study
     defs = lambda source: {n.name: ast.dump(n, include_attributes=False) for n in ast.parse(source).body
                            if isinstance(n, ast.FunctionDef)}
-    base, experiment = defs(original), defs(study)
+    base, experiment = defs(protect_builtins(original)), defs(protect_builtins(study))
     for name in ('_evaluate_pool', 'rank_pool', 'select_targets', '_annualized_vol', '_history_closes',
                  '_fetch_roe_ttm', '_sw_industries', '_quote_block', '_affordable_shares'):
         assert base[name] == experiment[name], name
