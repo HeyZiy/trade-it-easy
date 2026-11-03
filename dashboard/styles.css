@@ -123,16 +123,28 @@ footer { padding-top: 25px; font-size: 11px; color: #a0ab98; }
   .report-prose { font-size: 12px; }
 }
 @media (prefers-reduced-motion: reduce) { * { scroll-behavior: auto !important; } }
-.suggestion-grid { display: grid; grid-template-columns: repeat(auto-fit,minmax(240px,1fr)); gap: 14px; }
-.suggestion-card { border: 1px solid var(--border); border-radius: 10px; padding: 18px; background: #fafcf9; }
-.suggestion-top { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
-.suggestion-top small { color: var(--muted); }
-.side-label { border-radius: 4px; padding: 3px 6px; font-size: 11px; background: #e9f0e9; color: var(--green); }
-.side-label.sell { background: #f5eddf; color: #946b31; }
-.suggestion-quantity { font-size: 22px; margin-top: 16px; font-variant-numeric: tabular-nums; }
-.suggestion-quantity span { font-size: 12px; color: var(--muted); }
-.suggestion-card p { color: var(--muted); font-size: 12px; }
-.suggestion-actions { display: flex; align-items: center; gap: 14px; margin-top: 18px; }
+.allocation-table td { vertical-align: top; }
+.allocation-table td:nth-last-child(2) { min-width: 175px; }
+.allocation-table .allocation-attention { background: #fffbef; }
+.allocation-table .allocation-strong { background: #fff1e8; }
+.allocation-attention .allocation-gap { color: #8a661f; }
+.allocation-strong .allocation-gap { color: #a04423; }
+.allocation-gap { font-weight: 600; white-space: nowrap; }
+.allocation-table small { line-height: 1.6; }
+.signal-label { white-space: nowrap; color: var(--green); }
+.signal-label.sell { color: #946b31; }
+.signal-dismiss { margin-top: 8px; padding: 0; font-size: 11px; }
+.allocation-table .cash-note { color: #946b31; }
+.allocation-mobile-values { display: none; }
+@media (max-width: 680px) {
+  .allocation-table { min-width: 0; }
+  .allocation-table th,.allocation-table td { padding: 12px 6px; }
+  .allocation-table td:nth-last-child(2) { min-width: 0; }
+  .core-allocation-table :is(th,td):nth-child(n+2):nth-child(-n+5),
+  .rotation-allocation-table :is(th,td):nth-child(n+2):nth-child(-n+4) { display: none; }
+  .allocation-table .position-actions { flex-direction: column; align-items: flex-start; gap: 8px; }
+  .allocation-mobile-values { display: block; color: var(--muted); font-size: 11px; line-height: 1.6; margin-top: 4px; }
+}
 .primary-button { border: 0; background: var(--green); color: white; padding: 10px 16px; border-radius: 7px; }
 button:disabled { opacity: .55; cursor: wait; }
 dialog { width: min(560px,calc(100% - 24px)); max-height: calc(100dvh - 24px); border: 1px solid var(--border); border-radius: 14px; padding: 26px; color: inherit; }

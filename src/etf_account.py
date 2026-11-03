@@ -301,10 +301,15 @@ def _strategy_facts(state, view, key):
     assets = round(invested + cash, 2)
     status = ("目标比例待设置" if remaining is None
               else "已分配" if positions or cash > 0 else "暂无持仓")
+    thresholds = None
+    if key == "core":
+        from src.etf.config import MIN_TRADE_DEVIATION, REBALANCE_SINGLE_THRESHOLD
+        thresholds = {"trade": MIN_TRADE_DEVIATION, "single": REBALANCE_SINGLE_THRESHOLD}
     return {"id": key, "name": name, "account_id": "etf", "positions": positions,
             "budget_pct": weight, "budget": budget, "invested": invested,
             "pnl": view["strategy_pnl"][key],
             "target_weights": dict(state["targets"]) if key == "core" else None,
+            "rebalance_thresholds": thresholds,
             "remaining_budget": remaining, "buying_power": min(cash, remaining) if remaining is not None else None,
             "suggestions": [], "trades": [e for e in state["events"]
                                            if e.get("strategy") == key or e.get("from_strategy") == key

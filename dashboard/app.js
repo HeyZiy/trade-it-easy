@@ -140,8 +140,9 @@ function entryActions() {
   return '<div class="allocation-actions"><button type="button" id="manual-entry" class="primary-button">＋ 记一笔</button><button type="button" id="position-transfer" class="text-button">内部划转</button></div>';
 }
 
-function positionActions(code, strategy, held=true) {
-  return `<div class="position-actions"><button type="button" class="text-button" data-position-side="buy" data-code="${esc(code)}" data-strategy="${esc(strategy)}">买入</button>${held ? `<button type="button" class="text-button" data-position-side="sell" data-code="${esc(code)}" data-strategy="${esc(strategy)}">卖出</button>` : ''}</div>`;
+function positionActions(code, strategy, held=true, suggestion=null) {
+  const button = side => `<button type="button" class="text-button" ${suggestion?.side===side ? `data-fill="${suggestion.index}"` : `data-position-side="${side}" data-code="${esc(code)}" data-strategy="${esc(strategy)}"`}>${side==='buy' ? '买入' : '卖出'}</button>`;
+  return `<div class="position-actions">${button('buy')}${held ? button('sell') : ''}</div>`;
 }
 
 function accountDetails(account) {
@@ -171,22 +172,27 @@ function recordTable(rows) {
   return `<div class="table-wrap"><table><thead><tr><th>日期</th><th>类型 / 明细</th><th>份额</th><th>价格或金额 / 元</th><th>手续费 / 元</th></tr></thead><tbody>${body}</tbody></table></div>`;
 }
 
-function suggestionCards(rows) {
-  const cards = rows.map((item,index) => `<article class="suggestion-card"><div class="suggestion-top"><span class="side-label ${item.side}">${item.side==='sell'?'减持':'增持'}</span><strong>${esc(item.name)}</strong><small>${esc(item.code)}</small></div><div class="suggestion-quantity">约 ${number(item.gap_amount)} <span>元</span></div><p>当前 ${money(item.current_value)} 元 · 目标 ${money(item.target_value)} 元</p><p class="suggestion-reference">${item.price_issue ? esc(item.price_issue) : `约 ${number(item.qty)} 份 · 约 ${money(item.amount)} 元`}</p><p class="subtle">${esc(item.price_date)} · ${price(item.price)} 元</p>${item.cash_note ? `<p class="cash-note">${esc(item.cash_note)}</p>` : ''}<div class="suggestion-actions"><button type="button" class="primary-button" data-fill="${index}">记录成交</button><button type="button" class="text-button" data-dismiss="${index}">本轮忽略</button></div></article>`).join('');
-  return cards || '<div class="empty">暂无建议</div>';
-}
-
 function fundedStrategyPage(strategy) {
   const stats = [[finite(strategy.budget) ? money(strategy.budget) : '待设置','目标资产 / 元'],[money(strategy.invested),'持仓市值 / 元'],[`${strategy.pnl>0?'+':''}${money(strategy.pnl)}`,'累计盈亏 / 元'],[money(strategy.cash),'策略现金 / 元']];
   const observation = strategy.observation;
   const observationSection = observation ? `${chartSection(observation, '独立模拟，不计入ETF账户')}<section class="section"><div class="section-heading"><h2>模拟持仓</h2></div>${positionTable(observation.positions)}</section>` : '';
   const trades = [...(strategy.trades || [])].reverse().slice(0,20);
-  return `<div class="stats">${stats.map(([value,label])=>`<div class="stat"><span>${label}</span><b>${esc(value)}</b></div>`).join('')}</div><div class="account-entry-bar">${entryActions()}</div><section class="section"><div class="section-heading"><h2>${esc(strategy.name)} · 持仓</h2><span class="subtle">${esc(strategy.status)}</span>${strategy.id==='core'?'<button type="button" id="core-settings" class="text-button">编辑配置</button>':''}</div>${strategyPositionTable(strategy)}</section><section class="section"><div class="section-heading"><h2>待执行建议</h2></div>${strategy.id === 'rotation' && !strategy.suggestions?.length ? `<div class="empty">${esc(strategy.advice_status || '等待交易日更新')}</div>` : suggestionCards(strategy.suggestions || [])}</section><section class="section"><div class="section-heading"><h2>策略流水</h2><span class="subtle">最近 20 笔</span></div>${recordTable(trades)}</section>${observationSection}`;
+  return `<div class="stats">${stats.map(([value,label])=>`<div class="stat"><span>${label}</span><b>${esc(value)}</b></div>`).join('')}</div><div class="account-entry-bar">${entryActions()}</div><section class="section"><div class="section-heading"><h2>${esc(strategy.name)} · 持仓与${strategy.id==='core' ? '配比' : '信号'}</h2><span class="subtle">${esc(strategy.status)}</span>${strategy.id==='core'?'<button type="button" id="core-settings" class="text-button">编辑配置</button>':''}</div>${strategyPositionTable(strategy)}</section><section class="section"><div class="section-heading"><h2>策略流水</h2><span class="subtle">最近 20 笔</span></div>${recordTable(trades)}</section>${observationSection}`;
 }
 
-function allocatedPositionTable(rows, strategy) {
-  if (!rows.length) return '<div class="empty">暂无持仓</div>';
-  return `<div class="table-wrap"><table><thead><tr><th>标的</th><th>份额</th><th>价格 / 元</th><th>市值 / 元</th><th>记账</th></tr></thead><tbody>${rows.map(row => `<tr><td>${esc(row.name)}<small>${esc(row.code)}</small></td><td>${number(row.count)}</td><td>${price(row.close)}</td><td>${price(row.market_value)}</td><td>${positionActions(row.code,strategy)}</td></tr>`).join('')}</tbody></table></div>`;
+function rotationPositionTable(strategy) {
+  const suggestions = strategy.suggestions || [];
+  const codes = [...new Set([...strategy.positions.map(row=>row.code),...suggestions.map(row=>row.code)])];
+  const status = `<p class="subtle">${esc(strategy.advice_status || '等待交易日更新')}${strategy.signal_date ? ` · 信号日期 ${esc(strategy.signal_date)}` : ''}</p>`;
+  if (!codes.length) return `${status}<div class="empty">暂无持仓与调仓信号</div>`;
+  const rows = codes.map(code=>{
+    const position = strategy.positions.find(row=>row.code===code);
+    const index = suggestions.findIndex(row=>row.code===code);
+    const item = suggestions[index];
+    const signal = item ? `<strong class="signal-label ${item.side}">${item.side==='sell' ? '减持' : '增持'}约 ${number(item.qty)} 份</strong><small>${money(item.amount)} 元 · ${esc(item.reason)}</small>${item.cash_note ? `<small class="cash-note">${esc(item.cash_note)}</small>` : ''}` : '<span class="subtle">—</span>';
+    return `<tr${item ? ' class="allocation-attention"' : ''}><td>${esc(position?.name || item?.name || code)}<small>${esc(code)}</small><span class="allocation-mobile-values">持有 ${number(position?.count || 0)} 份<br>${money(position?.market_value || 0)} 元</span></td><td>${number(position?.count || 0)}</td><td>${price(item?.price ?? position?.close)}</td><td>${money(position?.market_value || 0)}</td><td>${signal}</td><td>${positionActions(code,strategy.id,(position?.count || 0)>0,item ? {...item,index} : null)}${item ? `<button type="button" class="text-button signal-dismiss" data-dismiss="${index}">本轮忽略</button>` : ''}</td></tr>`;
+  }).join('');
+  return `${status}<div class="table-wrap"><table class="allocation-table rotation-allocation-table"><thead><tr><th>标的</th><th>持有份额</th><th>参考价 / 元</th><th>持仓市值 / 元</th><th>本轮信号</th><th>记账</th></tr></thead><tbody>${rows}</tbody></table></div>`;
 }
 
 function strategyPage(account) {
@@ -325,6 +331,7 @@ function bindAccountActions(view) {
   if (coreButton) coreButton.onclick = () => openConfiguration();
   const cashButton = document.querySelector('#cash-settings');
   if (cashButton) cashButton.onclick = () => openCashAllocation(account);
+  document.querySelectorAll('[data-open-cash]').forEach(button=>button.onclick=()=>openCashAllocation(account));
   bindOverviewCharts(account);
   document.querySelectorAll('[data-fill]').forEach(button => button.onclick = () => openEntry(account, view.suggestions[Number(button.dataset.fill)], strategy));
   document.querySelectorAll('[data-dismiss]').forEach(button => button.onclick = async () => {
@@ -568,19 +575,32 @@ function bindOverviewCharts(account) {
 }
 
 function strategyPositionTable(strategy) {
-  if (!strategy.target_weights) return allocatedPositionTable(strategy.positions, strategy.id);
+  if (!strategy.target_weights) return rotationPositionTable(strategy);
   const wallet = data.accounts[0];
   const codes=[...new Set([...strategy.positions.map(row=>row.code),...Object.keys(strategy.target_weights).filter(code=>code!=='CASH'),'CASH'])];
   const pct=value=>finite(value)?`${(value*100).toFixed(2)}%`:'—';
+  const thresholds = strategy.rebalance_thresholds;
+  const suggestions = strategy.suggestions || [];
+  const thresholdNote = thresholds ? `偏离达到 ${(thresholds.trade*100).toFixed(0)} 个百分点提示，超过 ${(thresholds.single*100).toFixed(0)} 个百分点重点提醒。` : '偏离提醒阈值暂不可用。';
+  const basisNote = strategy.budget>0 ? `目标金额与偏离百分点均按策略目标资产 ${money(strategy.budget)} 元计算。` : '请先设置大于零的策略目标比例，才能计算偏离。';
+  const priceIssue = suggestions.find(item=>item.price_issue)?.price_issue;
   const rows=codes.map(code=>{
     const position=strategy.positions.find(row=>row.code===code);
     const name=code==='CASH'?'现金':position?.name || wallet.positions.find(row=>row.code===code)?.name || code;
     const actual=code==='CASH'?strategy.cash:position?.market_value||0;
-    const weight=strategy.target_weights[code];
+    const weight=strategy.target_weights[code] ?? 0;
     const target=finite(strategy.budget)&&finite(weight)?strategy.budget*weight:null;
-    return `<tr><td>${esc(name)}${code==='CASH'?'':`<small>${esc(code)}${finite(weight)?'':' · 目标外持仓'}</small>`}</td><td>${code==='CASH'?'—':number(position?.count || 0)}</td><td>${price(position?.close)}</td><td>${money(actual)}</td><td>${pct(strategy.assets>0?actual/strategy.assets:null)}</td><td>${pct(weight)}</td><td>${money(target)}</td><td>${code==='CASH' ? '' : positionActions(code,strategy.id,(position?.count || 0)>0)}</td></tr>`;
+    const gap = strategy.budget>0 && finite(target) ? (Math.round(actual*100)-Math.round(target*100))/100 : null;
+    const deviation = finite(gap) ? Math.abs(gap)/strategy.budget : null;
+    const level = finite(deviation) && thresholds ? deviation>thresholds.single ? 'strong' : deviation>=thresholds.trade ? 'attention' : '' : '';
+    const index = suggestions.findIndex(item=>item.code===code);
+    const item = suggestions[index];
+    const difference = !finite(gap) ? '<span class="subtle">待设置目标</span>' : `<strong class="allocation-gap">${gap===0 ? '已对齐' : `${gap>0 ? '超配' : '低配'} ${money(Math.abs(gap))} 元`}</strong><small>${(deviation*100).toFixed(2)} 个百分点${level==='strong' ? ' · 重点关注' : level==='attention' ? ' · 达到提醒阈值' : ''}</small>`;
+    const reference = item ? `<small>${item.price_issue ? esc(item.price_issue) : `参考${item.side==='sell' ? '减持' : '增持'}约 ${number(item.qty)} 份`}</small>${item.cash_note ? `<small class="cash-note">${esc(item.cash_note)}</small>` : ''}` : '';
+    const actions = code==='CASH' ? '<button type="button" class="text-button" data-open-cash>分配现金</button>' : positionActions(code,strategy.id,(position?.count || 0)>0,item ? {...item,index} : null);
+    return `<tr data-allocation-code="${esc(code)}"${level ? ` class="allocation-${level}"` : ''}><td>${esc(name)}${code==='CASH'?'':`<small>${esc(code)}${code in strategy.target_weights ? '' : ' · 目标外持仓'}</small>`}</td><td>${code==='CASH'?'—':number(position?.count || 0)}</td><td>${price(position?.close)}</td><td>${money(actual)}<small>策略内 ${pct(strategy.assets>0?actual/strategy.assets:null)}</small></td><td>${money(target)}<small>目标权重 ${pct(weight)}</small></td><td>${difference}<span class="allocation-mobile-values">现 ${money(actual)}<br>目标 ${money(target)}</span>${reference}</td><td>${actions}</td></tr>`;
   }).join('');
-  return `<div class="table-wrap"><table><thead><tr><th>资产</th><th>份额</th><th>价格 / 元</th><th>当前金额 / 元</th><th>实际比例</th><th>目标比例</th><th>目标金额 / 元</th><th>记账</th></tr></thead><tbody>${rows}</tbody></table></div>`;
+  return `<p class="subtle allocation-explainer">${basisNote}${thresholdNote}<br>估值日期 ${esc(wallet.valuation_date)}${priceIssue ? ` · ${esc(priceIssue)}` : ''}</p><div class="table-wrap"><table class="allocation-table core-allocation-table"><thead><tr><th>资产</th><th>份额</th><th>价格 / 元</th><th>当前金额 / 元</th><th>目标金额 / 元</th><th>超配 / 低配</th><th>记账</th></tr></thead><tbody>${rows}</tbody></table></div>`;
 }
 
 function openCashAllocation(account) {
