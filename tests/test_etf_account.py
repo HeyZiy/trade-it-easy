@@ -317,6 +317,16 @@ def test_assignment_changes_only_strategy_shares_not_cash_assets_or_nav(account)
     assert account.read_bytes() == preserved
 
 
+def test_strategy_history_includes_outgoing_transfers_and_cash_allocation(account):
+    transfer = record_event(account, event(account, 'assign', from_strategy='core',
+                                          strategy='rotation', code='588000', qty=100))
+    cash = record_event(account, event(account, 'cash_assign',
+                                      cash_allocations={'core':400, 'rotation':600}))
+    strategies = account_data(account)['strategies']
+    for strategy in strategies:
+        assert [row['id'] for row in strategy['trades']] == [transfer['id'], cash['id']]
+
+
 def test_budget_change_does_not_move_cash_positions_or_change_nav(account):
     from src.etf_account import set_budgets
     before = account_data(account)

@@ -306,7 +306,9 @@ def _strategy_facts(state, view, key):
             "pnl": view["strategy_pnl"][key],
             "target_weights": dict(state["targets"]) if key == "core" else None,
             "remaining_budget": remaining, "buying_power": min(cash, remaining) if remaining is not None else None,
-            "suggestions": [], "trades": [e for e in state["events"] if e.get("strategy") == key],
+            "suggestions": [], "trades": [e for e in state["events"]
+                                           if e.get("strategy") == key or e.get("from_strategy") == key
+                                           or e.get("side") == "cash_assign"],
             "history": [], "performance": None, "benchmark_name": None,
             "cash": cash, "assets": assets, "actual_pct": assets / view["equity"] if view["equity"] else None,
             "deviation": round(assets - budget, 2) if budget is not None else None, "status": status}

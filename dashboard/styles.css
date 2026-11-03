@@ -138,9 +138,25 @@ button:disabled { opacity: .55; cursor: wait; }
 dialog { width: min(560px,calc(100% - 24px)); max-height: calc(100dvh - 24px); border: 1px solid var(--border); border-radius: 14px; padding: 26px; color: inherit; }
 dialog::backdrop { background: #153e3566; }
 .entry-grid { display: grid; grid-template-columns: repeat(2,minmax(0,1fr)); gap: 16px; margin: 22px 0; }
-.entry-grid label { display: grid; gap: 7px; font-size: 12px; color: var(--muted); }
+.entry-grid label { display: grid; align-content: start; gap: 7px; font-size: 12px; color: var(--muted); }
 .entry-grid input,.entry-grid select { min-width: 0; width: 100%; padding: 10px; font: inherit; font-size: 14px; color: #1d3530; background: white; border: 1px solid #ccd8cf; border-radius: 6px; }
 .entry-preview { background: #f3f6f1; border-radius: 8px; padding: 14px; font-size: 13px; line-height: 1.6; }
+.account-entry-bar { display: flex; justify-content: flex-end; margin: 20px 0; }
+.position-actions { display: flex; gap: 12px; white-space: nowrap; }
+.entry-fields { border: 0; padding: 0; margin: 0; min-width: 0; }
+.entry-modes { display: flex; gap: 4px; padding: 4px; border-radius: 8px; background: #f3f6f1; }
+.entry-modes button { flex: 1; padding: 9px 5px; border: 0; border-radius: 6px; background: transparent; color: var(--muted); font-size: 12px; }
+.entry-modes button.active { color: #17533f; background: white; box-shadow: 0 1px 4px #153e3514; }
+.field-hint { color: var(--green); font-size: 12px; line-height: 1.5; }
+.entry-grid .text-button { justify-self: start; padding: 2px 0; }
+.entry-footer { display: flex; flex-wrap: wrap; gap: 12px; }
+.secondary-button { background: white; border: 1px solid #ccd8cf; color: var(--green); border-radius: 7px; padding: 10px 16px; }
+.entry-success { color: #17533f; background: #eaf4ee; border-radius: 8px; padding: 12px; line-height: 1.7; }
+@media (max-width: 480px) {
+  #event-dialog .entry-grid { grid-template-columns: minmax(0,1fr); gap: 14px; }
+  #event-dialog .entry-footer { position: sticky; bottom: -18px; background: white; padding: 12px 0; }
+  #event-dialog .entry-footer button { flex: 1; white-space: nowrap; }
+}
 @media (max-width: 400px) { dialog { padding: 18px; } .entry-grid { gap: 12px; } }
 .nav-label { color: var(--muted); font-size: 11px; white-space: nowrap; padding-top: 3px; }
 .nav-label:not(:first-child) { border-left: 1px solid var(--border); padding-left: 20px; }
