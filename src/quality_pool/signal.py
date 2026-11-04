@@ -107,22 +107,24 @@ class SignalReport(str):
 
 
 def run_signal(today: date, dry_run: bool = False, retry: bool = False,
-               *, state: dict | None = None) -> SignalReport:
+               *, state: dict | None = None, held_codes=None, state_writer=None) -> SignalReport:
     """处理一个信号日，返回报告；状态提交先于报告生成，零通知副作用。
 
     retry 与入口的手动恢复选项一致：只恢复持久化的失败轮，
     不提前开启未到期轮，也不重放已成功生成的当日名单。
     state 由一次运行的装配层共享；只读时也在内存中生成名单供执行预览。
+    held_codes 和 state_writer 由实际账户提供时，名单留存与跨日状态均与模拟账户隔离。
     """
     today_str = today.isoformat()
     st = pool_state.load_state(config.STATE_PATH) if state is None else state
+    write_state = state_writer or (lambda value: pool_state.save_state(value, config.STATE_PATH))
     next_day = st.get("next_signal_date")
     is_round_day = next_day is None or today_str >= next_day
     if st.get('last_signal_date') == today_str and not st.get('signal_retry'):
         return SignalReport(f'# 质量池信号（{today_str}）\n\n- 今日名单已生成，不重复本轮。\n', False)
     if not is_round_day and not st.get('signal_retry'):
         if st.get('deferred_codes'):
-            return SignalReport(review_deferred(today, st, dry_run), True)
+            return SignalReport(review_deferred(today, st, dry_run, held_codes=held_codes, state_writer=write_state), True)
         return SignalReport(f"# 质量池信号（{today_str}）\n\n- 非调仓日：下一调仓信号日 {next_day}\n", False)
 
     asof = _prev_trading_day(today).isoformat()
@@ -134,7 +136,7 @@ def run_signal(today: date, dry_run: bool = False, retry: bool = False,
     st['signal_retry'] = True
     pool_state.put_plan(st, None)
     if not dry_run:
-        pool_state.save_state(st, config.STATE_PATH)
+        write_state(st)
     try:
         universe = feeds.fetch_universe(asof)
         codes = sorted(universe)
@@ -151,8 +153,8 @@ def run_signal(today: date, dry_run: bool = False, retry: bool = False,
         if status.empty:
             raise RuntimeError('状态快照为空')
 
-        trades = load_trades(config.POOL_LEDGER_PATH)
-        held = {p["code"] for p in derive(trades, as_of=today_str).positions}
+        held = (set(held_codes) if held_codes is not None else
+                {p["code"] for p in derive(load_trades(config.POOL_LEDGER_PATH), as_of=today_str).positions})
 
         audit: Dict[str, dict] = {c: {} for c in held}
         pool = screener.build_pool(universe, fundamentals, status, closes, audit=audit)
@@ -193,7 +195,7 @@ def run_signal(today: date, dry_run: bool = False, retry: bool = False,
     st['last_signal_date'] = today_str
     st['deferred_codes'] = sorted(deferred)
     if not dry_run:
-        pool_state.save_state(st, config.STATE_PATH)
+        write_state(st)
 
     lines.append(f"- 质量池 {len(pool)} 只 | 可排名 {len(ranked)} 只 | "
                  f"留存 {len(kept)} | 目标 {len(selected)} | 计划退出 {len(exit_reasons)}")
@@ -233,13 +235,15 @@ def render_decision_table(decisions: List[dict], ranked: List[str],
     return lines
 
 
-def review_deferred(today: date, st: dict, dry_run: bool) -> str:
+def review_deferred(today: date, st: dict, dry_run: bool, *, held_codes=None, state_writer=None) -> str:
     """非调仓日的补判（公开入口，run_signal 的非调仓分支按 deferred_codes 分派）。
 
     仅补判缺数据旧仓；不重新排名/开仓/再平衡。"""
     today_str = today.isoformat()
     asof = _prev_trading_day(today).isoformat()
-    held = {p['code'] for p in derive(load_trades(config.POOL_LEDGER_PATH), as_of=today_str).positions}
+    write_state = state_writer or (lambda value: pool_state.save_state(value, config.STATE_PATH))
+    held = (set(held_codes) if held_codes is not None else
+            {p["code"] for p in derive(load_trades(config.POOL_LEDGER_PATH), as_of=today_str).positions})
     codes = sorted(set(st['deferred_codes']) & held)
     audit = {c: {} for c in codes}
     if codes:
@@ -265,7 +269,7 @@ def review_deferred(today: date, st: dict, dry_run: bool) -> str:
             st['exit_queue'].pop(code, None)
     st['deferred_codes'] = unresolved
     if not dry_run:
-        pool_state.save_state(st, config.STATE_PATH)
+        write_state(st)
     return (f'# 质量池补判（{today_str}）\n'
             f'- 已检查 {len(codes)} 只；仍未知 {len(unresolved)} 只；'
             '不重建买入名单，确认出池者本轮随后尝试退出。')

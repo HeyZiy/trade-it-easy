@@ -11,7 +11,7 @@ const accountName = account => account?.name || '账户';
 const reportDate = value => /^\d{8}$/.test(value) ? `${value.slice(0,4)}-${value.slice(4,6)}-${value.slice(6)}` : value;
 const timestamp = day => Date.parse(`${day}T00:00:00Z`);
 const SIDES = {buy:'买入', sell:'卖出', dividend:'分红', deposit:'入金', withdraw:'出金', assign:'持仓划转', cash_assign:'现金分配'};
-const STRATEGY_NAMES = {core:'核心配置', rotation:'跨资产轮动', unassigned:'未分配'};
+const STRATEGY_NAMES = {core:'核心配置', rotation:'跨资产轮动', quality:'质量池轮动', unassigned:'未分配'};
 const REPORT_PREFIX = {core:'etf_weekly_', satellite:'industry_momentum_', rotation:'etf_rotation_', quality:'quality_pool_'};
 let data, selected = 0, chartRange = 'all', chartObserver;
 let selectedReport, reportRequest, configRequest;
@@ -628,6 +628,7 @@ function assetSlices(account) {
   return [
     {name:'核心持仓',value:data.strategies[0].invested,color:'#22735b'},
     {name:'轮动持仓',value:data.strategies[1].invested,color:'#7393a2'},
+    {name:'质量池持仓',value:data.strategies.find(row=>row.id==='quality')?.invested || 0,color:'#997fa4'},
     {name:'未分配持仓',value:account.strategy_positions.filter(row=>row.strategy==='unassigned').reduce((sum,row)=>sum+row.market_value,0),color:'#b1884c'},
     {name:'现金',value:account.cash,color:'#c2d3c5'}
   ];
@@ -708,10 +709,10 @@ function openCashAllocation(account) {
   let requestId=crypto.randomUUID();
   form.reset();error.hidden=true;fields.disabled=false;button.disabled=false;button.textContent='确认分配';
   document.querySelector('#cash-total').textContent=money(account.cash);
-  for (const id of ['core','rotation']) form.elements.namedItem(id).value=account.cash_by_strategy[id].toFixed(2);
+  for (const id of ['core','rotation','quality']) form.elements.namedItem(id).value=(account.cash_by_strategy[id] || 0).toFixed(2);
   function update() {
     requestId=crypto.randomUUID();
-    const remaining=Math.round((account.cash-Number(form.elements.namedItem('core').value)-Number(form.elements.namedItem('rotation').value))*100)/100;
+    const remaining=Math.round((account.cash-Number(form.elements.namedItem('core').value)-Number(form.elements.namedItem('rotation').value)-Number(form.elements.namedItem('quality').value))*100)/100;
     const message=remaining<0 ? `超出账户现金 ${money(-remaining)} 元` : `未分配现金 ${money(remaining)} 元`;
     document.querySelector('#cash-remaining').textContent=message;
     document.querySelector('#cash-remaining').classList.toggle('invalid',remaining<0);
@@ -723,7 +724,7 @@ function openCashAllocation(account) {
   document.querySelector('#cash-fill-target').disabled=!finite(data.strategies.find(strategy=>strategy.id==='core')?.budget);
   document.querySelector('#cash-fill-target').onclick=()=>{
     const core=data.strategies.find(strategy=>strategy.id==='core');
-    const available=Math.max(0,account.cash-Number(form.elements.namedItem('rotation').value));
+    const available=Math.max(0,account.cash-Number(form.elements.namedItem('rotation').value)-Number(form.elements.namedItem('quality').value));
     if (finite(core?.budget)) form.elements.namedItem('core').value=Math.min(available,Math.max(0,core.budget-core.invested)).toFixed(2);
     update();
   };
@@ -731,7 +732,7 @@ function openCashAllocation(account) {
     event.preventDefault();if(saving)return;
     saving=true;button.disabled=true;error.hidden=true;fields.disabled=true;
     const day=new Intl.DateTimeFormat('en-CA',{timeZone:'Asia/Shanghai',year:'numeric',month:'2-digit',day:'2-digit'}).format(new Date());
-    const payload={request_id:requestId,revision:account.revision,date:day,side:'cash_assign',cash_allocations:{core:Number(form.elements.namedItem('core').value),rotation:Number(form.elements.namedItem('rotation').value)}};
+    const payload={request_id:requestId,revision:account.revision,date:day,side:'cash_assign',cash_allocations:{core:Number(form.elements.namedItem('core').value),rotation:Number(form.elements.namedItem('rotation').value),quality:Number(form.elements.namedItem('quality').value)}};
     try {
       if(!saved) {await accountRequest('/api/etf/event',payload);saved=true;}
       await reloadAccount();dialog.close();
@@ -772,7 +773,7 @@ async function openConfiguration() {
   function total() {
     const weights=[...document.querySelectorAll('#config-assets [data-field=weight]')];
     const sum=weights.reduce((n,input)=>n+Number(input.value),0);
-    const budgets=Number(form.elements.namedItem('core').value)+Number(form.elements.namedItem('rotation').value);
+    const budgets=['core','rotation','quality'].reduce((sum,key)=>sum+Number(form.elements.namedItem(key).value),0);
     const weightIssue=Math.abs(sum-100)>1e-6;
     const budgetIssue=budgets>100+1e-8;
     weights.forEach(input=>input.setCustomValidity(''));
@@ -799,7 +800,7 @@ async function openConfiguration() {
   }
   function show(config) {
     draft=structuredClone(config);
-    for(const key of ['core','rotation']) form.elements.namedItem(key).value=finite(config.budgets[key])?percentInput(config.budgets[key]):'';
+    for(const key of ['core','rotation','quality']) form.elements.namedItem(key).value=finite(config.budgets[key])?percentInput(config.budgets[key]):'';
     document.querySelector('#config-assets').innerHTML='';
     config.core.forEach(addRow);total();
   }
@@ -813,7 +814,7 @@ async function openConfiguration() {
     event.preventDefault();if(saving)return;
     saving=true;save.disabled=true;error.hidden=true;fields.disabled=true;
     const budgets={};
-    for(const key of ['core','rotation']) {
+    for(const key of ['core','rotation','quality']) {
       const value=form.elements.namedItem(key).value;
       if(value!=='') budgets[key]=Number(value)===percentInput(draft.budgets[key])?draft.budgets[key]:Number(value)/100;
     }

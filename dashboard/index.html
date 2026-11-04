@@ -43,8 +43,8 @@
         <div class="entry-grid">
           <label>记账类型<select name="side"><option value="buy">买入</option><option value="sell">卖出</option><option value="dividend">现金分红到账</option><option value="deposit">资金转入</option><option value="withdraw">资金转出</option><option value="assign">持仓划转</option></select></label>
           <label>发生日期<input name="date" type="date" required></label>
-          <label hidden>转出策略<select name="from_strategy" disabled><option value="unassigned">未分配</option><option value="core">核心配置</option><option value="rotation">跨资产轮动</option></select></label>
-          <label data-strategy-field>策略<select name="strategy" required><option value="">请选择策略</option><option value="unassigned">未分配</option><option value="core">核心配置</option><option value="rotation">跨资产轮动</option></select></label>
+          <label hidden>转出策略<select name="from_strategy" disabled><option value="unassigned">未分配</option><option value="core">核心配置</option><option value="rotation">跨资产轮动</option><option value="quality">质量池轮动</option></select></label>
+          <label data-strategy-field>策略<select name="strategy" required><option value="">请选择策略</option><option value="unassigned">未分配</option><option value="core">核心配置</option><option value="rotation">跨资产轮动</option><option value="quality">质量池轮动</option></select></label>
           <label data-trade-field>证券代码<input name="code" inputmode="numeric" pattern="[0-9]{6}" maxlength="6" list="entry-securities" autocomplete="off" required><datalist id="entry-securities"></datalist><span id="entry-security" class="field-hint"></span></label>
           <label data-trade-field><span id="entry-qty-label">成交份额</span><input name="qty" type="number" min="1" step="1" required><button type="button" id="entry-all" class="text-button" hidden>全部卖出</button></label>
           <label data-trade-field>成交均价 / 元<input name="price" type="number" min="0.000001" step="any" required></label>
@@ -63,7 +63,7 @@
       <form id="config-form">
         <div class="section-heading"><h2 id="config-title">策略配置</h2><button id="config-cancel" type="button" class="text-button">关闭</button></div>
         <fieldset id="config-fields" class="entry-fields">
-        <div class="entry-grid"><label>核心配置目标占比 / %<input name="core" type="number" min="0" max="100" step="any" placeholder="暂不设置"></label><label>跨资产轮动目标占比 / %<input name="rotation" type="number" min="0" max="100" step="any" placeholder="暂不设置"></label></div>
+        <div class="entry-grid"><label>核心配置目标占比 / %<input name="core" type="number" min="0" max="100" step="any" placeholder="暂不设置"></label><label>跨资产轮动目标占比 / %<input name="rotation" type="number" min="0" max="100" step="any" placeholder="暂不设置"></label><label>质量池目标占比 / %<input name="quality" type="number" min="0" max="100" step="any" placeholder="暂不设置"></label></div>
         <p class="subtle">以上占比按ETF账户总资产计算，合计不超过100%。</p>
         <div class="section-heading"><h3>核心内部配比</h3><button id="config-add" type="button" class="text-button">＋ 添加资产</button></div>
         <div class="table-wrap"><table class="config-table"><thead><tr><th>证券代码</th><th>权重 / %</th><th>标的设置</th><th></th></tr></thead><tbody id="config-assets"></tbody></table></div>
@@ -79,7 +79,7 @@
         <fieldset id="cash-fields" class="entry-fields">
         <p class="subtle">账户现金 <strong id="cash-total">—</strong> 元</p>
         <button id="cash-fill-target" type="button" class="text-button">按核心目标填入</button>
-        <div class="entry-grid"><label>核心配置 / 元<input name="core" type="number" min="0" step="0.01" required></label><label>跨资产轮动 / 元<input name="rotation" type="number" min="0" step="0.01" required></label></div>
+        <div class="entry-grid"><label>核心配置 / 元<input name="core" type="number" min="0" step="0.01" required></label><label>跨资产轮动 / 元<input name="rotation" type="number" min="0" step="0.01" required></label><label>质量池 / 元<input name="quality" type="number" min="0" step="0.01" required></label></div>
         <p id="cash-remaining" class="entry-preview"></p>
         </fieldset><p id="cash-error" class="warning" role="alert" hidden></p>
         <button type="submit" class="primary-button">确认分配</button>

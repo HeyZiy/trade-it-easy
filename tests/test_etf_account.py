@@ -286,11 +286,11 @@ def test_budgets_share_one_cash_pool_and_same_etf_is_aggregated(account):
     from src.etf_account import set_budgets
     set_budgets(account, dict(revision=revision(load(account)), budgets={'core': .8, 'rotation': .2}))
     view = account_data(account)
-    assert [s['buying_power'] for s in view['strategies']] == [400, 0]
+    assert [s['buying_power'] for s in view['strategies']] == [400, 0, None]
     record_event(account, event(account, 'cash_assign', cash_allocations={'core':400,'rotation':600}))
     view = account_data(account)
-    assert [s['buying_power'] for s in view['strategies']] == [400, 600]
-    assert sum(s['buying_power'] for s in view['strategies']) == view['cash']
+    assert [s['buying_power'] for s in view['strategies']] == [400, 600, None]
+    assert sum(s['buying_power'] or 0 for s in view['strategies']) == view['cash']
     record_event(account, event(account, 'buy', code='588000', name='ETF', qty=100, price=2, fee=1))
     record_event(account, event(account, 'buy', strategy='rotation', code='588000', name='ETF', qty=100, price=2, fee=0))
     view = account_data(account)
@@ -298,8 +298,8 @@ def test_budgets_share_one_cash_pool_and_same_etf_is_aggregated(account):
     assert view['equity'] == 2999
     assert len(view['positions']) == 1
     assert view['positions'][0]['count'] == 1200
-    assert [s['positions'][0]['count'] for s in view['strategies']] == [1100, 100]
-    assert sum(s['buying_power'] for s in view['strategies']) <= view['cash']
+    assert [sum(p['count'] for p in s['positions']) for s in view['strategies']] == [1100, 100, 0]
+    assert sum(s['buying_power'] or 0 for s in view['strategies']) <= view['cash']
 
 
 def test_assignment_changes_only_strategy_shares_not_cash_assets_or_nav(account):
@@ -310,7 +310,7 @@ def test_assignment_changes_only_strategy_shares_not_cash_assets_or_nav(account)
     assert after['equity'] == before['equity']
     assert after['positions'][0]['count'] == before['positions'][0]['count']
     assert after['history'] == before['history']
-    assert [s['positions'][0]['count'] for s in after['strategies']] == [900, 100]
+    assert [sum(p['count'] for p in s['positions']) for s in after['strategies']] == [900, 100, 0]
     preserved = account.read_bytes()
     with pytest.raises(ValueError, match='超过实际持仓'):
         record_event(account, event(account, 'sell', strategy='rotation', code='588000', name='ETF', qty=200, price=2, fee=0))
@@ -324,7 +324,8 @@ def test_strategy_history_includes_outgoing_transfers_and_cash_allocation(accoun
                                       cash_allocations={'core':400, 'rotation':600}))
     strategies = account_data(account)['strategies']
     for strategy in strategies:
-        assert [row['id'] for row in strategy['trades']] == [transfer['id'], cash['id']]
+        expected = [cash['id']] if strategy['id'] == 'quality' else [transfer['id'], cash['id']]
+        assert [row['id'] for row in strategy['trades']] == expected
 
 
 def test_budget_change_does_not_move_cash_positions_or_change_nav(account):
@@ -353,7 +354,7 @@ def test_observation_holdings_never_enter_etf_account_or_funding(account):
     assert wallet['equity'] == 3000 and wallet['cash'] == 1000
     assert rotation['budget'] is None and not rotation['positions']
     assert rotation['observation']['positions'][0]['count'] == 100000
-    assert {s['id'] for s in view['observations']} == {'satellite', 'quality'}
+    assert {s['id'] for s in view['observations']} == {'satellite'}
 
 def test_cli_observation_routes_never_use_etf_account_file():
     from types import SimpleNamespace
@@ -378,11 +379,11 @@ def test_strategy_pnl_keeps_past_gains_at_source_when_shares_move(account):
     assert before['strategies'][0]['pnl'] == 1000
     record_event(account, event(account, 'assign', from_strategy='core', strategy='rotation', code='588000', qty=100))
     after = account_data(account)
-    assert [s['pnl'] for s in after['strategies']] == [1000, 0]
+    assert [s['pnl'] for s in after['strategies']] == [1000, 0, 0]
     assert after['pnl'] == before['pnl'] == 1000
     collect_close(account, '2025-01-07', lambda codes, day: {c: 4 for c in codes})
     after = account_data(account)
-    assert [s['pnl'] for s in after['strategies']] == [1900, 100]
+    assert [s['pnl'] for s in after['strategies']] == [1900, 100, 0]
     assert after['pnl'] == 2000
 
 
@@ -395,13 +396,13 @@ def test_strategy_pnl_accounts_for_trades_fees_dividends_and_ignores_funding(acc
     record_event(account, event(account, 'deposit', amount=500))
     record_event(account, event(account, 'withdraw', amount=100))
     view = account_data(account)
-    assert [s['pnl'] for s in view['strategies']] == [1103, -1]
+    assert [s['pnl'] for s in view['strategies']] == [1103, -1, 0]
     assert view['pnl'] == 1102
     assert sum(s['pnl'] for s in view['strategies']) == view['pnl']
     assert view['cash'] == 1502
     record_event(account, event(account, 'dividend', strategy='unassigned', amount=7))
     view = account_data(account)
-    assert [s['pnl'] for s in view['strategies']] == [1103, -1]
+    assert [s['pnl'] for s in view['strategies']] == [1103, -1, 0]
     assert view['strategy_pnl']['unassigned'] == 7
     assert view['pnl'] == 1109
 
@@ -436,13 +437,13 @@ def test_cash_ownership_is_separate_from_targets_and_allocation_preserves_nav(ac
     from src.etf_account import set_budgets
     set_budgets(account, dict(revision=revision(load(account)), budgets={'core': .8, 'rotation': .2}))
     before = account_data(account)
-    assert [s['actual_pct'] for s in before['strategies']] == [1, 0]
+    assert [s['actual_pct'] for s in before['strategies']] == [1, 0, 0]
     payload = event(account, 'cash_assign', cash_allocations={'core':400,'rotation':600})
     record_event(account, payload)
     record_event(account, payload)
     after = account_data(account)
-    assert after['cash_by_strategy'] == {'core':400,'rotation':600,'unassigned':0}
-    assert [s['actual_pct'] for s in after['strategies']] == [.8, .2]
+    assert after['cash_by_strategy'] == {'core':400,'rotation':600,'quality':0,'unassigned':0}
+    assert [s['actual_pct'] for s in after['strategies']] == [.8, .2, 0]
     assert after['equity'] == before['equity'] and after['pnl'] == before['pnl']
     assert after['history'] == before['history']
     saved = account.read_bytes()
@@ -459,7 +460,7 @@ def test_strategy_cannot_spend_another_strategy_cash(account):
     assert account.read_bytes() == saved
     record_event(account, event(account, 'buy', code='588000', name='ETF', qty=100, price=2, fee=1))
     after = account_data(account)
-    assert after['cash_by_strategy'] == {'core':199,'rotation':600,'unassigned':0}
+    assert after['cash_by_strategy'] == {'core':199,'rotation':600,'quality':0,'unassigned':0}
     assert after['cash'] == 799
 
 
@@ -480,6 +481,6 @@ def test_external_flows_update_selected_cash_ownership_without_profit(account):
     record_event(account, event(account, 'deposit', strategy='rotation', amount=50))
     record_event(account, event(account, 'withdraw', strategy='core', amount=1000))
     after = account_data(account)
-    assert after['cash_by_strategy'] == {'core':0,'rotation':50,'unassigned':0}
+    assert after['cash_by_strategy'] == {'core':0,'rotation':50,'quality':0,'unassigned':0}
     assert after['cash'] == 50 and after['pnl'] == 0
-    assert [s['pnl'] for s in after['strategies']] == [0,0]
+    assert [s['pnl'] for s in after['strategies']] == [0,0,0]

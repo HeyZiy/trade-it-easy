@@ -2,7 +2,8 @@
   "schema_version": 1,
   "budgets": {
     "core": 0.83,
-    "rotation": 0.07
+    "rotation": 0.07,
+    "quality": 0.1
   },
   "core": [
     {

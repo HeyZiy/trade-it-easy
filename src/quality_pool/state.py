@@ -35,10 +35,14 @@ _EMPTY = {
 }
 
 
+def empty_state() -> dict:
+    return dict(_EMPTY, exit_queue={}, deferred_codes=[])
+
+
 def load_state(path: Union[str, Path] = STATE_PATH) -> dict:
     p = Path(path)
     if not p.exists():
-        return dict(_EMPTY, exit_queue={}, deferred_codes=[])
+        return empty_state()
     raw = json.loads(p.read_text(encoding="utf-8"))
     if raw.get('version') != STATE_VERSION:
         raise ValueError('策略状态文件版本不兼容')

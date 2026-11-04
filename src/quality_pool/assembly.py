@@ -53,20 +53,27 @@ def run_day(today: date, dry_run: bool = False, retry: bool = False) -> SignalRe
                         + execution_report.replace("# ", "## ", 1), acted)
 
 
-def build_snapshot(exec_date: str, selected: List[str]) -> execution.ExecSnapshot:
+def build_snapshot(exec_date: str, selected: List[str], *, account_facts=None) -> execution.ExecSnapshot:
     """计算完成后的执行时点快照：台账派生 + 实时价 + 当天证券信息/行情交易阶段。
 
     状态表缺行 → 该码按停牌/ST 处置（fail-closed，缺数据的品种不参与成交判定）。
     """
     import datetime as dt
 
-    trades = load_trades(config.POOL_LEDGER_PATH)
-    codes = sorted({t.code for t in trades} | set(selected))
+    trades = load_trades(config.POOL_LEDGER_PATH) if account_facts is None else []
+    codes = sorted(({t.code for t in trades} if account_facts is None else
+                    {p["code"] for p in account_facts["positions"]}) | set(selected))
     prices, names = feeds.fetch_realtime_quotes(codes)
 
-    snap0 = derive(trades, as_of=exec_date, prices=prices)
-    counts = snap0.held_counts()
-    avail = {p["code"]: int(p["avail_count"]) for p in snap0.positions}
+    if account_facts is None:
+        snap0 = derive(trades, as_of=exec_date, prices=prices)
+        counts = snap0.held_counts()
+        avail = {p["code"]: int(p["avail_count"]) for p in snap0.positions}
+        cash, equity = snap0.cash, snap0.total_assets
+    else:
+        counts = {p["code"]: p["count"] for p in account_facts["positions"]}
+        avail = {p["code"]: p["avail_count"] for p in account_facts["positions"]}
+        cash, equity = account_facts["cash"], account_facts["budget"]
 
     prev_day = trading_calendar.latest_trading_day_on_or_before(
         dt.date.fromisoformat(exec_date) - dt.timedelta(days=1))
@@ -93,8 +100,8 @@ def build_snapshot(exec_date: str, selected: List[str]) -> execution.ExecSnapsho
             unavailable.add(code)
 
     return execution.ExecSnapshot(
-        trade_date=exec_date, counts=counts, avail=avail, cash=snap0.cash,
-        equity=snap0.total_assets, prices=prices, names=names,
+        trade_date=exec_date, counts=counts, avail=avail, cash=cash,
+        equity=equity, prices=prices, names=names,
         suspended=suspended, st=st, limits=limits, unavailable=unavailable)
 
 

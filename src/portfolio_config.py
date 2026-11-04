@@ -9,6 +9,8 @@ import re
 
 from src.json_store import locked, save
 
+STRATEGY_NAMES = {"core": "核心配置", "rotation": "跨资产轮动", "quality": "质量池轮动"}
+
 FILENAME = "etf_config.json"
 DEFAULT_PATH = Path("data") / FILENAME
 EXAMPLE = Path(__file__).resolve().parents[1] / "config" / "etf_config.example.json"
@@ -30,7 +32,7 @@ def validate(config):
     if type(config["schema_version"]) is not int or config["schema_version"] != 1:
         raise ValueError("不支持的配置版本")
     budgets = config["budgets"]
-    if not isinstance(budgets, dict) or set(budgets) - {"core", "rotation"}:
+    if not isinstance(budgets, dict) or set(budgets) - STRATEGY_NAMES.keys():
         raise ValueError("策略目标比例无效")
     valid_weight = lambda value: type(value) in (int, float) and math.isfinite(value) and 0 <= value <= 1
     if any(not valid_weight(v) for v in budgets.values()) or sum(budgets.values()) > 1 + 1e-10:

@@ -19,6 +19,7 @@ from data_provider.security_names import security_name
 from src.trade_ledger.performance import load_performance, valid_records
 from src.etf_account import FILENAME as ETF_FILENAME, account_data as etf_account_data
 from src.dashboard_quotes import QuoteRefresh, SHANGHAI
+from src.portfolio_config import STRATEGY_NAMES
 
 APP_ROOT = Path(__file__).resolve().parent
 ROOT = Path(os.environ.get("TRADE_DASHBOARD_ROOT", APP_ROOT)).resolve()
@@ -215,11 +216,13 @@ def dashboard_data(root=ROOT):
         {"id": key, "name": name, "account_id": "etf", "positions": [], "trades": [],
          "budget": None, "budget_pct": None, "invested": 0, "buying_power": None,
          "suggestions": [], "status": "账户未初始化", "history": [], "performance": None}
-        for key, name in (("core", "核心配置"), ("rotation", "跨资产轮动"))])
-    rotation = strategy_view("rotation", "跨资产轮动 · 独立模拟", by_id.get("rotation"), None)
-    strategies[1]["observation"] = rotation
+        for key, name in STRATEGY_NAMES.items()])
+    for strategy in strategies:
+        if strategy["id"] in {"rotation", "quality"}:
+            strategy["observation"] = strategy_view(
+                strategy["id"], strategy["name"] + " · 独立模拟", by_id.get(strategy["id"]), None)
     observations = [strategy_view(key, name, by_id.get(key), None)
-                    for key, name in (("satellite", "行业轮动"), ("quality", "质量池轮动"))]
+                    for key, name in (("satellite", "行业轮动"),)]
     reports = _report_files(root)
     states = []
     for filename, label in (("quality_pool_v2_state.json", "质量池状态"),

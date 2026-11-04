@@ -12,7 +12,8 @@
 的实时行情先卖后买、处理退出队列；调仓轮或当日有成交才保存并推送一份报告，
 非调仓且无成交的静默日免发日报（异常走日志告警通道）。全批失败次日
 自动重算，不移动原定20交易日周期。预算 = 执行时总权益/6 冻结。
-成交不固定为09:30或09:31，按实际取价时点模拟记账。真实账户由人工另行执行。
+成交不固定为09:30或09:31，按实际取价时点模拟记账。实际账户另按分配持仓生成
+质量池计划，目标预算为账户资产的10%，成交由人工确认记账。
 
 signal / execute 子命令仅保留供手动分阶段排查，不单独配置定时任务。
 
@@ -44,9 +45,22 @@ logger = logging.getLogger(__name__)
 
 
 def run(today: date, dry_run: bool = False, retry: bool = False) -> str:
-    """一次完成信号、执行与汇总；非调仓且无成交的静默日不保存不推送。"""
-    return _finish_report(assembly.run_day(today, dry_run=dry_run, retry=retry),
-                          "", today, dry_run)
+    """完成独立模拟及实际账户建议；两者均无行动的静默日不保存不推送。"""
+    report = assembly.run_day(today, dry_run=dry_run, retry=retry)
+    report, acted = _account_report(report, today, dry_run, retry=retry)
+    return _finish_report(report, "", today, dry_run, acted=acted)
+
+
+def _account_report(report, today, dry_run, *, retry=False):
+    from src.etf_account import publish_quality
+
+    acted = getattr(report, "acted", True)
+    try:
+        advice = publish_quality(today.isoformat(), dry_run=dry_run, retry=retry)
+    except Exception:
+        logger.exception("质量池账户建议发布失败")
+        advice = "账户建议更新失败，请重新运行"
+    return str(report) + "\n\n## ETF账户 · 质量池计划\n\n" + advice, acted or "- 买入" in advice or "- 卖出" in advice
 
 
 def run_signal(today: date, dry_run: bool = False, retry: bool = False) -> str:
@@ -59,8 +73,8 @@ def run_signal(today: date, dry_run: bool = False, retry: bool = False) -> str:
 
 def run_execute(today: date, dry_run: bool = False) -> str:
     """手动执行已生成的名单；手动分阶段排查始终保存推送。"""
-    return _finish_report(assembly.run_execution(today.isoformat(), dry_run=dry_run),
-                          "execute", today, dry_run, acted=True)
+    report, _ = _account_report(assembly.run_execution(today.isoformat(), dry_run=dry_run), today, dry_run)
+    return _finish_report(report, "execute", today, dry_run, acted=True)
 
 
 def _finish_report(report: str, stage: str, today: date, dry_run: bool,

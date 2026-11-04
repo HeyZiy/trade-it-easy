@@ -71,6 +71,9 @@ def revision(state, asof=None):
         facts["targets"] = state.get("targets", {})
         if "_config_revision" in state:
             facts["configuration"] = state["_config_revision"]
+        for key in ("quality_signal", "quality_state"):
+            if key in state:
+                facts[key] = state[key]
         if "rotation_signal" in state:
             facts["rotation_signal"] = state["rotation_signal"]
     return hashlib.sha256(json.dumps(facts, sort_keys=True, ensure_ascii=False).encode()).hexdigest()
@@ -82,14 +85,14 @@ def initialize(path, *, asof, cash, positions, targets=None, budgets=None, cash_
     if type(cash) not in (int, float) or not math.isfinite(cash) or cash < 0:
         raise ValueError("现金须为有限非负数")
     budgets = dict(budgets or {})
-    if set(budgets) - {"core", "rotation"} or any(type(w) not in (int, float) or not math.isfinite(w) or not 0 <= w <= 1 for w in budgets.values()) or sum(budgets.values()) > 1:
+    if set(budgets) - portfolio_config.STRATEGY_NAMES.keys() or any(type(w) not in (int, float) or not math.isfinite(w) or not 0 <= w <= 1 for w in budgets.values()) or sum(budgets.values()) > 1:
         raise ValueError("策略预算比例无效")
     rows, codes = [], set()
     for item in positions:
         code = canonical_stock_code(item["code"])
         count, price = item["count"], _money(item["price"])
         strategy = item.get("strategy", "unassigned")
-        if strategy not in {"core", "rotation", "unassigned"}:
+        if strategy not in {*portfolio_config.STRATEGY_NAMES, "unassigned"}:
             raise ValueError("策略标记无效")
         if (strategy, code) in codes or not _positive(count) or int(count) != count:
             raise ValueError("代码不得重复，份额须为正整数")
@@ -124,15 +127,15 @@ def initialize(path, *, asof, cash, positions, targets=None, budgets=None, cash_
 
 
 def _cash_allocation(values, total):
-    if not isinstance(values, dict) or set(values) - {"core", "rotation", "unassigned"}:
+    if not isinstance(values, dict) or set(values) - {*portfolio_config.STRATEGY_NAMES, "unassigned"}:
         raise ValueError("现金分配无效")
     if any(type(v) not in (int, float) or not math.isfinite(v) or v < 0 or round(v, 2) != v for v in values.values()):
         raise ValueError("现金分配须为非负金额，最多两位小数")
-    core, rotation = values.get("core", 0), values.get("rotation", 0)
-    remaining = round(total - core - rotation, 2)
+    allocated = {key: values.get(key, 0) for key in portfolio_config.STRATEGY_NAMES}
+    remaining = round(total - sum(allocated.values()), 2)
     if remaining < 0:
         raise ValueError("分配金额超过账户现金")
-    return {"core": core, "rotation": rotation, "unassigned": remaining}
+    return {**allocated, "unassigned": remaining}
 
 
 def snapshot(state, asof, prices=None):
@@ -142,7 +145,7 @@ def snapshot(state, asof, prices=None):
     cash_by_strategy = _cash_allocation(initial.get("cash_allocations", {}), cash)
     held = {(r.get("strategy", "unassigned"), r["code"]): {**r, "name": security_name(r["code"]), "strategy": r.get("strategy", "unassigned"), "avail_count": r["count"]} for r in initial["positions"]}
     marks = {r["code"]: r["price"] for r in initial["positions"]}
-    net_capital = {"core": 0.0, "rotation": 0.0, "unassigned": 0.0}
+    net_capital = dict.fromkeys((*portfolio_config.STRATEGY_NAMES, "unassigned"), 0.0)
     for row in initial["positions"]:
         net_capital[row.get("strategy", "unassigned")] += row["count"] * row["price"]
     net_flows = 0.0
@@ -167,7 +170,7 @@ def snapshot(state, asof, prices=None):
             cash_by_strategy[event.get("strategy", "unassigned")] += event["amount"]
             net_capital[event.get("strategy", "unassigned")] -= event["amount"]
         elif side == "cash_assign":
-            cash_by_strategy = dict(event["cash_allocations"])
+            cash_by_strategy = _cash_allocation(event["cash_allocations"], cash)
         elif side == "assign":
             code, qty = event["code"], event["qty"]
             source = held[(event["from_strategy"], code)]
@@ -291,7 +294,7 @@ def baseline(state):
 
 def _strategy_facts(state, view, key):
     """按策略标识提供账户事实，不计算建议；供展示、发布和成交处理共用。"""
-    name = {"core": "核心配置", "rotation": "跨资产轮动"}[key]
+    name = portfolio_config.STRATEGY_NAMES[key]
     positions = [r for r in view["strategy_positions"] if r["strategy"] == key]
     invested = round(sum(r["market_value"] for r in positions), 2)
     weight = state.get("budgets", {}).get(key)
@@ -322,7 +325,7 @@ def _strategy_facts(state, view, key):
 def strategy_views(state, view, *, today=None):
     """汇总策略事实与建议；策略标识决定归属，展示顺序不参与规则判定。"""
     result = []
-    for key in ("core", "rotation"):
+    for key in portfolio_config.STRATEGY_NAMES:
         row = _strategy_facts(state, view, key)
         if key == "rotation":
             from src.etf.rotation_advice import advice
@@ -330,6 +333,12 @@ def strategy_views(state, view, *, today=None):
                 state.get("rotation_signal"), row, today or _today(),
                 account_revision=revision(state), dismissed=state["dismissed"])
             row["signal_date"] = state.get("rotation_signal", {}).get("date")
+        if key == "quality":
+            from src.quality_pool.account_advice import advice
+            row["suggestions"], row["advice_status"] = advice(
+                state.get("quality_signal"), row, today or _today(),
+                dismissed=state["dismissed"])
+            row["signal_date"] = state.get("quality_signal", {}).get("date")
         if key == "core" and row["status"] == "已分配" and row["budget"] > 0:
             row["suggestions"] = suggestions(state, {**view, "positions": row["positions"],
                                                     "equity": row["budget"], "cash": row["cash"]})
@@ -360,6 +369,62 @@ def publish_rotation(day, rows, prices, diag, *, path=None, dry_run=False, error
     return rotation_advice.render(suggestions, status)
 
 
+def publish_quality(day, *, path=None, dry_run=False, retry=False):
+    """质量池使用实际持仓独立生成名单；取数期间释放锁，提交时检查账户版本。"""
+    from copy import deepcopy
+    from src.quality_pool import account_advice, assembly, signal, state as pool_state
+    from src.etf.rotation_advice import render
+
+    path = Path(path or ACCOUNT_PATH)
+    if not path.exists():
+        return "ETF账户尚未初始化"
+    with _locked(path):
+        account = load(path)
+        expected = revision(account)
+    previous = account.get("quality_signal")
+    if previous and previous["date"] > day:
+        return "已有更新日期的质量池建议，本次未覆盖"
+    strategy = _strategy_facts(account, snapshot(account, day), "quality")
+    if not strategy["budget"]:
+        return "请先设置质量池目标比例"
+    if previous and previous["date"] == day and not previous.get("issues"):
+        rows, status = account_advice.advice(previous, strategy, date.fromisoformat(day),
+                                             dismissed=account["dismissed"])
+        return render(rows, status)
+    state = deepcopy(account.get("quality_state") or pool_state.empty_state())
+
+    def commit(value, published=None):
+        nonlocal expected
+        if dry_run:
+            return
+        with _locked(path):
+            current = load(path)
+            if revision(current) != expected:
+                raise ValueError("质量池运行期间账户已更新，请重新运行")
+            current["quality_state"] = deepcopy(value)
+            current["quality_signal"] = published or {"date": day, "issues": "质量池名单更新中，暂停建议"}
+            _save(path, current)
+            expected = revision(current)
+
+    try:
+        signal.run_signal(date.fromisoformat(day), dry_run=dry_run, retry=retry,
+                          state=state, held_codes={p["code"] for p in strategy["positions"]},
+                          state_writer=commit)
+        if state.get("signal_retry"):
+            raise ValueError("质量池数据不完整，本轮暂停，等待重试")
+        selected = (state.get("pending_plan") or {}).get("selected", [])
+        execution_snapshot = assembly.build_snapshot(day, selected, account_facts=strategy)
+        published = account_advice.make_signal(day, state, execution_snapshot, previous)
+    except Exception as error:
+        logger.exception("质量池实际账户建议更新失败")
+        published = {"date": day, "issues": str(error)}
+    # 若用户在取数期间记账，提交失败，保留用户数据并要求重新生成建议。
+    commit(state, published)
+    rows, status = account_advice.advice(published, strategy, date.fromisoformat(day),
+                                         dismissed=account["dismissed"])
+    return render(rows, status)
+
+
 def record_event(path, payload):
     """锁内去重和版本检查，避免双击、重试或旧页面重复改账。"""
     with _locked(path):
@@ -387,7 +452,7 @@ def record_event(path, payload):
             event["cash_allocations"] = _cash_allocation(payload.get("cash_allocations"), view["cash"])
         elif side == "assign":
             source, target = payload.get("from_strategy"), payload.get("strategy")
-            if source not in {"core", "rotation", "unassigned"} or target not in {"core", "rotation", "unassigned"} or source == target:
+            if source not in {*portfolio_config.STRATEGY_NAMES, "unassigned"} or target not in {*portfolio_config.STRATEGY_NAMES, "unassigned"} or source == target:
                 raise ValueError("请选择不同的分配来源和目标")
             code, qty = canonical_stock_code(payload.get("code", "")), payload.get("qty")
             held = next((r for r in view["strategy_positions"] if r["code"] == code and r["strategy"] == source), None)
@@ -410,7 +475,7 @@ def record_event(path, payload):
                 if not held or qty > held["count"]:
                     raise ValueError("卖出份额超过实际持仓")
             strategy = payload.get("strategy", "unassigned")
-            if strategy not in {"core", "rotation", "unassigned"}:
+            if strategy not in {*portfolio_config.STRATEGY_NAMES, "unassigned"}:
                 raise ValueError("策略标记无效")
             if side == "buy" and round(qty * price + fee, 2) > view["cash_by_strategy"][strategy]:
                 raise ValueError("该策略现金不足，请先分配现金")
@@ -419,7 +484,7 @@ def record_event(path, payload):
             event.update(code=code, qty=int(qty), price=price, fee=float(fee), strategy=strategy)
         else:
             strategy = payload.get("strategy", "unassigned")
-            if strategy not in {"core", "rotation", "unassigned"}:
+            if strategy not in {*portfolio_config.STRATEGY_NAMES, "unassigned"}:
                 raise ValueError("策略标记无效")
             amount = round(_money(payload.get("amount")), 2)
             if amount <= 0 or (side == "withdraw" and amount > view["cash_by_strategy"][strategy]):
@@ -435,6 +500,14 @@ def record_event(path, payload):
                               account_revision=revision(state), dismissed=state["dismissed"])
             if signal is not None:
                 state["rotation_signal"] = signal
+        if event.get("strategy") == "quality" or event.get("from_strategy") == "quality":
+            from src.quality_pool.account_advice import on_event
+            if state.get("quality_signal"):
+                state["quality_signal"] = on_event(state["quality_signal"], event)
+            quality_state = state.get("quality_state")
+            if quality_state and quality_state.get("pending_plan") and side in {"buy", "sell", "assign"}:
+                # 名单生成后、建议发布前持仓变化，重试时须按新持仓重新选股。
+                quality_state.update(pending_plan=None, signal_retry=True)
         state["events"].append(event)
         _save(path, state)
         return event
@@ -446,7 +519,7 @@ def set_budgets(path, payload):
         if payload.get("revision") != revision(state):
             raise ValueError("账户已更新，请刷新后重试")
         budgets = payload.get("budgets")
-        if not isinstance(budgets, dict) or set(budgets) - {"core", "rotation"}:
+        if not isinstance(budgets, dict) or set(budgets) - portfolio_config.STRATEGY_NAMES.keys():
             raise ValueError("预算配置无效")
         if any(type(w) not in (int, float) or not math.isfinite(w) or not 0 <= w <= 1 for w in budgets.values()) or sum(budgets.values()) > 1:
             raise ValueError("预算合计不能超过100%")
