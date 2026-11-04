@@ -18,6 +18,7 @@ from src.trade_ledger.ledger import derive, load_trades
 from data_provider.security_names import security_name
 from src.trade_ledger.performance import load_performance, valid_records
 from src.etf_account import FILENAME as ETF_FILENAME, account_data as etf_account_data
+from src.dashboard_quotes import QuoteRefresh, SHANGHAI
 
 APP_ROOT = Path(__file__).resolve().parent
 ROOT = Path(os.environ.get("TRADE_DASHBOARD_ROOT", APP_ROOT)).resolve()
@@ -33,6 +34,7 @@ DISPLAY = (
 )
 AUTH_REALM = 'Basic realm="trade-dashboard", charset="UTF-8"'
 AUTH_DELAY = 0.5
+QUOTES = QuoteRefresh()
 
 
 class ReportHTML(HTMLParser):
@@ -98,7 +100,8 @@ def authorized(header, user, password):
 
 def account_data(root, filename):
     if filename == ETF_FILENAME:
-        return etf_account_data(root / "data" / filename)
+        path = root / "data" / filename
+        return etf_account_data(path, live_quotes=QUOTES.read(path))
     path = root / "data" / filename
     if not path.exists():
         return {"error": "台账文件不存在", "positions": [], "trades": []}
@@ -252,6 +255,20 @@ class Handler(BaseHTTPRequestHandler):
                     "/api/etf/budgets": set_budgets}
         from src.portfolio_config import update
         handlers["/api/etf/config"] = update
+        if self.path == "/api/etf/refresh":
+            try:
+                path = ROOT / "data" / FILENAME
+                account = etf_account_data(path)
+                QUOTES.start(path, account["quote_revision"],
+                             [row["code"] for row in account["positions"]],
+                             datetime.now(SHANGHAI).date().isoformat())
+            except Exception:
+                logging.exception("启动网页行情刷新失败")
+                self.respond(json.dumps({"error": "无法刷新行情，请检查账户数据后重试。"}, ensure_ascii=False).encode(),
+                             "application/json; charset=utf-8", status=503)
+                return
+            self.respond(b'{"ok":true}', "application/json; charset=utf-8", status=202)
+            return
         if self.path not in handlers:
             self.send_error(404)
             return
@@ -303,7 +320,7 @@ class Handler(BaseHTTPRequestHandler):
             content_type = "text/javascript; charset=utf-8" if filename.endswith(".js") else "text/css; charset=utf-8"
             self.respond((APP_ROOT / "dashboard" / filename).read_bytes(), content_type)
         elif self.path == "/api/overview":
-            body = json.dumps(dashboard_data(), ensure_ascii=False, allow_nan=False).encode("utf-8")
+            body = json.dumps(dashboard_data(ROOT), ensure_ascii=False, allow_nan=False).encode("utf-8")
             self.respond(body, "application/json; charset=utf-8")
         elif self.path.startswith("/api/report/"):
             name = self.path.removeprefix("/api/report/")
@@ -316,7 +333,7 @@ class Handler(BaseHTTPRequestHandler):
                          "application/json; charset=utf-8")
         elif self.path.startswith("/report/"):
             name = self.path.removeprefix("/report/")
-            allowed = {r["file"] for r in dashboard_data()["reports"]}
+            allowed = {r["file"] for r in dashboard_data(ROOT)["reports"]}
             if name not in allowed:
                 self.send_error(404)
                 return

@@ -487,7 +487,7 @@ def collect_close(path, asof, close_prices, *, dry_run=False):
         return state
 
 
-def account_data(path):
+def account_data(path, *, live_quotes=None):
     state = load(path)
     today = _today().isoformat()
     view = snapshot(state, today)
@@ -499,13 +499,38 @@ def account_data(path):
     warnings = list(records[-1]["issues"]) if records else []
     if records and (not latest or latest["date"] != records[-1]["date"]):
         warnings.append("最新成绩待重新估值，曲线保留最近有效数据。")
+    quote_revision = hashlib.sha256(json.dumps([revision(state), state["records"]],
+                                               sort_keys=True, ensure_ascii=False).encode()).hexdigest()
+    # 调仓建议仍按保存的估值生成；盘中报价只覆盖展示估值，不进入历史或成交校验。
+    strategies = strategy_views(state, view)
+    quote_refresh = None
+    if live_quotes:
+        applicable = (live_quotes.get("revision") == quote_revision
+                      and live_quotes.get("day") == today)
+        quote_refresh = {key: live_quotes.get(key) for key in
+                         ("running", "fetched_at", "missing", "error")}
+        quote_refresh["applicable"] = applicable
+        quotes = live_quotes.get("quotes", {}) if applicable else {}
+        prices = {code: item["price"] for code, item in quotes.items() if _positive(item.get("price"))}
+        quote_refresh["estimated"] = bool(prices)
+        view = snapshot(state, today, prices)
+        for row in view["positions"] + view["strategy_positions"]:
+            quote = quotes.get(row["code"], {})
+            row["quote_fetched_at"] = quote.get("fetched_at") if row["code"] in prices else None
+            row["quote_missing"] = (row["code"] not in prices
+                                    or row["code"] in (live_quotes.get("missing") or []))
+        for strategy in strategies:
+            facts = _strategy_facts(state, view, strategy["id"])
+            for key in ("positions", "budget", "invested", "pnl", "assets", "actual_pct",
+                        "deviation", "remaining_budget", "buying_power"):
+                strategy[key] = facts[key]
     return {"id": "etf", "name": "ETF账户", "can_record": True, **view,
             "performance": latest, "trades": [{**{k: v for k, v in e.items() if k != "request"},
                          **({"name": security_name(e["code"])} if e.get("code") else {})}
                        for e in reversed(state["events"])][:20],
             "start_date": state["initial"]["date"], "initial_equity": state["initial"]["equity"],
             "revision": revision(state), "config_revision": state["_config_revision"], "suggestions": [],
-            "strategies": strategy_views(state, view),
+            "strategies": strategies, "quote_refresh": quote_refresh, "quote_revision": quote_revision,
             "valuation_date": latest["date"] if latest else state["initial"]["date"],
             "has_events": bool(state["events"]), "benchmark_name": None, "warnings": warnings,
             "history": [{"date": r["date"], "nav": r["nav"] if r["date"] in valid_dates else None,
