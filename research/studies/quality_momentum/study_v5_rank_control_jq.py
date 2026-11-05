@@ -2,7 +2,7 @@
 # 自动生成：修改 quality_momentum/internal 中的源码，再运行
 # python -m research.studies.quality_momentum.internal.build_platform
 # 整文件粘贴到聚宽；本文件无需导入本地 research 包。
-BUILD_SOURCES_SHA256 = '{"research/studies/quality_momentum/internal/account_statistics.py":"2f40d5bf90693a55856daf3fcab817cc4755cf78725ec9fca79425b1d418080c","research/studies/quality_momentum/internal/build_platform.py":"64b1e9f477c4051249337ac3babd27063c03564fd79594925b9105e897f02e5d","research/studies/quality_momentum/internal/rank_control_adapter.py":"432b68cb2f4ece35054081138f393a2a0c653889e4e0382999ae58585a644865","research/studies/quality_momentum/pool_rotation_v5.py":"f522e494648e1437d35f535e76f31c1ff2508b4deeb43231fa0a2086473b185f","research/tools/factor_analysis/platform_codegen.py":"2a4f066e9f051ea79a048e79cb92a35a2d258830d092699492544ea9759e4b88"}'
+BUILD_SOURCES_SHA256 = '{"research/studies/quality_momentum/internal/account_statistics.py":"2f40d5bf90693a55856daf3fcab817cc4755cf78725ec9fca79425b1d418080c","research/studies/quality_momentum/internal/build_platform.py":"64b1e9f477c4051249337ac3babd27063c03564fd79594925b9105e897f02e5d","research/studies/quality_momentum/internal/rank_control_adapter.py":"f02a015e28b6c46f05a2167d924c0f7614413b7ea3ac29f110b2f98214627628","research/studies/quality_momentum/pool_rotation_v5.py":"cb4967826e2ad82cf5d0963e35bc68b05fce39915029b4f0672868316a7221de","research/tools/factor_analysis/platform_codegen.py":"2a4f066e9f051ea79a048e79cb92a35a2d258830d092699492544ea9759e4b88"}'
 
 # -*- coding: utf-8 -*-
 """聚宽单文件：v5动量排序 vs 10组固定种子的随机排序。
@@ -11,7 +11,7 @@ BUILD_SOURCES_SHA256 = '{"research/studies/quality_momentum/internal/account_sta
 初始资金1100万元；11个子账户各100万元，不划转资金。
 RUN_MODE='momentum_only' 时只跑动量组，初始资金须改为100万元。
 所有账户开盘前取T-1信号、开盘执行；检验日频下的排序增量。
-日频成交与原v5分钟版不同，不能直接与207.03%的旧摘要比较。
+原v5摘要实跑为日频（此前误记为分钟），但旧摘要运行设置未留存；比较以同口径分账户CSV与最终汇总为准，不与207.03%旧摘要拼接归因。
 平台主图是合计；比较看分账户CSV、辅助线和最终汇总。
 共享T-1候选快照；随机组也要求完整动量历史，只打乱新仓候选顺序。
 旧仓仍按原动量顺序再平衡，前6名不顺延、质量留存、行业限制、成本均沿用v5。
@@ -72,7 +72,7 @@ MEMBER_COLUMNS = ['signal_day', 'asof', 'code', 'pool_state', 'pool_reason',
 POSITION_COLUMNS = ['date', 'account', 'seed', 'code', 'quantity', 'price', 'market_value', 'weight']
 
 
-SOURCE_V5_SHA256 = 'f522e494648e1437d35f535e76f31c1ff2508b4deeb43231fa0a2086473b185f'
+SOURCE_V5_SHA256 = 'cb4967826e2ad82cf5d0963e35bc68b05fce39915029b4f0672868316a7221de'
 
 
 class PoolDataError(_python_builtins.Exception):

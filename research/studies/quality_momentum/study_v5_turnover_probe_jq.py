@@ -2,7 +2,7 @@
 # 自动生成：修改 quality_momentum/internal 中的源码，再运行
 # python -m research.studies.quality_momentum.internal.build_platform
 # 整文件粘贴到聚宽；本文件无需导入本地 research 包。
-BUILD_SOURCES_SHA256 = '{"research/studies/quality_momentum/internal/build_platform.py":"64b1e9f477c4051249337ac3babd27063c03564fd79594925b9105e897f02e5d","research/studies/quality_momentum/internal/probe_adapter.py":"63b6b104bfb2783c5b77d69fa6d12f118afa3017039e904e2fac28688e617093","research/studies/quality_momentum/internal/probe_statistics.py":"62d12d46d674410af979071e612e9c15a0e44ea31995b03a3f7ffb11746b4271","research/studies/quality_momentum/pool_rotation_v5.py":"f522e494648e1437d35f535e76f31c1ff2508b4deeb43231fa0a2086473b185f","research/tools/factor_analysis/core.py":"a816fe8bf094b01c3b39a0d7a41dab2d77df26dacee92a22fea6159f558b835f","research/tools/factor_analysis/platform_codegen.py":"2a4f066e9f051ea79a048e79cb92a35a2d258830d092699492544ea9759e4b88"}'
+BUILD_SOURCES_SHA256 = '{"research/studies/quality_momentum/internal/build_platform.py":"64b1e9f477c4051249337ac3babd27063c03564fd79594925b9105e897f02e5d","research/studies/quality_momentum/internal/probe_adapter.py":"63b6b104bfb2783c5b77d69fa6d12f118afa3017039e904e2fac28688e617093","research/studies/quality_momentum/internal/probe_statistics.py":"62d12d46d674410af979071e612e9c15a0e44ea31995b03a3f7ffb11746b4271","research/studies/quality_momentum/pool_rotation_v5.py":"cb4967826e2ad82cf5d0963e35bc68b05fce39915029b4f0672868316a7221de","research/tools/factor_analysis/core.py":"a816fe8bf094b01c3b39a0d7a41dab2d77df26dacee92a22fea6159f558b835f","research/tools/factor_analysis/platform_codegen.py":"2a4f066e9f051ea79a048e79cb92a35a2d258830d092699492544ea9759e4b88"}'
 
 # -*- coding: utf-8 -*-
 """聚宽日频候选探针：粘贴整个文件，2016-01-04至2026-09-01，资金100万。
@@ -57,7 +57,7 @@ OUTPUT_PREFIX = 'quality_momentum_v5_turnover_probe'
 SCOPES = ('pool_raw', 'strong_raw', 'pool_neutral')
 GROUP_LABELS = ('low', 'mid', 'high', 'low_minus_high')
 NAN = _python_builtins.float('nan')
-SOURCE_V5_SHA256 = 'f522e494648e1437d35f535e76f31c1ff2508b4deeb43231fa0a2086473b185f'
+SOURCE_V5_SHA256 = 'cb4967826e2ad82cf5d0963e35bc68b05fce39915029b4f0672868316a7221de'
 
 
 def initialize(context):

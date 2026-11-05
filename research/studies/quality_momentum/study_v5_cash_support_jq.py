@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 # 自动生成：python -m research.studies.quality_momentum.internal.build_cash_support
 # 整文件粘贴聚宽，天频率；2016-01-04至2026-09-01；不下单。
-BUILD_SOURCES_SHA256 = '{"research/studies/quality_momentum/internal/build_cash_support.py": "c2d073f5c54fcf7bdd7d467d5be47b9b8cd850498d433673a13f4d84475beda5", "research/studies/quality_momentum/internal/build_platform.py": "64b1e9f477c4051249337ac3babd27063c03564fd79594925b9105e897f02e5d", "research/studies/quality_momentum/internal/cash_support.py": "494007de2165eb998264b872b7bc7f45031b761f1a31b4e499f2e345592ca7e8", "research/studies/quality_momentum/internal/cash_support_adapter.py": "6679844a660bc0816067e23d4e4d25025d58fc6b1723eb86e18c51e7c9b208b7", "research/studies/quality_momentum/internal/probe_adapter.py": "63b6b104bfb2783c5b77d69fa6d12f118afa3017039e904e2fac28688e617093", "research/studies/quality_momentum/internal/probe_statistics.py": "62d12d46d674410af979071e612e9c15a0e44ea31995b03a3f7ffb11746b4271", "research/studies/quality_momentum/pool_rotation_v5.py": "f522e494648e1437d35f535e76f31c1ff2508b4deeb43231fa0a2086473b185f", "research/tools/factor_analysis/core.py": "a816fe8bf094b01c3b39a0d7a41dab2d77df26dacee92a22fea6159f558b835f", "research/tools/factor_analysis/platform_codegen.py": "2a4f066e9f051ea79a048e79cb92a35a2d258830d092699492544ea9759e4b88"}'
+BUILD_SOURCES_SHA256 = '{"research/studies/quality_momentum/internal/build_cash_support.py": "c2d073f5c54fcf7bdd7d467d5be47b9b8cd850498d433673a13f4d84475beda5", "research/studies/quality_momentum/internal/build_platform.py": "64b1e9f477c4051249337ac3babd27063c03564fd79594925b9105e897f02e5d", "research/studies/quality_momentum/internal/cash_support.py": "494007de2165eb998264b872b7bc7f45031b761f1a31b4e499f2e345592ca7e8", "research/studies/quality_momentum/internal/cash_support_adapter.py": "6679844a660bc0816067e23d4e4d25025d58fc6b1723eb86e18c51e7c9b208b7", "research/studies/quality_momentum/internal/probe_adapter.py": "63b6b104bfb2783c5b77d69fa6d12f118afa3017039e904e2fac28688e617093", "research/studies/quality_momentum/internal/probe_statistics.py": "62d12d46d674410af979071e612e9c15a0e44ea31995b03a3f7ffb11746b4271", "research/studies/quality_momentum/pool_rotation_v5.py": "cb4967826e2ad82cf5d0963e35bc68b05fce39915029b4f0672868316a7221de", "research/tools/factor_analysis/core.py": "a816fe8bf094b01c3b39a0d7a41dab2d77df26dacee92a22fea6159f558b835f", "research/tools/factor_analysis/platform_codegen.py": "2a4f066e9f051ea79a048e79cb92a35a2d258830d092699492544ea9759e4b88"}'
 # -*- coding: utf-8 -*-
 """质量池现金支撑探针：日频，不下单，2016-01-04至2026-09-01。"""
 from jqdata import *
@@ -26,7 +26,7 @@ PE_MAX, PB_MAX, VOL60_MAX = 30.0, 5.0, 35.0
 VOL_LOOKBACK, VOL_ANNUAL_DAYS = 61, 250.0
 BENCHMARK = '000906.XSHG'
 NAN = _python_builtins.float('nan')
-SOURCE_V5_SHA256 = 'f522e494648e1437d35f535e76f31c1ff2508b4deeb43231fa0a2086473b185f'
+SOURCE_V5_SHA256 = 'cb4967826e2ad82cf5d0963e35bc68b05fce39915029b4f0672868316a7221de'
 
 SAMPLE_COLUMNS = ['signal_day', 'asof', 'code', 'cash_support', 'cash_ttm', 'profit_ttm',
                   'cash_status', 'cash_report', 'market_cap', 'momentum', 'momentum_rank',

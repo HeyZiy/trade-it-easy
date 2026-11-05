@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 # 自动生成：python -m research.studies.quality_momentum.internal.build_growth_basis
 # 整文件粘贴聚宽，天频率；2016-01-04至2026-09-01；不下单。
-BUILD_SOURCES_SHA256 = '{"research/studies/quality_momentum/internal/build_growth_basis.py": "6e2dbfa64609f6dec966fecd25749d5b01e476a6e134ac4a2ac3e14a4d7fd1f8", "research/studies/quality_momentum/internal/build_platform.py": "64b1e9f477c4051249337ac3babd27063c03564fd79594925b9105e897f02e5d", "research/studies/quality_momentum/internal/growth_basis.py": "64ac410422f822d18a870b592bcfc9785fef299f9cd35b858c6dbfe1d3b23164", "research/studies/quality_momentum/internal/growth_basis_adapter.py": "a04114b687a00c31f8a271c7205aa973e46a0b9ee166be3c97dcdf92f6d3063f", "research/studies/quality_momentum/internal/probe_adapter.py": "63b6b104bfb2783c5b77d69fa6d12f118afa3017039e904e2fac28688e617093", "research/studies/quality_momentum/internal/probe_statistics.py": "62d12d46d674410af979071e612e9c15a0e44ea31995b03a3f7ffb11746b4271", "research/studies/quality_momentum/pool_rotation_v5.py": "f522e494648e1437d35f535e76f31c1ff2508b4deeb43231fa0a2086473b185f", "research/tools/factor_analysis/core.py": "a816fe8bf094b01c3b39a0d7a41dab2d77df26dacee92a22fea6159f558b835f", "research/tools/factor_analysis/platform_codegen.py": "2a4f066e9f051ea79a048e79cb92a35a2d258830d092699492544ea9759e4b88"}'
+BUILD_SOURCES_SHA256 = '{"research/studies/quality_momentum/internal/build_growth_basis.py": "6e2dbfa64609f6dec966fecd25749d5b01e476a6e134ac4a2ac3e14a4d7fd1f8", "research/studies/quality_momentum/internal/build_platform.py": "64b1e9f477c4051249337ac3babd27063c03564fd79594925b9105e897f02e5d", "research/studies/quality_momentum/internal/growth_basis.py": "64ac410422f822d18a870b592bcfc9785fef299f9cd35b858c6dbfe1d3b23164", "research/studies/quality_momentum/internal/growth_basis_adapter.py": "a04114b687a00c31f8a271c7205aa973e46a0b9ee166be3c97dcdf92f6d3063f", "research/studies/quality_momentum/internal/probe_adapter.py": "63b6b104bfb2783c5b77d69fa6d12f118afa3017039e904e2fac28688e617093", "research/studies/quality_momentum/internal/probe_statistics.py": "62d12d46d674410af979071e612e9c15a0e44ea31995b03a3f7ffb11746b4271", "research/studies/quality_momentum/pool_rotation_v5.py": "cb4967826e2ad82cf5d0963e35bc68b05fce39915029b4f0672868316a7221de", "research/tools/factor_analysis/core.py": "a816fe8bf094b01c3b39a0d7a41dab2d77df26dacee92a22fea6159f558b835f", "research/tools/factor_analysis/platform_codegen.py": "2a4f066e9f051ea79a048e79cb92a35a2d258830d092699492544ea9759e4b88"}'
 # -*- coding: utf-8 -*-
 """增长口径对照：天频率，2016-01-04至2026-09-01，不下单。"""
 from jqdata import *
@@ -25,7 +25,7 @@ ROE_FACTOR_UNIT = 'ratio'
 PE_MAX, PB_MAX, VOL60_MAX = 30.0, 5.0, 35.0
 VOL_LOOKBACK, VOL_ANNUAL_DAYS = 61, 250.0
 BENCHMARK, NAN = '000906.XSHG', _python_builtins.float('nan')
-SOURCE_V5_SHA256 = 'f522e494648e1437d35f535e76f31c1ff2508b4deeb43231fa0a2086473b185f'
+SOURCE_V5_SHA256 = 'cb4967826e2ad82cf5d0963e35bc68b05fce39915029b4f0672868316a7221de'
 
 SAMPLE_COLUMNS = ['signal_day', 'asof', 'code', 'roe_ttm_pct', 'np_yoy_pct', 'pe_ttm', 'pb',
                   'stat_date', 'pub_date', 'vol60', 'momentum', 'momentum_rank',
