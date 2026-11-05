@@ -35,6 +35,7 @@
 ## 部署
 
 - 服务直接运行仓库内的 `/root/trade-it-easy/dashboard.py`，页面与静态资源取仓库 `dashboard/`，账户、成绩和行情模块经 `PYTHONPATH=/root/trade-it-easy` 从同一份仓库导入；口令与用户名只在 `/etc/trade-dashboard.env`（600，root），不进仓库。
+- systemd 服务须设置 `Environment=HOME=/root`（或运行用户实际的家目录）。AD/TGW 原生组件依赖 `HOME`，不能假定 systemd 自动提供；缺失时行情刷新可能直接终止服务进程，Python 异常处理无法拦截。可在 `/etc/systemd/system/trade-dashboard.service.d/runtime-home.conf` 的 `[Service]` 下配置，变更后执行 daemon-reload 并重启服务。
 - 更新流程：本地跑 `tests/test_dashboard.py`、`tests/test_dashboard_quotes.py`、`tests/test_etf_account.py` 并验证页面交互 → 服务器 `git pull origin main` → 用 `/root/miniconda/envs/rt/bin/python` 跑同一组测试 → `systemctl restart trade-dashboard` → 本机与隧道各验证访问保护、行情刷新、曲线数据和报告内容。
 - pull 与 restart 连着做：静态资源每次请求现读磁盘，pull 完新前端立即生效，接口逻辑要重启才更新，中间是新前端配旧接口的窗口。
 - 改 `src/trade_ledger/performance.py`（例如收盘快照字段）重跑当日采集即可让页面拿到新字段。行情刷新依赖仓库已有的 `data_provider`；部署只更新代码，不复制本地账户或生效配置。
