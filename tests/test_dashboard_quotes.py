@@ -38,7 +38,8 @@ def quotes_for(path, day, prices):
     return {'revision': account_data(path)['quote_revision'], 'day': day, 'running': False,
             'quotes': {code: {'price': price, 'fetched_at': day + 'T10:00:00+08:00'}
                        for code, price in prices.items()},
-            'missing': ['510300'], 'fetched_at': day + 'T10:00:00+08:00', 'error': None}
+            'missing': [code for code in ('588000', '510300') if code not in prices],
+            'fetched_at': day + 'T10:00:00+08:00', 'error': None}
 
 
 def wait_finished(cache, path):
@@ -57,7 +58,7 @@ def test_quotes_revalue_account_and_strategies_without_changing_close_or_signals
     collect_close(path, yesterday, lambda *_: {'588000': 2.1, '510300': 3.1})
     before = account_data(path)
     original = path.read_bytes()
-    view = account_data(path, live_quotes=quotes_for(path, day, {'588000': 3}))
+    view = account_data(path, live_quotes=quotes_for(path, day, {'588000': 3, '510300': 3.1}))
     assert view['equity'] == 4310
     assert view['cash'] == before['cash'] == 1000
     assert view['pnl'] == 1010
@@ -65,7 +66,7 @@ def test_quotes_revalue_account_and_strategies_without_changing_close_or_signals
     assert positions['588000']['market_value'] == 3000
     assert not positions['588000']['quote_missing']
     assert positions['510300']['close'] == 3.1
-    assert positions['510300']['quote_missing']
+    assert not positions['510300']['quote_missing']
     assert view['strategies'][0]['pnl'] == 1000
     assert view['strategies'][1]['pnl'] == 10
     for key in ('revision', 'history', 'performance', 'valuation_date'):
@@ -144,7 +145,7 @@ def test_background_refresh_coalesces_requests_and_preserves_failed_old_quotes(a
     monkeypatch.setattr('data_provider.manager.realtime_quotes', lambda _: ({'588000': 3.5}, {}))
     cache.start(path, rev, ['588000', '510300'], day)
     second = wait_finished(cache, path)
-    assert second['quotes']['588000']['price'] == 3.5
+    assert second['quotes']['588000'] == first['quotes']['588000']
     assert second['quotes']['510300'] == first['quotes']['510300']
     assert second['missing'] == ['510300']
     assert cache.read(path.with_name('other.json')) == {}
@@ -190,9 +191,9 @@ def test_refresh_api_is_protected_and_overview_delivers_estimates(account, monke
         wait_finished(dashboard.QUOTES, path)
         with urllib.request.urlopen(urllib.request.Request(base + '/api/overview', headers=headers)) as response:
             result = json.loads(response.read())
-        assert result['accounts'][0]['equity'] == 4300
+        assert result['accounts'][0]['equity'] == 3300
         assert result['accounts'][0]['quote_refresh']['missing'] == ['510300']
-        assert result['strategies'][0]['invested'] == 3000
+        assert result['strategies'][0]['invested'] == 2000
         assert path.read_bytes() == original
     finally:
         server.shutdown()

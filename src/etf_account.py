@@ -65,7 +65,7 @@ def _read_account(path, config):
 
 def revision(state, asof=None):
     facts = {"initial": state["initial"], "events": [e for e in state["events"]
-             if asof is None or (e["date"] <= asof and e["side"] not in {"assign", "cash_assign"})]}
+             if asof is None or (e["date"] <= asof and e["side"] not in {"assign", "cash_assign", "cash_transfer"})]}
     if asof is None:
         facts["budgets"] = state.get("budgets", {})
         facts["targets"] = state.get("targets", {})
@@ -149,9 +149,8 @@ def snapshot(state, asof, prices=None):
     for row in initial["positions"]:
         net_capital[row.get("strategy", "unassigned")] += row["count"] * row["price"]
     net_flows = 0.0
-    records = iter(sorted([r for r in state["records"] if r["date"] <= asof
-                           and r.get("revision") == revision(state, r["date"])
-                           and _positive(r.get("nav"))], key=lambda r: r["date"]))
+    # 行情价格与账户成绩分开：流水变更会使旧净值失效，不会使当天收盘价失效。
+    records = iter(sorted([r for r in state["records"] if r["date"] <= asof], key=lambda r: r["date"]))
     record = next(records, None)
     for event in (e for e in state["events"] if e["date"] <= asof):
         while record and record["date"] < event["date"]:
@@ -159,6 +158,7 @@ def snapshot(state, asof, prices=None):
             record = next(records, None)
         side = event["side"]
         if side in {"deposit", "withdraw"}:
+            marks.update(event.get("valuation_prices", {}))
             equity = cash + sum(r["count"] * marks[r["code"]] for r in held.values())
             delta = event["amount"] * (1 if side == "deposit" else -1)
             units += delta / (equity / units)
@@ -171,6 +171,9 @@ def snapshot(state, asof, prices=None):
             net_capital[event.get("strategy", "unassigned")] -= event["amount"]
         elif side == "cash_assign":
             cash_by_strategy = _cash_allocation(event["cash_allocations"], cash)
+        elif side == "cash_transfer":
+            cash_by_strategy[event["from_strategy"]] -= event["amount"]
+            cash_by_strategy[event["strategy"]] += event["amount"]
         elif side == "assign":
             code, qty = event["code"], event["qty"]
             source = held[(event["from_strategy"], code)]
@@ -296,12 +299,13 @@ def _strategy_facts(state, view, key):
     """按策略标识提供账户事实，不计算建议；供展示、发布和成交处理共用。"""
     name = portfolio_config.STRATEGY_NAMES[key]
     positions = [r for r in view["strategy_positions"] if r["strategy"] == key]
-    invested = round(sum(r["market_value"] for r in positions), 2)
+    invested = (round(sum(r["market_value"] for r in positions), 2)
+                if all(r["market_value"] is not None for r in positions) else None)
     weight = state.get("budgets", {}).get(key)
-    budget = round(view["equity"] * weight, 2) if weight is not None else None
-    remaining = max(0, round(budget - invested, 2)) if budget is not None else None
+    budget = round(view["equity"] * weight, 2) if weight is not None and view["equity"] is not None else None
+    remaining = max(0, round(budget - invested, 2)) if budget is not None and invested is not None else None
     cash = view["cash_by_strategy"][key]
-    assets = round(invested + cash, 2)
+    assets = round(invested + cash, 2) if invested is not None else None
     status = ("目标比例待设置" if remaining is None
               else "已分配" if positions or cash > 0 else "暂无持仓")
     thresholds = None
@@ -310,7 +314,7 @@ def _strategy_facts(state, view, key):
         thresholds = {"trade": MIN_TRADE_DEVIATION, "single": REBALANCE_SINGLE_THRESHOLD}
     return {"id": key, "name": name, "account_id": "etf", "positions": positions,
             "budget_pct": weight, "budget": budget, "invested": invested,
-            "pnl": view["strategy_pnl"][key],
+            "pnl": view["strategy_pnl"][key] if invested is not None else None,
             "target_weights": dict(state["targets"]) if key == "core" else None,
             "rebalance_thresholds": thresholds,
             "remaining_budget": remaining, "buying_power": min(cash, remaining) if remaining is not None else None,
@@ -318,8 +322,8 @@ def _strategy_facts(state, view, key):
                                            if e.get("strategy") == key or e.get("from_strategy") == key
                                            or e.get("side") == "cash_assign"],
             "history": [], "performance": None, "benchmark_name": None,
-            "cash": cash, "assets": assets, "actual_pct": assets / view["equity"] if view["equity"] else None,
-            "deviation": round(assets - budget, 2) if budget is not None else None, "status": status}
+            "cash": cash, "assets": assets, "actual_pct": assets / view["equity"] if view["equity"] and assets is not None else None,
+            "deviation": round(assets - budget, 2) if budget is not None and assets is not None else None, "status": status}
 
 
 def strategy_views(state, view, *, today=None):
@@ -425,6 +429,72 @@ def publish_quality(day, *, path=None, dry_run=False, retry=False):
     return render(rows, status)
 
 
+def _make_event(state, payload, request_id):
+    """校验一笔流水，不落盘；更正时可重放后续全部流水。"""
+    day = _day(payload.get("date", ""))
+    side = payload.get("side")
+    if side not in {"buy", "sell", "dividend", "deposit", "withdraw", "assign", "cash_assign", "cash_transfer"}:
+        raise ValueError("不支持的记账类型")
+    event = {"id": request_id, "date": day, "side": side, "request": payload}
+    view = snapshot(state, day)
+    if side == "cash_assign":
+        event["cash_allocations"] = _cash_allocation(payload.get("cash_allocations"), view["cash"])
+    elif side == "cash_transfer":
+        source, target = payload.get("from_strategy"), payload.get("strategy")
+        if source not in view["cash_by_strategy"] or target not in view["cash_by_strategy"] or source == target:
+            raise ValueError("请选择不同的现金划转来源和目标")
+        amount = round(_money(payload.get("amount")), 2)
+        if amount <= 0 or amount > view["cash_by_strategy"][source]:
+            raise ValueError("划转金额无效或超过来源策略现金")
+        event.update(from_strategy=source, strategy=target, amount=amount)
+    elif side == "assign":
+        source, target = payload.get("from_strategy"), payload.get("strategy")
+        if source not in {*portfolio_config.STRATEGY_NAMES, "unassigned"} or target not in {*portfolio_config.STRATEGY_NAMES, "unassigned"} or source == target:
+            raise ValueError("请选择不同的分配来源和目标")
+        code, qty = canonical_stock_code(payload.get("code", "")), payload.get("qty")
+        held = next((r for r in view["strategy_positions"] if r["code"] == code and r["strategy"] == source), None)
+        if not _positive(qty) or int(qty) != qty or not held or qty > held["count"]:
+            raise ValueError("分配份额无效或超过来源持仓")
+        event.update(code=code, name=held["name"], qty=int(qty), from_strategy=source, strategy=target,
+                     transfer_price=view["prices"][code])
+    elif side in {"buy", "sell"}:
+        qty, price = payload.get("qty"), _money(payload.get("price"))
+        fee = payload.get("fee", 0)
+        if not _positive(qty) or int(qty) != qty or (side == "buy" and qty % 100):
+            raise ValueError("份额须为正整数，买入须为100份的整数倍")
+        if type(fee) not in (int, float) or not math.isfinite(fee) or fee < 0:
+            raise ValueError("手续费须为有限非负数")
+        code = canonical_stock_code(payload.get("code", ""))
+        if len(code) != 6 or not code.isdigit():
+            raise ValueError("请输入六位证券代码")
+        if side == "sell":
+            held = next((r for r in view["strategy_positions"] if r["code"] == code and r["strategy"] == payload.get("strategy", "unassigned")), None)
+            if not held or qty > held["count"]:
+                raise ValueError("卖出份额超过实际持仓")
+        strategy = payload.get("strategy", "unassigned")
+        if strategy not in {*portfolio_config.STRATEGY_NAMES, "unassigned"}:
+            raise ValueError("策略标记无效")
+        if side == "buy" and round(qty * price + fee, 2) > view["cash_by_strategy"][strategy]:
+            raise ValueError("该策略现金不足，请先分配现金")
+        if side == "sell" and round(view["cash_by_strategy"][strategy] + qty * price - fee, 2) < 0:
+            raise ValueError("该策略现金不足以扣除费用")
+        event.update(code=code, qty=int(qty), price=price, fee=float(fee), strategy=strategy)
+    else:
+        strategy = payload.get("strategy", "unassigned")
+        if strategy not in {*portfolio_config.STRATEGY_NAMES, "unassigned"}:
+            raise ValueError("策略标记无效")
+        amount = round(_money(payload.get("amount")), 2)
+        if amount <= 0 or (side == "withdraw" and amount > view["cash_by_strategy"][strategy]):
+            raise ValueError("金额无效或超过实际现金")
+        if side == "withdraw" and amount >= view["equity"]:
+            raise ValueError("暂不支持全额清户，请保留正的账户资产")
+        event["amount"] = amount
+        event["strategy"] = strategy
+        if side in {"deposit", "withdraw"}:
+            event["valuation_prices"] = dict(view["prices"])
+    return event
+
+
 def record_event(path, payload):
     """锁内去重和版本检查，避免双击、重试或旧页面重复改账。"""
     with _locked(path):
@@ -443,56 +513,9 @@ def record_event(path, payload):
         last_day = state["events"][-1]["date"] if state["events"] else state["initial"]["date"]
         if day < last_day:
             raise ValueError("记账日期不能早于期初或上笔流水")
-        side = payload.get("side")
-        if side not in {"buy", "sell", "dividend", "deposit", "withdraw", "assign", "cash_assign"}:
-            raise ValueError("不支持的记账类型")
-        event = {"id": request_id, "date": day, "side": side, "request": payload}
+        event = _make_event(state, payload, request_id)
         view = snapshot(state, day)
-        if side == "cash_assign":
-            event["cash_allocations"] = _cash_allocation(payload.get("cash_allocations"), view["cash"])
-        elif side == "assign":
-            source, target = payload.get("from_strategy"), payload.get("strategy")
-            if source not in {*portfolio_config.STRATEGY_NAMES, "unassigned"} or target not in {*portfolio_config.STRATEGY_NAMES, "unassigned"} or source == target:
-                raise ValueError("请选择不同的分配来源和目标")
-            code, qty = canonical_stock_code(payload.get("code", "")), payload.get("qty")
-            held = next((r for r in view["strategy_positions"] if r["code"] == code and r["strategy"] == source), None)
-            if not _positive(qty) or int(qty) != qty or not held or qty > held["count"]:
-                raise ValueError("分配份额无效或超过来源持仓")
-            event.update(code=code, name=held["name"], qty=int(qty), from_strategy=source, strategy=target,
-                         transfer_price=view["prices"][code])
-        elif side in {"buy", "sell"}:
-            qty, price = payload.get("qty"), _money(payload.get("price"))
-            fee = payload.get("fee", 0)
-            if not _positive(qty) or int(qty) != qty or (side == "buy" and qty % 100):
-                raise ValueError("份额须为正整数，买入须为100份的整数倍")
-            if type(fee) not in (int, float) or not math.isfinite(fee) or fee < 0:
-                raise ValueError("手续费须为有限非负数")
-            code = canonical_stock_code(payload.get("code", ""))
-            if len(code) != 6 or not code.isdigit():
-                raise ValueError("请输入六位证券代码")
-            if side == "sell":
-                held = next((r for r in view["strategy_positions"] if r["code"] == code and r["strategy"] == payload.get("strategy", "unassigned")), None)
-                if not held or qty > held["count"]:
-                    raise ValueError("卖出份额超过实际持仓")
-            strategy = payload.get("strategy", "unassigned")
-            if strategy not in {*portfolio_config.STRATEGY_NAMES, "unassigned"}:
-                raise ValueError("策略标记无效")
-            if side == "buy" and round(qty * price + fee, 2) > view["cash_by_strategy"][strategy]:
-                raise ValueError("该策略现金不足，请先分配现金")
-            if side == "sell" and round(view["cash_by_strategy"][strategy] + qty * price - fee, 2) < 0:
-                raise ValueError("该策略现金不足以扣除费用")
-            event.update(code=code, qty=int(qty), price=price, fee=float(fee), strategy=strategy)
-        else:
-            strategy = payload.get("strategy", "unassigned")
-            if strategy not in {*portfolio_config.STRATEGY_NAMES, "unassigned"}:
-                raise ValueError("策略标记无效")
-            amount = round(_money(payload.get("amount")), 2)
-            if amount <= 0 or (side == "withdraw" and amount > view["cash_by_strategy"][strategy]):
-                raise ValueError("金额无效或超过实际现金")
-            if side == "withdraw" and amount >= view["equity"]:
-                raise ValueError("暂不支持全额清户，请保留正的账户资产")
-            event["amount"] = amount
-            event["strategy"] = strategy
+        side = event["side"]
         if event.get("strategy") == "rotation":
             from src.etf.rotation_advice import on_event
             signal = on_event(state.get("rotation_signal"), event,
@@ -511,6 +534,115 @@ def record_event(path, payload):
         state["events"].append(event)
         _save(path, state)
         return event
+
+
+def cash_rebalance(path, payload, *, live_quotes=None):
+    """按同一组展示估值预览现金再平衡，不保存；持仓超配时按现金缺口比例分配。"""
+    with _locked(path):
+        state = load(path)
+        if payload.get("revision") != revision(state):
+            raise ValueError("账户已更新，请刷新后重新核对")
+        view = account_data(path, live_quotes=live_quotes)
+        if view["equity"] is None:
+            raise ValueError("部分持仓待估值，请先刷新完整行情再进行现金再平衡")
+        strategies = {r["id"]: r for r in view["strategies"]}
+        configured = set(state["budgets"])
+        if not configured:
+            raise ValueError("请先设置策略目标比例")
+        cents = lambda value: int(round(value * 100))
+        # 未设置目标的策略维持原现金；剩余目标中扣除这些策略已有资产。
+        fixed = {key: cents(row["cash"]) for key, row in strategies.items() if key not in configured}
+        available = cents(view["cash"]) - sum(fixed.values())
+        desired = {key: max(0, cents(strategies[key]["budget"]) - cents(strategies[key]["invested"]))
+                   for key in sorted(configured)}
+        unassigned_invested = sum(r["market_value"] for r in view["strategy_positions"] if r["strategy"] == "unassigned")
+        residual_target = cents(view["equity"]) - sum(cents(strategies[k]["budget"]) for k in configured)
+        residual_target -= sum(cents(strategies[k]["assets"]) for k in fixed)
+        desired["unassigned"] = max(0, residual_target - cents(unassigned_invested))
+        demand = sum(desired.values())
+        if demand > available:
+            allocated = {key: value * available // demand for key, value in desired.items()}
+            order = sorted(desired, key=lambda key: (-(desired[key] * available % demand), key))
+            for key in order[:available - sum(allocated.values())]:
+                allocated[key] += 1
+        else:
+            allocated = dict(desired)
+            allocated["unassigned"] += available - demand
+        allocated.update(fixed)
+        rows = []
+        for key in (*portfolio_config.STRATEGY_NAMES, "unassigned"):
+            row = strategies.get(key)
+            invested = row["invested"] if row else unassigned_invested
+            target = row["budget"] if row else max(0, residual_target) / 100
+            after_cash = allocated[key] / 100
+            rows.append({"id": key, "name": row["name"] if row else "未分配",
+                         "before_cash": view["cash_by_strategy"][key], "after_cash": after_cash,
+                         "change": round(after_cash - view["cash_by_strategy"][key], 2),
+                         "deviation": round(invested + after_cash - target, 2) if target is not None else None,
+                         "holding_overweight": target is not None and invested > target})
+        return {"cash_allocations": {key: allocated[key] / 100 for key in portfolio_config.STRATEGY_NAMES},
+                "rows": rows, "shortfall": max(0, demand - available) / 100,
+                "valuation": view["valuation"]}
+
+
+def event_context(path, payload):
+    """返回目标流水发生前的余额与持仓，供更正表单校验。"""
+    state = load(path)
+    if payload.get("revision") != revision(state):
+        raise ValueError("账户已更新，请刷新后重新核对")
+    index = next((i for i, e in enumerate(state["events"]) if e["id"] == payload.get("event_id")), None)
+    if index is None:
+        raise ValueError("流水不存在")
+    event = state["events"][index]
+    before = {**state, "events": state["events"][:index]}
+    return {**snapshot(before, event["date"]), "event": {k: v for k, v in event.items() if k != "request"},
+            "revision": revision(state), "start_date": state["initial"]["date"],
+            "min_date": state["events"][index - 1]["date"] if index else state["initial"]["date"],
+            "max_date": state["events"][index + 1]["date"] if index + 1 < len(state["events"]) else _today().isoformat()}
+
+
+def edit_event(path, payload):
+    """原子更正有效流水，保留修改记录；重放校验后续所有交易。"""
+    with _locked(path):
+        state = load(path)
+        request_id = payload.get("request_id")
+        if not isinstance(request_id, str) or not 8 <= len(request_id) <= 100:
+            raise ValueError("缺少有效的记账标识")
+        previous = next((r for r in state.get("event_edits", []) if r["id"] == request_id), None)
+        if previous:
+            if previous["request"] != payload:
+                raise ValueError("同一记账标识的内容不一致")
+            return previous["after"]
+        context = event_context(path, payload)
+        index = next(i for i, e in enumerate(state["events"]) if e["id"] == payload["event_id"])
+        old = state["events"][index]
+        day = _day(payload.get("date", ""))
+        if not context["min_date"] <= day <= context["max_date"]:
+            raise ValueError("更正日期须在相邻流水日期之间")
+        replay = {**state, "events": []}
+        for i, stored in enumerate(state["events"]):
+            candidate = payload if i == index else stored
+            try:
+                event = _make_event(replay, candidate, stored["id"])
+            except (ValueError, KeyError, ZeroDivisionError) as error:
+                raise ValueError(f"更正会使第{i + 1}笔流水（{candidate['date']}）无效：{error}") from error
+            if i != index:
+                # 后续流水只重新校验，保留实际记账时确定的划转估值与资金流价格。
+                event = stored
+            replay["events"].append(event)
+        state["events"] = replay["events"]
+        state.setdefault("event_edits", []).append({"id": request_id, "event_id": old["id"],
+                                                   "request": payload, "before": old,
+                                                   "after": state["events"][index]})
+        state["dismissed"] = []
+        # 已有操作计划基于旧账，不再沿用；下一次策略运行重新生成。
+        for key in ("rotation_signal", "quality_signal"):
+            if key in state:
+                state[key] = {"date": _today().isoformat(), "issues": "历史流水已更正，等待重新生成建议"}
+        if state.get("quality_state"):
+            state["quality_state"].update(pending_plan=None, signal_retry=True)
+        _save(path, state)
+        return state["events"][index]
 
 
 def set_budgets(path, payload):
@@ -552,6 +684,7 @@ def collect_close(path, asof, close_prices, *, dry_run=False):
         view = snapshot(state, asof, {c: p for c, p in prices.items() if _positive(p)})
         record = {**view, "date": asof, "nav": None if issues else view["equity"] / view["units"],
                   "benchmark_nav": None, "issues": issues, "revision": revision(state, asof),
+                  "closing_prices": {c: float(prices[c]) for c in prices if _positive(prices[c])},
                   "source": "收盘行情"}
         state["records"] = sorted([r for r in state["records"] if r["date"] != asof] + [record],
                                   key=lambda r: r["date"])
@@ -576,7 +709,18 @@ def account_data(path, *, live_quotes=None):
                                                sort_keys=True, ensure_ascii=False).encode()).hexdigest()
     # 调仓建议仍按保存的估值生成；盘中报价只覆盖展示估值，不进入历史或成交校验。
     strategies = strategy_views(state, view)
+    # 默认价格只取同一日的完整收盘记录；成交价只用于记账，不补展示估值。
+    priced_record = next((r for r in reversed(records) if not r.get("issues")), None)
+    price_day = priced_record["date"] if priced_record else state["initial"]["date"]
+    prices = (dict(priced_record["closing_prices"]) if priced_record and "closing_prices" in priced_record
+              else {r["code"]: r["close"] for r in (priced_record or {}).get("positions", [])
+                    if _positive(r.get("close"))})
+    if not priced_record:
+        prices = {r["code"]: r["price"] for r in state["initial"]["positions"]}
+    valuation = {"mode": "initial" if price_day == state["initial"]["date"] else "close",
+                 "date": price_day, "fetched_at": None}
     quote_refresh = None
+    quotes = {}
     if live_quotes:
         applicable = (live_quotes.get("revision") == quote_revision
                       and live_quotes.get("day") == today)
@@ -584,27 +728,41 @@ def account_data(path, *, live_quotes=None):
                          ("running", "fetched_at", "missing", "error")}
         quote_refresh["applicable"] = applicable
         quotes = live_quotes.get("quotes", {}) if applicable else {}
-        prices = {code: item["price"] for code, item in quotes.items() if _positive(item.get("price"))}
-        quote_refresh["estimated"] = bool(prices)
-        view = snapshot(state, today, prices)
-        for row in view["positions"] + view["strategy_positions"]:
-            quote = quotes.get(row["code"], {})
-            row["quote_fetched_at"] = quote.get("fetched_at") if row["code"] in prices else None
-            row["quote_missing"] = (row["code"] not in prices
-                                    or row["code"] in (live_quotes.get("missing") or []))
-        for strategy in strategies:
-            facts = _strategy_facts(state, view, strategy["id"])
-            for key in ("positions", "budget", "invested", "pnl", "assets", "actual_pct",
-                        "deviation", "remaining_budget", "buying_power"):
-                strategy[key] = facts[key]
+        live_prices = {code: item["price"] for code, item in quotes.items() if _positive(item.get("price"))}
+        held_codes = {row["code"] for row in view["positions"]}
+        complete = bool(held_codes) and held_codes <= live_prices.keys()
+        quote_refresh["estimated"] = complete
+        if applicable and not complete and not quote_refresh.get("missing"):
+            quote_refresh["missing"] = sorted(held_codes - live_prices.keys())
+        if complete:
+            prices = live_prices
+            valuation.update(mode="live", date=today, fetched_at=live_quotes.get("fetched_at"))
+    view = snapshot(state, today, prices)
+    missing = sorted({r["code"] for r in view["positions"] if not _positive(prices.get(r["code"]))})
+    valuation["missing"] = missing
+    view["prices"] = prices
+    for row in view["positions"] + view["strategy_positions"]:
+        row["quote_fetched_at"] = quotes.get(row["code"], {}).get("fetched_at") if valuation["mode"] == "live" else None
+        row["quote_missing"] = bool(quote_refresh and quote_refresh.get("missing"))
+        if row["code"] in missing:
+            row.update(close=None, current_price=None, market_value=None)
+            if row.get("strategy"):
+                view["strategy_pnl"][row["strategy"]] = None
+    if missing:
+        view.update(invested=None, equity=None, pnl=None)
+    for strategy in strategies:
+        facts = _strategy_facts(state, view, strategy["id"])
+        for key in ("positions", "budget", "invested", "pnl", "assets", "actual_pct",
+                    "deviation", "remaining_budget", "buying_power", "cash"):
+            strategy[key] = facts[key]
     return {"id": "etf", "name": "投资账户", "can_record": True, **view,
             "performance": latest, "trades": [{**{k: v for k, v in e.items() if k != "request"},
                          **({"name": security_name(e["code"])} if e.get("code") else {})}
-                       for e in reversed(state["events"])][:20],
+                       for e in reversed(state["events"])],
             "start_date": state["initial"]["date"], "initial_equity": state["initial"]["equity"],
             "revision": revision(state), "config_revision": state["_config_revision"], "suggestions": [],
             "strategies": strategies, "quote_refresh": quote_refresh, "quote_revision": quote_revision,
-            "valuation_date": latest["date"] if latest else state["initial"]["date"],
+            "valuation_date": price_day, "valuation": valuation,
             "has_events": bool(state["events"]), "benchmark_name": None, "warnings": warnings,
             "history": [{"date": r["date"], "nav": r["nav"] if r["date"] in valid_dates else None,
                          "benchmark_nav": None} for r in records]}
@@ -641,5 +799,6 @@ def strategy_snapshot(path=None):
 
 def render_summary(path=ACCOUNT_PATH):
     view = account_data(path)
-    return (f"## 投资账户\n\n总资产 {view['equity']:,.2f} 元｜现金 {view['cash']:,.2f} 元｜"
+    equity = f"{view['equity']:,.2f}" if view['equity'] is not None else "待估值"
+    return (f"## 投资账户\n\n总资产 {equity} 元｜现金 {view['cash']:,.2f} 元｜"
             f"持仓 {len(view['positions'])} 只\n\n策略只提供建议，实际成交由人工确认记账。")

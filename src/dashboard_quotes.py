@@ -57,9 +57,9 @@ class QuoteRefresh:
             prices, error = {}, "行情获取失败，请稍后重试。"
         fetched_at = datetime.now(SHANGHAI).isoformat(timespec="seconds")
         with self._lock:
-            quotes = dict(self._state["quotes"])
-            quotes.update({code: {"price": value, "fetched_at": fetched_at}
-                           for code, value in prices.items() if code in codes})
             missing = [code for code in codes if code not in prices]
-            self._state.update(running=False, quotes=quotes, missing=missing,
-                               fetched_at=fetched_at, error=error)
+            # 完整批次原子替换；部分成功不能把新旧报价混成一次账户估值。
+            if not missing:
+                self._state.update(quotes={code: {"price": prices[code], "fetched_at": fetched_at}
+                                           for code in codes}, fetched_at=fetched_at)
+            self._state.update(running=False, missing=missing, error=error)

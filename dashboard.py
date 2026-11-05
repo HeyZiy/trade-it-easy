@@ -253,9 +253,11 @@ class Handler(BaseHTTPRequestHandler):
                 or self.headers.get("Content-Type") != "application/json"):
             self.respond(b'{}', "application/json", status=403)
             return
-        from src.etf_account import FILENAME, dismiss, record_event, set_budgets
+        from src.etf_account import FILENAME, dismiss, record_event, set_budgets, edit_event, event_context, cash_rebalance
         handlers = {"/api/etf/event": record_event, "/api/etf/dismiss": dismiss,
-                    "/api/etf/budgets": set_budgets}
+                    "/api/etf/budgets": set_budgets, "/api/etf/event/edit": edit_event,
+                    "/api/etf/event/context": event_context,
+                    "/api/etf/cash/rebalance": lambda path, payload: cash_rebalance(path, payload, live_quotes=QUOTES.read(path))}
         from src.portfolio_config import update
         handlers["/api/etf/config"] = update
         if self.path == "/api/etf/refresh":
@@ -282,7 +284,7 @@ class Handler(BaseHTTPRequestHandler):
             payload = json.loads(self.rfile.read(length))
             if not isinstance(payload, dict):
                 raise ValueError("记账内容须为对象")
-            handlers[self.path](ROOT / "data" / FILENAME, payload)
+            result = handlers[self.path](ROOT / "data" / FILENAME, payload)
         except (ValueError, TypeError, KeyError) as error:
             self.respond(json.dumps({"error": str(error)}, ensure_ascii=False).encode(),
                          "application/json; charset=utf-8", status=400)
@@ -292,7 +294,8 @@ class Handler(BaseHTTPRequestHandler):
             self.respond(json.dumps({"error": "保存失败，请刷新核对后重试。"}, ensure_ascii=False).encode(),
                          "application/json; charset=utf-8", status=500)
             return
-        self.respond(b'{"ok":true}', "application/json; charset=utf-8")
+        self.respond(json.dumps(result if self.path in {"/api/etf/event/context", "/api/etf/cash/rebalance"} else {"ok": True},
+                                ensure_ascii=False).encode(), "application/json; charset=utf-8")
 
     def do_GET(self):
         user, password = auth_config()

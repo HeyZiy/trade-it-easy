@@ -395,6 +395,7 @@ def test_strategy_pnl_accounts_for_trades_fees_dividends_and_ignores_funding(acc
     record_event(account, event(account, 'buy', strategy='rotation', code='588000', name='ETF', qty=100, price=3, fee=1))
     record_event(account, event(account, 'deposit', amount=500))
     record_event(account, event(account, 'withdraw', amount=100))
+    collect_close(account, '2025-01-06', lambda *_: {'588000': 3})
     view = account_data(account)
     assert [s['pnl'] for s in view['strategies']] == [1103, -1, 0]
     assert view['pnl'] == 1102
