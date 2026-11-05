@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 """
 ===================================
-质量池相对强弱轮动 — 09:30 启动，一次完成模拟
+质量动量 — 09:30 启动，一次完成模拟
 ===================================
 
 规格唯一来源：strategy/roe_quality_pool.md。持仓与资金事实来源是独立名义
@@ -13,7 +13,7 @@
 非调仓且无成交的静默日免发日报（异常走日志告警通道）。全批失败次日
 自动重算，不移动原定20交易日周期。预算 = 执行时总权益/6 冻结。
 成交不固定为09:30或09:31，按实际取价时点模拟记账。实际账户另按分配持仓生成
-质量池计划，目标预算为账户资产的10%，成交由人工确认记账。
+质量动量计划，目标预算为账户资产的10%，成交由人工确认记账。
 
 signal / execute 子命令仅保留供手动分阶段排查，不单独配置定时任务。
 
@@ -58,9 +58,9 @@ def _account_report(report, today, dry_run, *, retry=False):
     try:
         advice = publish_quality(today.isoformat(), dry_run=dry_run, retry=retry)
     except Exception:
-        logger.exception("质量池账户建议发布失败")
+        logger.exception("质量动量账户建议发布失败")
         advice = "账户建议更新失败，请重新运行"
-    return str(report) + "\n\n## ETF账户 · 质量池计划\n\n" + advice, acted or "- 买入" in advice or "- 卖出" in advice
+    return str(report) + "\n\n## 投资账户 · 质量动量计划\n\n" + advice, acted or "- 买入" in advice or "- 卖出" in advice
 
 
 def run_signal(today: date, dry_run: bool = False, retry: bool = False) -> str:
@@ -86,7 +86,7 @@ def _finish_report(report: str, stage: str, today: date, dry_run: bool,
     title, _, body = report.partition("\n")
     status = "**试运行：未写状态或交易台账。**\n\n" if dry_run else ""
     report = (title + "\n\n" + status
-              + render_summary(POOL_LEDGER_PATH, today=today, label="质量池轮动")
+              + render_summary(POOL_LEDGER_PATH, today=today, label="质量动量")
               + "\n\n" + body)
     if not acted and not dry_run:
         logger.info(f"{today} 非调仓且无成交，免发日报")
@@ -100,7 +100,7 @@ def _finish_report(report: str, stage: str, today: date, dry_run: bool,
 
 def main() -> int:
     sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding="utf-8")
-    parser = argparse.ArgumentParser(description="质量池轮动模拟盘")
+    parser = argparse.ArgumentParser(description="质量动量模拟盘")
     parser.add_argument("command", nargs="?", default="run", choices=["run", "signal", "execute"],
                         help="默认一次完成模拟；signal/execute 仅供手动分阶段排查")
     parser.add_argument("--dry-run", action="store_true",

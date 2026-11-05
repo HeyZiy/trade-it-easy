@@ -28,10 +28,10 @@ ROOT = Path(os.environ.get("TRADE_DASHBOARD_ROOT", APP_ROOT)).resolve()
 # 新增账户 = 家里定义描述符 + account_sources 加一行 + 此处补一行展示元数据
 # （test_display_table_covers_registry_accounts 强制两侧对齐）。
 DISPLAY = (
-    (ETF_FILENAME, "etf", "ETF账户"),
+    (ETF_FILENAME, "etf", "投资账户"),
     ("trade_ledger_industry_momentum.jsonl", "satellite", "行业动量"),
-    ("trade_ledger_etf_rotation.jsonl", "rotation", "ETF 跨资产轮动"),
-    ("trade_ledger_quality_pool_v2.jsonl", "quality", "质量池轮动"),
+    ("trade_ledger_etf_rotation.jsonl", "rotation", "跨资产动量"),
+    ("trade_ledger_quality_pool_v2.jsonl", "quality", "质量动量"),
 )
 AUTH_REALM = 'Basic realm="trade-dashboard", charset="UTF-8"'
 AUTH_DELAY = 0.5
@@ -179,8 +179,8 @@ def _report_files(root) -> list:
     """最近报告清单：按前缀取最新一份，供总览与 /report/ 白名单共用。"""
     report_dir = root / "reports"
     reports = []
-    for prefix, label in (("etf_weekly", "核心配置"), ("industry_momentum", "行业动量"),
-                          ("etf_rotation", "ETF 跨资产轮动"), ("quality_pool", "质量池")):
+    for prefix, label in (("etf_weekly", "多资产配置"), ("industry_momentum", "行业动量"),
+                          ("etf_rotation", "跨资产动量"), ("quality_pool", "质量动量")):
         files = sorted(report_dir.glob(prefix + "_????????.md"), reverse=True)
         if files:
             reports.append({"name": label, "file": files[0].name,
@@ -204,13 +204,13 @@ def dashboard_data(root=ROOT):
         try:
             data = account_data(root, filename)
         except FileNotFoundError:
-            data = {"error": "ETF账户尚未初始化", "positions": [], "trades": []}
+            data = {"error": "投资账户尚未初始化", "positions": [], "trades": []}
         except Exception:
             logging.exception("读取账户失败: %s", key)
             data = {"error": "账户数据读取失败，请检查服务器日志。", "positions": [], "trades": []}
         ledgers.append({"id": key, "name": name, **data})
     by_id = {account["id"]: account for account in ledgers}
-    account = by_id.get("etf", {"id": "etf", "name": "ETF账户", "error": "ETF账户数据源未配置",
+    account = by_id.get("etf", {"id": "etf", "name": "投资账户", "error": "投资账户数据源未配置",
                                 "positions": [], "trades": []})
     strategies = account.pop("strategies", [
         {"id": key, "name": name, "account_id": "etf", "positions": [], "trades": [],
@@ -225,7 +225,7 @@ def dashboard_data(root=ROOT):
                     for key, name in (("satellite", "行业轮动"),)]
     reports = _report_files(root)
     states = []
-    for filename, label in (("quality_pool_v2_state.json", "质量池状态"),
+    for filename, label in (("quality_pool_v2_state.json", "质量动量状态"),
                             ("industry_momentum_pool.json", "行业池状态")):
         path = root / "data" / filename
         try:
@@ -288,7 +288,7 @@ class Handler(BaseHTTPRequestHandler):
                          "application/json; charset=utf-8", status=400)
             return
         except Exception:
-            logging.exception("ETF账户写入失败")
+            logging.exception("投资账户写入失败")
             self.respond(json.dumps({"error": "保存失败，请刷新核对后重试。"}, ensure_ascii=False).encode(),
                          "application/json; charset=utf-8", status=500)
             return

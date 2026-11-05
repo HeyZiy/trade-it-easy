@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""质量池信号轮次：周期、失败恢复、未知旧仓补判与名单提交。
+"""质量动量信号轮次：周期、失败恢复、未知旧仓补判与名单提交。
 
 run_signal 是调用 seam：调用者只给日期与只读/恢复选项，不掌握状态字段。
 整轮取数前原子保存未完成标记，成功名单与完成标记一次提交；失败恢复
@@ -121,14 +121,14 @@ def run_signal(today: date, dry_run: bool = False, retry: bool = False,
     next_day = st.get("next_signal_date")
     is_round_day = next_day is None or today_str >= next_day
     if st.get('last_signal_date') == today_str and not st.get('signal_retry'):
-        return SignalReport(f'# 质量池信号（{today_str}）\n\n- 今日名单已生成，不重复本轮。\n', False)
+        return SignalReport(f'# 质量动量信号（{today_str}）\n\n- 今日名单已生成，不重复本轮。\n', False)
     if not is_round_day and not st.get('signal_retry'):
         if st.get('deferred_codes'):
             return SignalReport(review_deferred(today, st, dry_run, held_codes=held_codes, state_writer=write_state), True)
-        return SignalReport(f"# 质量池信号（{today_str}）\n\n- 非调仓日：下一调仓信号日 {next_day}\n", False)
+        return SignalReport(f"# 质量动量信号（{today_str}）\n\n- 非调仓日：下一调仓信号日 {next_day}\n", False)
 
     asof = _prev_trading_day(today).isoformat()
-    lines: List[str] = [f"# 质量池信号（{today_str}）", f"- 财务/估值/波动/强弱截至 T−1：{asof}"]
+    lines: List[str] = [f"# 质量动量信号（{today_str}）", f"- 财务/估值/波动/强弱截至 T−1：{asof}"]
     nxt = (_next_rebalance_day(today).isoformat() if is_round_day or next_day is None
            else next_day)
     # 取数前先持久化未完成标记；中断后只重算信号，不重放已消费的交易。
@@ -257,7 +257,7 @@ def review_deferred(today: date, st: dict, dry_run: bool, *, held_codes=None, st
             status = feeds.fetch_screening_status(codes, asof)
             screener.build_pool(set(codes) & universe, fundamentals, status, closes, audit=audit)
         except Exception as exc:
-            return f'# 质量池补判（{today_str}）\n- 数据仍不可用，持仓暂不调整：{exc}'
+            return f'# 质量动量补判（{today_str}）\n- 数据仍不可用，持仓暂不调整：{exc}'
     unresolved = []
     for code in codes:
         state = audit[code]['pool_state']
@@ -270,7 +270,7 @@ def review_deferred(today: date, st: dict, dry_run: bool, *, held_codes=None, st
     st['deferred_codes'] = unresolved
     if not dry_run:
         write_state(st)
-    return (f'# 质量池补判（{today_str}）\n'
+    return (f'# 质量动量补判（{today_str}）\n'
             f'- 已检查 {len(codes)} 只；仍未知 {len(unresolved)} 只；'
             '不重建买入名单，确认出池者本轮随后尝试退出。')
 

@@ -1,4 +1,4 @@
-"""质量池实际账户建议：复用策略判定，冻结本轮份额，只消费人工确认成交。"""
+"""质量动量实际账户建议：复用策略判定，冻结本轮份额，只消费人工确认成交。"""
 
 from dataclasses import asdict, replace
 import hashlib
@@ -22,7 +22,7 @@ def make_signal(day, state, snapshot, previous=None):
         exits = {c: r for c, r in exits.items() if c not in plan.selected}
     state["exit_queue"] = exits
     if any(c not in snapshot.prices for c in snapshot.counts):
-        raise ValueError("质量池实际持仓价格缺失，暂停建议")
+        raise ValueError("质量动量实际持仓价格缺失，暂停建议")
     # 先形成预算内的目标，实际可买数量由 advice 按已分配现金收紧。
     # 否则尚未分配现金的首次接入会消耗整轮名单，随后20个交易日都无法入场。
     planning = replace(snapshot, cash=max(snapshot.cash, snapshot.equity))
@@ -51,7 +51,7 @@ def advice(signal, strategy, today, *, dismissed):
     if signal.get("issues"):
         return [], signal["issues"]
     if strategy["budget"] is None or strategy["budget"] <= 0:
-        return [], "请先设置质量池目标比例"
+        return [], "请先设置质量动量目标比例"
     orders = signal["orders"]
     identity = lambda order: f"quality:{signal['id']}:{order['side']}:{order['code']}"
     if any(identity(order) in dismissed for order in orders):
@@ -92,7 +92,7 @@ def advice(signal, strategy, today, *, dismissed):
         result.append({"id": identity(order), "code": code, "name": order["name"],
                        "side": side, "qty": qty, "price": price, "amount": amount,
                        "gap_amount": amount, "price_date": signal["date"], "price_issue": None,
-                       "reason": "质量池等权调整" if order["reason"] == "equal_weight" else "确认出池",
+                       "reason": "质量动量等权调整" if order["reason"] == "equal_weight" else "确认出池",
                        "cash_note": "需先卖出回款" if side == "buy" and sale_value else None})
     if result:
         return result, "先卖后买" if sale_value and any(r["side"] == "buy" for r in result) else "建议已更新"

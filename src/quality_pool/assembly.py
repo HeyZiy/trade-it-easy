@@ -48,7 +48,7 @@ def run_day(today: date, dry_run: bool = False, retry: bool = False) -> SignalRe
     execution_report = run_execution(today.isoformat(), dry_run=dry_run, state=st)
     acted = (getattr(signal_report, "acted", True)
              or len(load_trades(config.POOL_LEDGER_PATH)) > before)
-    return SignalReport(f"# 质量池模拟（{today.isoformat()}）\n\n"
+    return SignalReport(f"# 质量动量模拟（{today.isoformat()}）\n\n"
                         + signal_report.replace("# ", "## ", 1) + "\n\n"
                         + execution_report.replace("# ", "## ", 1), acted)
 
@@ -173,7 +173,7 @@ def run_execution(exec_date: str, dry_run: bool = False, *, state: dict | None =
                                  industries=sig_plan.industries)
             if sig_plan is not None else execution.plan_exit_retry(exits, snapshot))
 
-    lines = [f"# 质量池执行（{exec_date}）"]
+    lines = [f"# 质量动量执行（{exec_date}）"]
     lines.append(f"- 调仓轮：总权益 {snapshot.equity:,.0f}，单只预算 {per:,.0f}"
                  if per is not None else "- 非调仓轮：仅退出队列重试")
     if dry_run:

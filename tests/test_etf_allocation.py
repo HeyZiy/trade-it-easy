@@ -69,7 +69,7 @@ def test_report_reads_inputs_once_and_never_records_fills(account, monkeypatch):
     monkeypatch.setattr("src.trade_ledger.execute_batch", unexpected_trade)
     report = allocation.run()
 
-    assert report.startswith("# ETF 周度观察")
+    assert report.startswith("# 多资产配置周度观察")
     assert "515180(515180) 约 500份" in report
     assert report.count("SELL 515180(515180)") == 1
     assert "| 515180（515180） | 50.0% | 66.7% | -16.7% |" in report

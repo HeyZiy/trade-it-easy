@@ -90,14 +90,14 @@ def run(*, asof=None, dry_run=False, now=None, backfill=False):
                 row = _record(state, target.isoformat())
                 if row and row.get("issues"):
                     errors += 1
-                    logger.warning("[收盘提示] ETF账户 %s：%s", target, "；".join(row["issues"]))
-                    sections.append("## ETF账户估值提示\n\n" + "；".join(row["issues"]))
+                    logger.warning("[收盘提示] 投资账户 %s：%s", target, "；".join(row["issues"]))
+                    sections.append("## 投资账户估值提示\n\n" + "；".join(row["issues"]))
             except FileNotFoundError:
-                sections.append("## ETF账户\n\n尚未初始化，暂不生成成绩。")
+                sections.append("## 投资账户\n\n尚未初始化，暂不生成成绩。")
                 errors += 1
             except Exception:
-                logger.exception("ETF账户收盘采集失败，保留已有估值")
-                sections.append("## ETF账户\n\n本次估值失败，保留已有成绩。")
+                logger.exception("投资账户收盘采集失败，保留已有估值")
+                sections.append("## 投资账户\n\n本次估值失败，保留已有成绩。")
                 errors += 1
             continue
         try:

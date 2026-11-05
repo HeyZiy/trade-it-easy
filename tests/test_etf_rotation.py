@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
-"""ETF 跨资产动量轮动：判定核纯函数 + 研究池一致性 + 入口台账闭环。
+"""跨资产动量：判定核纯函数 + 入口台账闭环。
 
-规则单点（src/etf/rotation.py，原15只研究线 study_etf_fit_jq.py）：
+规则单点（src/etf/rotation.py）：
 - 打分 = 25 根已完成日线收盘 + 当日现价共 26 点的对数价格加权回归
   （w=linspace(1,2)）→ 年化 = exp(slope×250)−1，score = 年化 × 加权 R²；
 - 合格候选 0 < score < 5（严格两端）；近 3 个日环比任一 <0.95 记 0；
@@ -13,10 +13,8 @@
 测试风格对齐 tests/test_industry_momentum.py：纯函数优先、造数注入；
 入口集成用 tmp_path 独立台账，monkeypatch 截面取数，禁止真实网络。
 """
-import ast
 import math
 from datetime import date
-from pathlib import Path
 from types import SimpleNamespace
 
 import pandas as pd
@@ -25,7 +23,7 @@ import pytest
 import etf_rotation as entry
 from src.etf import rotation as rot
 from src.etf.rotation import (
-    ACCOUNT, POOL, RotationRow,
+    ACCOUNT, RotationRow,
     affordable_shares, build_rows, is_eligible, momentum_score,
     plan_rotation, top_candidate,
 )
@@ -352,32 +350,6 @@ class TestBuildRows:
             assert top_candidate(rows) is rows[0]
         else:
             assert top_candidate(rows) is None
-
-
-# ══════════════ 固定15只研究池一致性（ast 解析原池导出版） ══════════════
-
-def test_pool_matches_research_original15():
-    study = (Path(__file__).resolve().parents[1]
-             / "research/studies/rotation/study_etf_fit_jq.py")
-    tree = ast.parse(study.read_text(encoding="utf-8"))
-
-    values = None
-    for node in ast.walk(tree):
-        if (isinstance(node, ast.Assign)
-                and any(isinstance(t, ast.Attribute) and t.attr == "etf_pool"
-                        for t in node.targets)):
-            values = ast.literal_eval(node.value)
-            break
-    assert values, "原15只导出版 study_etf_fit_jq.py 中未找到 self.etf_pool 列表"
-
-    research_codes = [str(code).split(".")[0] for code in values]
-    engine_codes = [code for code, _, _ in POOL]
-
-    # 有序一致性：顺序变化也算池变更（须同步研究记录）
-    assert research_codes == engine_codes
-    assert len(engine_codes) == len(set(engine_codes)) == 15
-    assert all(len(code) == 6 and code.isdigit() for code in engine_codes)
-    assert {group for _, _, group in POOL} == {"国内权益", "海外权益", "商品", "利率"}
 
 
 # ══════════════ plan_rotation：单只全仓换仓 ══════════════

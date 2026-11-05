@@ -1,4 +1,4 @@
-"""质量池实际账户闭环：真实选股核、独立周期、人工成交及共享账户边界。"""
+"""质量动量实际账户闭环：真实选股核、独立周期、人工成交及共享账户边界。"""
 
 from datetime import date
 from pathlib import Path
@@ -164,7 +164,7 @@ def test_entry_runs_simulation_and_actual_plan_but_only_manual_trades_enter_acco
 
     env.setattr(wallet, "ACCOUNT_PATH", account)
     report = entry.run(DAY)
-    assert "ETF账户 · 质量池计划" in report and "买入" in report
+    assert "投资账户 · 质量动量计划" in report and "买入" in report
     assert not quality(account)["positions"] and not wallet.load(account)["events"]
     assert Path(config.POOL_LEDGER_PATH).exists() and Path(config.STATE_PATH).exists()
     assert wallet.load(account)["quality_state"]["pending_plan"] is None

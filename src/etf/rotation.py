@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 """
 ===================================
-ETF 跨资产动量轮动 — 单只全仓引擎
+跨资产动量 — 单只全仓引擎
 ===================================
 
 把原15只研究线 `research/studies/rotation/study_etf_fit_jq.py`（聚宽单文件策略）
@@ -57,7 +57,7 @@ STALE_DAYS = 10          # 交易日历不可用时：最后日线距今 > N 自
 ACCOUNT = "etf_rotation"                       # 台账归因标签（独立策略账户）
 LEDGER_PATH = "data/trade_ledger_etf_rotation.jsonl"   # 独立流水，与主台账互不可见
 ACCOUNT_SOURCE = AccountSource(                      # 收盘成绩消费方经 src/account_sources 枚举
-    ledger_path=LEDGER_PATH, label="ETF跨资产动量轮动",
+    ledger_path=LEDGER_PATH, label="跨资产动量",
     benchmark={"name": "沪深300价格指数", "index": "000300"})
 COMMISSION = 0.0002      # 新成交佣金万二，规划与台账执行使用同一口径
 MIN_COMMISSION = 5.0     # 新成交最低佣金5元

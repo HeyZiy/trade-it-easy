@@ -99,7 +99,7 @@ def append_trade(record: TradeRecord,
                  path: Path | str = DEFAULT_LEDGER_PATH) -> TradeRecord:
     """校验后追加一行 JSONL。record.code 先经 canonical_stock_code 归一。"""
     if Path(path).resolve() == DEFAULT_LEDGER_PATH.resolve():
-        raise LedgerError("ETF账户请在网页确认成交记账，不再写入旧台账")
+        raise LedgerError("投资账户请在网页确认成交记账，不再写入旧台账")
     record = TradeRecord(**{**asdict(record),
                             "code": canonical_stock_code(record.code)})
     p = Path(path)

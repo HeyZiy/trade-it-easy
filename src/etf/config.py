@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 """
 ===================================
-ETF 长期配置 — 中性基准
+多资产配置 — 中性基准
 ===================================
 
 配置只从账户JSON读取；本模块保留资产类型、计算参数与展示辅助函数。
@@ -92,7 +92,7 @@ def pe_level(pe_pct: float) -> str:
 
 ACCOUNT_SOURCE = AccountSource(
     ledger_path=f"data/{FILENAME}",
-    label="ETF账户",
+    label="投资账户",
     benchmark={"name": "ETF期初权重买入持有（现金零收益，不再平衡）",
                "account": "etf"},
 )

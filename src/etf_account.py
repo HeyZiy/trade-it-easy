@@ -1,4 +1,4 @@
-"""ETF账户台账：期初快照、人工流水、收盘估值和调仓建议。"""
+"""投资账户台账：期初快照、人工流水、收盘估值和调仓建议。"""
 
 from datetime import date
 import hashlib
@@ -50,7 +50,7 @@ def _save(path, state):
 
 def load(path=ACCOUNT_PATH):
     if not Path(path).exists():
-        raise FileNotFoundError("ETF账户尚未初始化")
+        raise FileNotFoundError("投资账户尚未初始化")
     config = portfolio_config.load(portfolio_config.path_for(path))
     return _read_account(path, config)
 
@@ -115,7 +115,7 @@ def initialize(path, *, asof, cash, positions, targets=None, budgets=None, cash_
                          "revision": revision(state, asof)}]
     with _locked(path):
         if Path(path).exists():
-            raise ValueError("ETF账户台账已存在，禁止覆盖初始化")
+            raise ValueError("投资账户台账已存在，禁止覆盖初始化")
         config_path = portfolio_config.path_for(path)
         if config_path.exists():
             raise ValueError("账户配置已存在，请使用迁移或已有配置初始化")
@@ -352,7 +352,7 @@ def publish_rotation(day, rows, prices, diag, *, path=None, dry_run=False, error
 
     path = Path(path or ACCOUNT_PATH)
     if not path.exists():
-        return "ETF账户尚未初始化"
+        return "投资账户尚未初始化"
     with _locked(path):
         state = load(path)
         signal = rotation_advice.make_signal(day, rows, prices, diag, error,
@@ -377,7 +377,7 @@ def publish_quality(day, *, path=None, dry_run=False, retry=False):
 
     path = Path(path or ACCOUNT_PATH)
     if not path.exists():
-        return "ETF账户尚未初始化"
+        return "投资账户尚未初始化"
     with _locked(path):
         account = load(path)
         expected = revision(account)
@@ -386,7 +386,7 @@ def publish_quality(day, *, path=None, dry_run=False, retry=False):
         return "已有更新日期的质量池建议，本次未覆盖"
     strategy = _strategy_facts(account, snapshot(account, day), "quality")
     if not strategy["budget"]:
-        return "请先设置质量池目标比例"
+        return "请先设置质量动量目标比例"
     if previous and previous["date"] == day and not previous.get("issues"):
         rows, status = account_advice.advice(previous, strategy, date.fromisoformat(day),
                                              dismissed=account["dismissed"])
@@ -400,9 +400,9 @@ def publish_quality(day, *, path=None, dry_run=False, retry=False):
         with _locked(path):
             current = load(path)
             if revision(current) != expected:
-                raise ValueError("质量池运行期间账户已更新，请重新运行")
+                raise ValueError("质量动量运行期间账户已更新，请重新运行")
             current["quality_state"] = deepcopy(value)
-            current["quality_signal"] = published or {"date": day, "issues": "质量池名单更新中，暂停建议"}
+            current["quality_signal"] = published or {"date": day, "issues": "质量动量名单更新中，暂停建议"}
             _save(path, current)
             expected = revision(current)
 
@@ -411,12 +411,12 @@ def publish_quality(day, *, path=None, dry_run=False, retry=False):
                           state=state, held_codes={p["code"] for p in strategy["positions"]},
                           state_writer=commit)
         if state.get("signal_retry"):
-            raise ValueError("质量池数据不完整，本轮暂停，等待重试")
+            raise ValueError("质量动量数据不完整，本轮暂停，等待重试")
         selected = (state.get("pending_plan") or {}).get("selected", [])
         execution_snapshot = assembly.build_snapshot(day, selected, account_facts=strategy)
         published = account_advice.make_signal(day, state, execution_snapshot, previous)
     except Exception as error:
-        logger.exception("质量池实际账户建议更新失败")
+        logger.exception("质量动量实际账户建议更新失败")
         published = {"date": day, "issues": str(error)}
     # 若用户在取数期间记账，提交失败，保留用户数据并要求重新生成建议。
     commit(state, published)
@@ -597,7 +597,7 @@ def account_data(path, *, live_quotes=None):
             for key in ("positions", "budget", "invested", "pnl", "assets", "actual_pct",
                         "deviation", "remaining_budget", "buying_power"):
                 strategy[key] = facts[key]
-    return {"id": "etf", "name": "ETF账户", "can_record": True, **view,
+    return {"id": "etf", "name": "投资账户", "can_record": True, **view,
             "performance": latest, "trades": [{**{k: v for k, v in e.items() if k != "request"},
                          **({"name": security_name(e["code"])} if e.get("code") else {})}
                        for e in reversed(state["events"])][:20],
@@ -624,22 +624,22 @@ def strategy_snapshot(path=None):
         try:
             state = _read_account(path, config)
         except Exception:
-            logger.warning("ETF账户读取失败，跳过持仓对照", exc_info=True)
+            logger.warning("投资账户读取失败，跳过持仓对照", exc_info=True)
             return config, None
     try:
         view = snapshot(state, _today().isoformat())
         core = _strategy_facts(state, view, "core")
         if core["status"] != "已分配":
-            raise ValueError("核心配置：" + core["status"])
+            raise ValueError("多资产配置：" + core["status"])
         snap = LedgerSnapshot(positions=core["positions"], entry_map={}, cash=core["buying_power"],
                               invested=core["invested"], total_assets=core["budget"])
     except Exception:
-        logger.warning("ETF账户快照不可用，跳过持仓对照", exc_info=True)
+        logger.warning("投资账户快照不可用，跳过持仓对照", exc_info=True)
         snap = None
     return config, snap
 
 
 def render_summary(path=ACCOUNT_PATH):
     view = account_data(path)
-    return (f"## ETF账户\n\n总资产 {view['equity']:,.2f} 元｜现金 {view['cash']:,.2f} 元｜"
+    return (f"## 投资账户\n\n总资产 {view['equity']:,.2f} 元｜现金 {view['cash']:,.2f} 元｜"
             f"持仓 {len(view['positions'])} 只\n\n策略只提供建议，实际成交由人工确认记账。")

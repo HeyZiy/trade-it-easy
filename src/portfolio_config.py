@@ -1,4 +1,4 @@
-"""ETF账户的唯一生效配置。手工编辑和网页保存使用同一校验规则。"""
+"""投资账户的唯一生效配置。手工编辑和网页保存使用同一校验规则。"""
 from copy import deepcopy
 from datetime import datetime, timezone
 import hashlib
@@ -9,7 +9,7 @@ import re
 
 from src.json_store import locked, save
 
-STRATEGY_NAMES = {"core": "核心配置", "rotation": "跨资产轮动", "quality": "质量池轮动"}
+STRATEGY_NAMES = {"core": "多资产配置", "rotation": "跨资产动量", "quality": "质量动量"}
 
 FILENAME = "etf_config.json"
 DEFAULT_PATH = Path("data") / FILENAME
@@ -18,7 +18,7 @@ EXAMPLE = Path(__file__).resolve().parents[1] / "config" / "etf_config.example.j
 
 def path_for(account):
     account = Path(account)
-    # 生产是一份ETF账户；独立测试账户各自隔离配置。
+    # 生产是一份投资账户；独立测试账户各自隔离配置。
     return account.with_name(FILENAME if account.name == "etf_account.json" else account.stem + ".config.json")
 
 
@@ -39,7 +39,7 @@ def validate(config):
         raise ValueError("策略目标比例合计不能超过100%")
     rows = config["core"]
     if not isinstance(rows, list) or not 1 <= len(rows) <= 50:
-        raise ValueError("核心配置须有1至50项资产")
+        raise ValueError("多资产配置须有1至50项资产")
     codes = set()
     fields = {"code", "weight", "asset_type", "tracked_index", "valuation_kind", "dividend_style", "volatility_rank"}
     for row in rows:
@@ -70,7 +70,7 @@ def validate(config):
         if code == "CASH" and (row["valuation_kind"] != "none" or row["dividend_style"]):
             raise ValueError("现金不设置证券估值")
     if "CASH" not in codes or not math.isclose(sum(r["weight"] for r in rows), 1, rel_tol=0, abs_tol=1e-8):
-        raise ValueError("核心内部权重须合计100%，并包含一项CASH")
+        raise ValueError("多资产配置内部权重须合计100%，并包含一项CASH")
     return deepcopy(config)
 
 

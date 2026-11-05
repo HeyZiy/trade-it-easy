@@ -213,7 +213,7 @@ def test_two_account_collector_keeps_ledgers_untouched(tmp_path, monkeypatch):
     monkeypatch.setattr(ClosingPrices, "index_prices", lambda self, codes, asof: {c: 100 if asof == "2026-09-21" else 102 for c in codes})
     now = datetime(2026, 9, 23, 15, 30, tzinfo=timezone(timedelta(hours=8)))
     report, errors = entry.run(now=now)
-    assert errors == 0 and "ETF账户" in report and "质量池轮动" in report
+    assert errors == 0 and "投资账户" in report and "质量动量" in report
     assert all(performance_path(p).exists() for p in (main, pool))
     assert [p.read_bytes() for p in (main, pool)] == before
     # 补采更早日期失败时，也要报告该日期的失败，不被已存在的最新记录掩盖。

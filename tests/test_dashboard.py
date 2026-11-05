@@ -193,7 +193,7 @@ def test_report_api_requires_auth_and_returns_inline_content(tmp_path, monkeypat
         with urllib.request.urlopen(request) as response:
             result = json.loads(response.read())
             assert response.status == 200
-            assert result["name"] == "质量池"
+            assert result["name"] == "质量动量"
             assert "<h2>本次执行</h2>" in result["html"]
         invalid = urllib.request.Request(base + "/api/report/../secret.md",
                                          headers={"Authorization": basic("trader", "secret")})

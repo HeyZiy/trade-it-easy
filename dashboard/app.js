@@ -11,7 +11,7 @@ const accountName = account => account?.name || '账户';
 const reportDate = value => /^\d{8}$/.test(value) ? `${value.slice(0,4)}-${value.slice(4,6)}-${value.slice(6)}` : value;
 const timestamp = day => Date.parse(`${day}T00:00:00Z`);
 const SIDES = {buy:'买入', sell:'卖出', dividend:'分红', deposit:'入金', withdraw:'出金', assign:'持仓划转', cash_assign:'现金分配'};
-const STRATEGY_NAMES = {core:'核心配置', rotation:'跨资产轮动', quality:'质量池轮动', unassigned:'未分配'};
+const STRATEGY_NAMES = {core:'多资产配置', rotation:'跨资产动量', quality:'质量动量', unassigned:'未分配'};
 const REPORT_PREFIX = {core:'etf_weekly_', satellite:'industry_momentum_', rotation:'etf_rotation_', quality:'quality_pool_'};
 let data, selected = 0, chartRange = 'all', chartObserver;
 let selectedReport, reportRequest, configRequest;
@@ -98,7 +98,7 @@ function tradeTable(rows) {
 
 function warnings(account) {
   const messages = [...(account?.error ? [account.error] : []), ...(account?.warnings || [])];
-  const labels = {'台账文件不存在':'尚无模拟记录。','ETF账户尚未初始化':'尚未设置期初资产。','账户数据读取失败，请检查服务器日志。':'账户暂时无法加载，请稍后重试。',
+  const labels = {'台账文件不存在':'尚无模拟记录。','投资账户尚未初始化':'尚未设置期初资产。','账户数据读取失败，请检查服务器日志。':'账户暂时无法加载，请稍后重试。',
     '最新成绩待重新估值，曲线保留最近有效数据。':'收盘收益待更新，暂显示最近有效记录。',
     '最近收盘成绩不完整或流水已变更，显示最近有效成绩。':'收盘收益待更新，暂显示最近有效记录。'};
   return [...new Set(messages.map(message=>labels[message] || message))].map(message => `<div class="warning">${esc(message)}</div>`).join('');
@@ -250,7 +250,7 @@ function recordTable(rows) {
 function fundedStrategyPage(strategy) {
   const stats = [[finite(strategy.budget) ? money(strategy.budget) : '待设置','目标资产 / 元'],[money(strategy.invested),'持仓市值 / 元'],[`${strategy.pnl>0?'+':''}${money(strategy.pnl)}`,'累计盈亏 / 元'],[money(strategy.cash),'策略现金 / 元']];
   const observation = strategy.observation;
-  const observationSection = observation ? `${chartSection(observation, '独立模拟，不计入ETF账户')}<section class="section"><div class="section-heading"><h2>模拟持仓</h2></div>${positionTable(observation.positions)}</section>` : '';
+  const observationSection = observation ? `${chartSection(observation, '独立模拟，不计入投资账户')}<section class="section"><div class="section-heading"><h2>模拟持仓</h2></div>${positionTable(observation.positions)}</section>` : '';
   const trades = [...(strategy.trades || [])].reverse().slice(0,20);
   const canRecord = data.accounts[0].can_record;
   const status = strategy.status && strategy.status!=='已分配' ? `<p class="subtle">${esc(strategy.status)}</p>` : '';
@@ -285,7 +285,7 @@ function render() {
   chartObserver?.disconnect();
   updateQuoteControls();
   const tabs = [{id:'etf',name:'账户总览'},...data.strategies,...data.observations];
-  document.querySelector('#tabs').innerHTML = tabs.map((tab,index) => `${index===0 ? '<span class="nav-label">ETF账户</span>' : index===data.strategies.length+1 ? '<span class="nav-label">策略观察</span>' : ''}<button type="button" role="tab" id="tab-${esc(tab.id)}" class="${index===selected ? 'active' : ''}" aria-selected="${index===selected}" aria-controls="account" tabindex="${index===selected ? 0 : -1}" data-index="${index}">${esc(accountName(tab))}</button>`).join('');
+  document.querySelector('#tabs').innerHTML = tabs.map((tab,index) => `${index===0 ? '<span class="nav-label">投资账户</span>' : index===data.strategies.length+1 ? '<span class="nav-label">策略观察</span>' : ''}<button type="button" role="tab" id="tab-${esc(tab.id)}" class="${index===selected ? 'active' : ''}" aria-selected="${index===selected}" aria-controls="account" tabindex="${index===selected ? 0 : -1}" data-index="${index}">${esc(accountName(tab))}</button>`).join('');
   function activateTab(index) {
     selected=index; render();
     document.querySelector(`#tabs [data-index="${selected}"]`).focus();
@@ -626,9 +626,9 @@ function allocationRows(account) {
 
 function assetSlices(account) {
   return [
-    {name:'核心持仓',value:data.strategies[0].invested,color:'#22735b'},
-    {name:'轮动持仓',value:data.strategies[1].invested,color:'#7393a2'},
-    {name:'质量池持仓',value:data.strategies.find(row=>row.id==='quality')?.invested || 0,color:'#997fa4'},
+    {name:'多资产配置持仓',value:data.strategies[0].invested,color:'#22735b'},
+    {name:'跨资产动量持仓',value:data.strategies[1].invested,color:'#7393a2'},
+    {name:'质量动量持仓',value:data.strategies.find(row=>row.id==='quality')?.invested || 0,color:'#997fa4'},
     {name:'未分配持仓',value:account.strategy_positions.filter(row=>row.strategy==='unassigned').reduce((sum,row)=>sum+row.market_value,0),color:'#b1884c'},
     {name:'现金',value:account.cash,color:'#c2d3c5'}
   ];
@@ -777,9 +777,9 @@ async function openConfiguration() {
     const weightIssue=Math.abs(sum-100)>1e-6;
     const budgetIssue=budgets>100+1e-8;
     weights.forEach(input=>input.setCustomValidity(''));
-    weights.at(-1)?.setCustomValidity(weightIssue ? '核心内部权重须合计100%。' : '');
+    weights.at(-1)?.setCustomValidity(weightIssue ? '多资产配置内部权重须合计100%。' : '');
     form.elements.namedItem('core').setCustomValidity(budgetIssue ? '策略目标占比合计不能超过100%。' : '');
-    document.querySelector('#config-total').textContent=`核心权重 ${sum.toFixed(4).replace(/\.?0+$/,'')}% · 账户目标 ${budgets.toFixed(2)}%${weightIssue?' · 核心权重须合计100%':''}${budgetIssue?' · 账户目标合计不能超过100%':''}`;
+    document.querySelector('#config-total').textContent=`多资产配置权重 ${sum.toFixed(4).replace(/\.?0+$/,'')}% · 账户目标 ${budgets.toFixed(2)}%${weightIssue?' · 多资产配置权重须合计100%':''}${budgetIssue?' · 账户目标合计不能超过100%':''}`;
     document.querySelector('#config-total').classList.toggle('invalid',weightIssue||budgetIssue);
   }
   function addRow(asset) {

@@ -1,16 +1,16 @@
 # -*- coding: utf-8 -*-
 """
 ==================================
-ETF 周度观察报告 — 估值导向
+多资产配置周度观察报告 — 估值导向
 ==================================
 
-定位：每周生成核心配置策略建议；成交由用户确认，统一记入ETF账户。
+定位：每周生成多资产配置策略建议；成交由用户确认，统一记入投资账户。
 
 报告生成流程（账户快照 → 配置建议 → 周报）在 src/etf/allocation，
 本入口只剩旗标/闸门/落盘/推送；规格唯一来源 strategy/etf_allocation.md。
 
 报告结构：
-  1. 本次建议（阈值再平衡指令，仅供参考不自动执行；成交由用户确认后统一记入ETF账户）
+  1. 本次建议（阈值再平衡指令，仅供参考不自动执行；成交由用户确认后统一记入投资账户）
   2. 策略参考（目标/实际/偏离/建议指令表，并列唐奇安20/10观察与标的级估值——
      锚对准跟踪指数当前 PE/股息率，跨标的不可比，仅展示）
   3. 市场宏观（未完善）（全市场 PE / 收益率 / 风险溢价及其分位，纯数据不给操作建议）
@@ -39,7 +39,7 @@ logger = logging.getLogger(__name__)
 
 
 def main():
-    parser = argparse.ArgumentParser(description='ETF 周度观察报告')
+    parser = argparse.ArgumentParser(description='多资产配置周度观察报告')
     add_standard_flags(parser)
     args = parser.parse_args()
 
@@ -53,7 +53,7 @@ def main():
         return 0
 
     logger.info("=" * 60)
-    logger.info("ETF 周度观察报告（配置建议）")
+    logger.info("多资产配置周度观察报告（配置建议）")
     logger.info(f"时间: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
     logger.info("=" * 60)
 

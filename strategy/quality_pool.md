@@ -1,4 +1,4 @@
-# 质量池相对强弱轮动
+# 质量动量
 
 现行规则：v5。本文件是可执行规则的唯一规范源；研究版本、回测口径与证据见[研究目录](../research/studies/quality_momentum/README.md)。
 

@@ -48,5 +48,5 @@ FINANCIAL_STATEMENT_TYPE_CONSOL = 1   # 合并报表
 # ── 模拟账户描述符（收盘成绩等消费方经 src/account_sources 枚举）──
 
 ACCOUNT_SOURCE = AccountSource(
-    ledger_path=POOL_LEDGER_PATH, label="质量池轮动",
+    ledger_path=POOL_LEDGER_PATH, label="质量动量",
     benchmark={"name": "中证800价格指数", "index": "000906"})

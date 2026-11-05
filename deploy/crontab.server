@@ -27,19 +27,19 @@
 #   - 日志由脚本自行写入 logs/<prefix>.log（含 _debug.log），cron 不重复重定向；
 #     stdout 丢弃，仅 stderr（启动失败/未捕获异常）追加到 logs/cron_error.log
 #   - flock 防止任务重入（节假日/周末任务重叠等）
-#   - 质量池每天09:30一次启动：昨收信号→实时行情模拟记账及实际账户建议→一份报告；
+#   - 质量动量每天09:30一次启动：昨收信号→实时行情模拟记账及实际账户建议→一份报告；
 #     flock 覆盖完整流程，脚本内部有交易日与调仓日判断，cron 用 1-5 限定即可
 #   - env_report 已摘除：环境快照唯一消费方（趋势双任务）退役后无消费点，
 #     模块保留；未来策略需要市场门控时再加回一行（14:35，先于消费任务）
 # =============================================
 
-# ── 质量池：每交易日09:30独立模拟并更新实际账户建议，有行动时推送；实际成交由人工确认 ──
+# ── 质量动量：每交易日09:30独立模拟并更新实际账户建议，有行动时推送；实际成交由人工确认 ──
 30 9 * * 1-5 cd /root/trade-it-easy && flock -n /tmp/quality-pool.lock /root/miniconda/envs/rt/bin/python quality_pool.py > /dev/null 2>> logs/cron_error.log
 
-# ── ETF 周度观察：每周一 14:40 生成报告与配置建议；成交由人工确认，统一记入ETF账户 ──
+# ── 多资产配置周度观察：每周一 14:40 生成报告与配置建议；成交由人工确认，统一记入投资账户 ──
 40 14 * * 1 cd /root/trade-it-easy && flock -n /tmp/etf.lock /root/miniconda/envs/rt/bin/python etf_observe.py > /dev/null 2>> logs/cron_error.log
 
-# ── ETF 跨资产轮动：每交易日 10:40 更新账户建议、独立模拟台账并推送 ──
+# ── 跨资产动量：每交易日 10:40 更新账户建议、独立模拟台账并推送 ──
 40 10 * * 1-5 cd /root/trade-it-easy && flock -n /tmp/etf-rotation.lock /root/miniconda/envs/rt/bin/python etf_rotation.py > /dev/null 2>> logs/cron_error.log
 
 # ── 行业动量轮动（卫星仓）：每交易日 14:50 尾盘（截面排名→卖出/买入→推送）──

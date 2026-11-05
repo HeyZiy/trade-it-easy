@@ -1,8 +1,8 @@
 # -*- coding: utf-8 -*-
-"""周度批次——ETF 核心配置观察与再平衡建议。
+"""周度批次——多资产配置观察与再平衡建议。
 
 单动词 interface：run() -> str，完成账户快照 → 再平衡建议 → 周报。
-ETF账户台账由用户确认成交记账，报告生成不写入成交。
+投资账户台账由用户确认成交记账，报告生成不写入成交。
 
 数据 seam：行情取数经 *_raw 函数进入（函数内懒导入），账户与配置由账户 module
 一次读取。完整报告可用临时账户文件与替代行情 adapter 验证：
@@ -383,7 +383,7 @@ def run() -> str:
     alloc = ctx.alloc
 
     sections = [
-        f"# ETF 周度观察 — {datetime.now().strftime('%Y-%m-%d')}",
+        f"# 多资产配置周度观察 — {datetime.now().strftime('%Y-%m-%d')}",
         "",
         f"**生成时间**: {now}",
         "",

@@ -74,7 +74,7 @@ def test_missing_initialization_never_uses_old_core_ledger(tmp_path, monkeypatch
     append_trade(TradeRecord('2025-01-02', '510300', '旧持仓', 'buy', 100, 3), old)
     before = old.read_bytes()
     view = dashboard_data(tmp_path)['accounts'][0]
-    assert view['error'] == 'ETF账户尚未初始化'
+    assert view['error'] == '投资账户尚未初始化'
     assert not view['positions']
     from src import portfolio_config
     portfolio_config.create(portfolio_config.path_for(path), portfolio_config.example())
@@ -179,7 +179,7 @@ def test_scheduled_report_recollects_changed_actual_history(account, monkeypatch
     import portfolio_report as entry
     monkeypatch.setattr('src.etf_account.ACCOUNT_PATH', account)
     from types import SimpleNamespace
-    monkeypatch.setattr('src.account_sources.all_sources', lambda: [SimpleNamespace(ledger_path=str(account), label='核心配置', benchmark={})])
+    monkeypatch.setattr('src.account_sources.all_sources', lambda: [SimpleNamespace(ledger_path=str(account), label='多资产配置', benchmark={})])
     days = [date(2025, 1, 6), date(2025, 1, 7)]
     monkeypatch.setattr(entry, 'closed_date', lambda now: days[-1])
     monkeypatch.setattr(entry, 'get_trading_dates', lambda start, end: [d for d in days if start <= d <= end])
@@ -191,7 +191,7 @@ def test_scheduled_report_recollects_changed_actual_history(account, monkeypatch
     rows = load(account)['records']
     assert next(r for r in rows if r['date'] == '2025-01-06')['equity'] == 3999
     assert rows[-1]['equity'] == 3999
-    assert 'ETF账户' in report
+    assert '投资账户' in report
 
 
 def test_core_cron_can_only_recommend_after_initialization(account, monkeypatch):
