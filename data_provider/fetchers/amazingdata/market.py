@@ -1,5 +1,6 @@
 """行情原始表、价格矩阵、执行快照与 ETF 复权；不管理登录态。"""
 import os
+from datetime import datetime, timedelta, timezone
 from typing import Dict, List
 import pandas as pd
 from data_provider.types import DataFetchError
@@ -11,6 +12,58 @@ AMAZINGDATA_CACHE_DIR = _resolve_cache_dir()
 _KLINE_CHUNK = 200
 _FACTOR_CHUNK = 500
 _INFO_CHUNK = 32
+_SHANGHAI = timezone(timedelta(hours=8))
+
+
+def get_latest_snapshot(code: str, *, now=None):
+    """沪深股票/ETF 当天最近五分钟的快照；午休及盘后取本时段末尾。
+
+    query_snapshot 是历史查询接口，不承诺实时推送。只接受查询窗口内、
+    不晚于请求时间的数据；当日无快照或时间无法验证时交给上层回退。
+    """
+    tgw_codes = _tgw_codes([code])
+    if not tgw_codes:
+        return None
+    now = pd.Timestamp(now if now is not None else datetime.now(_SHANGHAI))
+    now = now.tz_localize(_SHANGHAI) if now.tzinfo is None else now.tz_convert(_SHANGHAI)
+    # SDK 时钟参数精确到毫秒，时区由交易所（北京时间）定义。
+    end = now.floor('ms')
+    midday = end.replace(hour=11, minute=30, second=0, microsecond=0)
+    afternoon = end.replace(hour=13, minute=0, second=0, microsecond=0)
+    close = end.replace(hour=15, minute=0, second=0, microsecond=0)
+    if midday < end < afternoon:
+        end = midday
+    end = min(end, close)
+    begin = max(end - timedelta(minutes=5), end.normalize())
+
+    def clock_value(stamp):
+        return int(stamp.strftime('%H%M%S')) * 1000 + stamp.microsecond // 1000
+
+    day = int(end.strftime('%Y%m%d'))
+    try:
+        raw = client.get_market_data().query_snapshot(
+            tgw_codes, begin_date=day, end_date=day,
+            begin_time=clock_value(begin), end_time=clock_value(end))
+    except SystemExit as exc:
+        raise DataFetchError('AmazingData 快照查询被中断') from exc
+    except Exception as exc:
+        raise DataFetchError(f'AmazingData 最新快照查询失败: {exc}') from exc
+    frame = _normalize_map(raw, tgw_codes).get(_plain_code(tgw_codes[0]))
+    if frame is None or frame.empty:
+        return None
+    if 'trade_time' in frame.columns:
+        raw_times = frame['trade_time']
+    elif isinstance(frame.index, pd.DatetimeIndex):
+        raw_times = frame.index
+    else:
+        return None
+    times = pd.DatetimeIndex(pd.to_datetime(raw_times, errors='coerce'))
+    times = times.tz_localize(_SHANGHAI) if times.tz is None else times.tz_convert(_SHANGHAI)
+    valid = (times >= begin) & (times <= end)
+    if not valid.any():
+        return None
+    # 按交易所时间选择，不依赖 SDK 返回顺序；最新一笔价格无效时不偷用旧笔。
+    return frame.iloc[valid.nonzero()[0][times[valid].argmax()]]
 
 
 def get_raw_kline(code_list, begin_date, end_date, period=None):

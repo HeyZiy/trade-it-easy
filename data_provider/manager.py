@@ -35,7 +35,7 @@ from .realtime import merge_realtime_quotes
 logger = logging.getLogger(__name__)
 
 # src.config 不可用时的 realtime 兜底口径（与 config 默认一致；正常路径不走）
-_FALLBACK_REALTIME_PRIORITY = "tencent,akshare_sina,efinance,akshare_em"
+_FALLBACK_REALTIME_PRIORITY = "amazingdata,tencent,akshare_sina,efinance,akshare_em"
 
 
 def get_fetcher():
@@ -120,6 +120,12 @@ class DataFetcherManager:
             logger.warning(f"[组装] src.config 不可用，realtime 按全开+兜底优先级: {e}")
             self._realtime_enabled = True
             self._realtime_source_priority = _FALLBACK_REALTIME_PRIORITY
+
+        # AD 是可选凭证源；未注册时不把默认项当成拼写错误逐票告警。
+        if not any('amazingdata' in getattr(f, 'REALTIME_VARIANTS', {}) for f in self._fetchers):
+            self._realtime_source_priority = ','.join(
+                source for source in self._realtime_source_priority.split(',')
+                if source.strip().lower() != 'amazingdata')
 
 
     def _init_default_fetchers(self) -> None:

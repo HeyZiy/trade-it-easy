@@ -8,13 +8,13 @@
 |---|---|
 | `client.py` | 默认 `client` 管理认证、重试及 BaseData/InfoData/MarketData 对象 |
 | `basics.py` | 交易日历、股票/ETF/可转债代码列表、历史代码表、股票基础信息 |
-| `market.py` | 分批原始 K 线、价格矩阵、执行快照、单次复权因子及 ETF 后复权行情 |
+| `market.py` | 分批原始 K 线、价格矩阵、近期及执行快照、单次复权因子及 ETF 后复权行情 |
 | `fundamentals.py` | 财务、股本、证券状态、解禁事件，以及历史流通/总市值 |
 | `industries.py` | 行业基础表、成员变更记录、指定日期的行业映射与哑变量 |
 | `announcements.py` | 股票、基金、可转债的公告列表与原文下载 |
 | `_utils.py` | 日期、代码规范化、SDK 返回结构与缓存目录规则 |
 
-同级 `amazingdata_fetcher.py` 的 `AmazingDataFetcher(BaseFetcher)` 适配项目多数据源框架，保留能力声明、优先级、标准日线与指数入口。它调用本目录的会话和行情能力。数据能力模块不依赖该适配类。
+同级 `amazingdata_fetcher.py` 的 `AmazingDataFetcher(BaseFetcher)` 适配项目多数据源框架，提供能力声明、优先级、标准日线、实时报价与指数入口。它调用本目录的会话和行情能力。数据能力模块不依赖该适配类。
 
 ```python
 from data_provider.fetchers.amazingdata import basics, market, fundamentals
@@ -29,6 +29,14 @@ float_value = fundamentals.get_float_market_value(codes[:10], 20260101, 20261030
 `get_raw_kline` 返回代码到原始表的字典；`get_kline` 返回日期×代码的矩阵，多字段列为 `(field, code)`。这些价格均未复权，原有策略复权由各自调用路径处理。`fetch_etf_hfq_bars` 延续原来的事件乘数累积复权规则。
 
 高级 SDK 查询可以使用 `client.get_base_data()`、`client.get_info_data()`、`client.get_market_data()`；公共查询有复用需求时，加入对应能力模块。
+
+## 统一实时报价
+
+`AmazingDataFetcher.get_realtime_quote(code)` 使用 `market.get_latest_snapshot` 查询沪深股票与 ETF 的当日近期快照。统一实时源默认顺序为 `amazingdata,tencent,akshare_sina,efinance,akshare_em`；显式设置 `REALTIME_SOURCE_PRIORITY` 时以该配置为准。没有完整 AD/TGW 凭证时跳过 AD。
+
+快照通过 `query_snapshot` 查询北京时间最近五分钟，午休以 11:30、收盘后以 15:00 为窗口终点；只接受窗口内且不晚于请求时间的快照，按交易所 `trade_time`（缺列时使用日期时间索引）选最新一笔。该接口提供查询时可获得的近期快照，不是实时订阅；当日无数据、数据过旧、查询异常或最新价无效时，统一路由继续尝试其他来源。
+
+报价使用 `last`，不拿 `close` 或更早一笔替代无效最新价。昨收有效时计算涨跌额、涨跌幅和振幅。文档未明确快照成交量单位，`volume` 保持缺失。缺失估值等字段仍由统一实时路由按原规则补充，补充源不覆盖 AD 价格。网页刷新通过该接口更新展示估值，报价不写入账户流水或收盘收益曲线。
 
 ## 配置与会话
 
