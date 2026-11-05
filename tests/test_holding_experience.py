@@ -107,7 +107,7 @@ class HoldingExperienceTests(unittest.TestCase):
             actual, _ = runners[name](px)
             expected, _ = b.sim_target(px, h.dc.build_target(history, *params, start=px.index[0]))
             pd.testing.assert_frame_equal(actual, expected)
-        metrics, curves = h.evaluate_window(px, runners)
+        metrics, curves, _ = h.evaluate_window(px, runners)
         self.assertEqual(metrics.loc['长拿', '较长拿水下缩短交易日'], 0)
         self.assertEqual(metrics.loc['长拿', '落后长拿时间占比%'], 0)
         self.assertEqual(set(metrics.index), set(curves))

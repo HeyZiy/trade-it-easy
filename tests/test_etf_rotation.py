@@ -358,7 +358,7 @@ class TestBuildRows:
 
 def test_pool_matches_research_original15():
     study = (Path(__file__).resolve().parents[1]
-             / "research/studies/etf_rotation/study_etf_fit_jq.py")
+             / "research/studies/rotation/study_etf_fit_jq.py")
     tree = ast.parse(study.read_text(encoding="utf-8"))
 
     values = None

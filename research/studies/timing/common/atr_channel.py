@@ -1,5 +1,9 @@
 # -*- coding: utf-8 -*-
-"""20日均线±1.5ATR通道的独立对照；收盘确认，下一交易日开盘成交。"""
+"""均线±ATR通道族扫描：收盘确认，下一交易日开盘成交。
+
+维度对照：python -m research.studies.timing.common.atr_channel。
+主组为 MA20±1.5×Wilder ATR20 下轨退出，其余每组只改一个维度；结果不回写一级或二级配置。
+"""
 from datetime import datetime, timezone
 import hashlib
 import json
@@ -88,6 +92,7 @@ def evaluate(history):
             curves[name], count = base.sim_target(px, targets[name], ledger=ledgers[name])
         rows[name] = base.metrics(curves[name].nav, curves[name].exposure, count)
     met = pd.DataFrame(rows).T.rename_axis("strategy")
+    met = base.attach_round_trips(met, ledgers)
     met = base.experience.add_benchmark_comparison(met, curves)
     ann = base.annual_returns({name: curve.nav for name, curve in curves.items()})
     return met, ann, curves, ledgers, targets, signals

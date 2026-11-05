@@ -1,6 +1,6 @@
 """创业板长回撤诊断：固定规则、同时间比较、逐日损益与持仓段核对。
 
-运行 python -m research.studies.broad_index_strategies.experiments.chi_next_drawdown
+运行 python -m research.studies.timing.experiments.chi_next_drawdown
 只读已有缓存，不试新参数；损益拆分是记账描述，不是改成交规则的反事实。
 """
 import numpy as np
@@ -90,7 +90,7 @@ def main():
         runners = {k: v for k, v in study.strategy_runners(history).items() if k in RULES}
         for label, start in (("各自全期", base.window_start(history)),
                              ("共同窗口", pd.Timestamp("2022-03-18"))):
-            metrics, _ = study.evaluate_window(history.loc[start:"2026-09-30"], runners)
+            metrics, _, _ = study.evaluate_window(history.loc[start:"2026-09-30"], runners)
             rows.append(metrics.reset_index().assign(code=code, 窗口=label, start=str(start.date())))
     comparisons = pd.concat(rows, ignore_index=True)
     comparisons.to_csv(OUT / "comparisons.csv", index=False, encoding="utf-8-sig")

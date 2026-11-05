@@ -61,6 +61,8 @@ class SecondaryStudyTests(unittest.TestCase):
                 s.main()
             metrics = pd.read_csv(folder / 'out/metrics.csv', index_col=0)
             self.assertEqual(set(metrics.index), set(s.PRESETS))
+            self.assertTrue(set(s.base.ROUND_TRIP_COLS) <= set(metrics.columns))
+            self.assertEqual(metrics.loc['长拿', '完整回合数'], 0)
             roll = pd.read_csv(folder / 'out/rolling_summary.csv')
             self.assertEqual(set(roll.years), {1})
             self.assertEqual(set(roll.strategy), set(s.PRESETS) - {'长拿'})

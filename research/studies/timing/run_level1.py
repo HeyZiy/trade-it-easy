@@ -1,6 +1,6 @@
 """统一比较长期配置的收益、回撤及水下时间；只读取现有缓存。
 
-从仓库根运行 python research/studies/broad_index_strategies/run_level1.py。
+从仓库根运行 python research/studies/timing/run_level1.py。
 全期与每月重新建账的1/3/5年窗口均使用相同规则、成本和初始资金。
 """
 from datetime import datetime, timezone
@@ -14,7 +14,7 @@ import pandas as pd
 
 if not __package__:
     sys.path.insert(0, str(Path(__file__).resolve().parents[3]))
-    __package__ = "research.studies.broad_index_strategies"
+    __package__ = "research.studies.timing"
 
 from .common import atr_channel as atr
 
@@ -38,14 +38,19 @@ def strategy_runners(history, pe=None):
             **{name: partial(base.sim_target, target=target) for name, target in targets.items()}}
 
 
-def evaluate_window(px, runners):
-    curves, rows = {}, {}
+def evaluate_window(px, runners, collect_ledgers=False):
+    curves, rows, ledgers = {}, {}, {}
     for name, run in runners.items():
-        curve, count = run(px)
+        ledger = [] if collect_ledgers else None
+        curve, count = run(px, ledger=ledger)
         curves[name] = curve
         rows[name] = base.metrics(curve.nav, curve.exposure, count)
+        if collect_ledgers:
+            ledgers[name] = ledger
     met = pd.DataFrame.from_dict(rows, orient="index").rename_axis("strategy")
-    return experience.add_benchmark_comparison(met, curves), curves
+    if collect_ledgers:
+        met = base.attach_round_trips(met, ledgers)
+    return experience.add_benchmark_comparison(met, curves), curves, ledgers
 
 
 def rolling_cohorts(history, runners, years):
@@ -96,12 +101,15 @@ def main():
         pe = base.load_pe(asset.index_code) if asset.valuation is not None else None
         runners = strategy_runners(history, pe)
         px = history.loc[base.window_start(history):]
-        met, curves = evaluate_window(px, runners)
+        met, curves, ledgers = evaluate_window(px, runners, collect_ledgers=True)
         start, end = str(px.index[0].date()), str(px.index[-1].date())
         windows[code] = {"start": start, "end": end, "strategies": list(runners)}
         full.append(met.reset_index().assign(code=code, 标的=asset.name, start=start, end=end))
         pd.concat(curves, names=["strategy", "date"]).reset_index().to_csv(
             OUT / f"daily_{code}.csv", index=False, encoding="utf-8-sig")
+        pd.DataFrame([{"strategy": name, **trade}
+                      for name, ledger in ledgers.items() for trade in ledger]).to_csv(
+            OUT / f"trades_{code}.csv", index=False, encoding="utf-8-sig")
         pd.concat({name: experience.drawdown_periods(curve.nav, base.CAPITAL)
                    for name, curve in curves.items()}, names=["strategy", "episode"]).reset_index().to_csv(
             OUT / f"drawdowns_{code}.csv", index=False, encoding="utf-8-sig")

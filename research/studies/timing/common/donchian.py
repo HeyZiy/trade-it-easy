@@ -1,8 +1,8 @@
 # -*- coding: utf-8 -*-
 """唐奇安通道独立对照：历史通道、收盘确认、下一交易日开盘成交。
 
-补充通道对照：python -m research.studies.broad_index_strategies.common.donchian。
-复用原研究的行情、账户、成本和指标；不改变网格或四策略主表。
+补充通道对照：python -m research.studies.timing.common.donchian。
+复用共享账户引擎的行情、成本与指标口径；结果不回写一级或二级配置。
 """
 from datetime import datetime, timezone
 import hashlib
@@ -70,6 +70,7 @@ def evaluate(history):
         curves[name], count = base.sim_target(px, target, ledger=ledgers[name])
         metrics[name] = base.metrics(curves[name].nav, curves[name].exposure, count)
     met = pd.DataFrame(metrics).T.rename_axis("strategy")
+    met = base.attach_round_trips(met, ledgers)
     met = base.experience.add_benchmark_comparison(met, curves)
     ann = base.annual_returns({name: curve.nav for name, curve in curves.items()})
     return met, ann, curves, ledgers, targets, signals

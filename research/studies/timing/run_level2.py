@@ -1,6 +1,6 @@
 """二级测试：单标的、固定代表参数组；目前仅运行恒生科技513180。
 
-python research/studies/broad_index_strategies/run_level2.py
+python research/studies/timing/run_level2.py
 不扫描参数网格，不按结果选参数，不修改一级规则。
 """
 from datetime import datetime, timezone
@@ -14,7 +14,7 @@ import pandas as pd
 
 if not __package__:
     sys.path.insert(0, str(Path(__file__).resolve().parents[3]))
-    __package__ = "research.studies.broad_index_strategies"
+    __package__ = "research.studies.timing"
 
 from . import run_level1 as holding
 
@@ -80,6 +80,11 @@ def write_report(asset, met, rolling, window):
              "唐奇安采用此前日线最高/最低价通道，不含信号当日。", "",
              "## 全期体验", ""]
     cols = ["年化收益%", "最大回撤%", "最长水下交易日", "深回撤时间占比%", "平均仓位%", "交易次数"]
+    lines += [met[cols].round(2).rename_axis("规则").to_markdown(), "",
+              "## 交易质量", "",
+              "回合按FIFO配对：每笔卖单配到最早买入且尚未卖出的份额，收益含双边0.06%成本。",
+              "长拿没有已平回合；网格的回合是库存份额配对，不等于按档位一买一卖。", ""]
+    cols = ["完整回合数", "回合胜率%", "平均盈利%", "平均亏损%", "盈亏比", "期末未平批次"]
     lines += [met[cols].round(2).rename_axis("规则").to_markdown(), ""]
     for years in HOLDING_YEARS:
         rows = rolling[rolling.years == years].set_index("strategy").reindex(
@@ -105,19 +110,14 @@ def main():
     history = base.load_etf(ASSET_CODE)
     px = history.loc[base.window_start(history):]
     runners = build_runners(history)
-    met, curves = holding.evaluate_window(px, runners)
+    met, curves, ledgers = holding.evaluate_window(px, runners, collect_ledgers=True)
     met.round(6).to_csv(OUT / "metrics.csv", encoding="utf-8-sig")
     base.annual_returns({name: curve.nav for name, curve in curves.items()}).round(6).to_csv(
         OUT / "annual.csv", encoding="utf-8-sig")
     pd.concat(curves, names=["strategy", "date"]).reset_index().to_csv(
         OUT / "daily.csv", index=False, encoding="utf-8-sig")
-    # 全期成交可追溯；同一执行器再生成台账，并核对账户路径。
-    trades = []
-    for name, run in runners.items():
-        ledger = []
-        replay, _ = run(px, ledger=ledger)
-        pd.testing.assert_frame_equal(replay, curves[name])
-        trades.extend({"strategy": name, **trade} for trade in ledger)
+    trades = [{"strategy": name, **trade}
+              for name, ledger in ledgers.items() for trade in ledger]
     pd.DataFrame(trades).to_csv(OUT / "trades.csv", index=False, encoding="utf-8-sig")
     cohorts, summaries = [], []
     for years in HOLDING_YEARS:

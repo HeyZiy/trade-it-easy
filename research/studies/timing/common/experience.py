@@ -15,6 +15,7 @@ SUMMARY_COLS = [
     "最长水下交易日P90", "期末未修复比例%", "深回撤时间占比中位数%",
     "落后长拿时间占比中位数%",
 ]
+SUMMARY_DTYPES = {c: ("int64" if c == "窗口数" else "float64") for c in SUMMARY_COLS}
 
 
 def _validate_nav(nav):
@@ -135,7 +136,8 @@ def cohort_row(name, px, years, metrics, hold, curve, hold_curve):
 
 def rolling_summary(cohorts):
     if cohorts.empty:
-        return pd.DataFrame(columns=SUMMARY_COLS).rename_axis("strategy")
+        # 空表若用默认 object dtype，与非空表 concat 会把整列降成 object，报告里的 round 失效。
+        return pd.DataFrame({c: pd.Series(dtype=t) for c, t in SUMMARY_DTYPES.items()}).rename_axis("strategy")
     rows = {}
     for name, group in cohorts.groupby("strategy", sort=False):
         excess = group["较长拿年化差pp"]

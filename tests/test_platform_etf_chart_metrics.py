@@ -11,10 +11,8 @@ import numpy as np
 import pytest
 
 
-FOLDER = Path(__file__).resolve().parents[1] / 'research/studies/etf_rotation'
-SCRIPTS = ['unified_coverage.py', 'unified_energy17.py',
-           'unified_hold_qualified.py', 'study_etf_fit_jq.py',
-           'same_pool_baseline.py']
+FOLDER = Path(__file__).resolve().parents[1] / 'research/studies/rotation'
+SCRIPTS = ['unified_coverage.py', 'unified_energy17.py', 'study_etf_fit_jq.py']
 
 
 @pytest.fixture(params=SCRIPTS)

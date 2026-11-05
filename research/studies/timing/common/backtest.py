@@ -1,30 +1,26 @@
 # -*- coding: utf-8 -*-
-"""宽基ETF典型策略横向对比：长拿 / 网格 / 趋势 / 估值（定投放附录）。
+"""共享账户引擎：统一成本、窗口与成交口径，供一级、二级和实验复用。
 
 统一口径：
 - 数据：本研究 _cache/ 东财后复权 OHLC；信号与成交均在复权价空间，
   属于复权份额模拟，尚未独立核验上游复权与分红口径。
 - 成本：单边 0.06%（佣金 0.01% + 滑点 0.05%），按 100 股取整（复权价口径）。
 - 窗口：各 ETF 从"MA200 首次可得"之日起至缓存截止日（2026-09-30），
-  四策略同起点同窗口，保证可比。
+  同一标的的所有规则同起点同窗口，保证可比。
 - 节奏：趋势月末出信号、次日开盘执行；估值使用早于交易日的 PE。
 - 网格：T+1，跳空按开盘价成交；主结果假设 O-L-H-C 路径，O-H-L-C 作对照。
 
-策略（参数事先固定，不做寻优）：
-- buyhold：期初全仓买入持有。
-- grid：以窗口首日开盘价为中枢，几何步长 3%，上下各 10 档；资金 20 等份，
+模拟器与信号（参数事先固定，不做寻优）：
+- sim_buyhold：期初全仓买入持有。
+- sim_grid：以窗口首日开盘价为中枢，几何步长 3%，上下各 10 档；资金 20 等份，
   期初买 10 份（等量份额）；跌破下一档买 1 份、涨破上一档卖 1 份，越界躺平。
   固定日内路径不依赖当日收盘涨跌；当日买入不增加可卖份额。
-- trend：月末收盘价 > MA200 满仓，否则清仓。
-- valuation：跟踪指数 PE 全历史分位（月频，乐咕 ttm），分位<=30% 满仓、>=70% 清仓、
-  区间维持；交易日用"最近一期 PE 早于该日"的口径，无前视；至少 24 期历史。
-
-补充四策略对照：python -m research.studies.broad_index_strategies.common.backtest
-输出：results/supplementary/baseline/ 下 CSV + 控制台 markdown 表。
+- sim_target：按目标仓位 0/1 执行，配 build_trend_target（月末收盘 > MA200 满仓，
+  否则清仓）与 build_val_target（跟踪指数 PE 全历史分位，月频，乐咕 ttm，
+  分位<=30% 满仓、>=70% 清仓、区间维持；交易日用"最近一期 PE 早于该日"的口径，
+  无前视；至少 24 期历史）。
 """
-from datetime import datetime, timezone
-import hashlib
-import json
+from collections import deque
 from pathlib import Path
 
 import numpy as np
@@ -36,11 +32,7 @@ from . import experience
 ASSETS = asset_config.ASSETS
 STUDY = Path(__file__).resolve().parents[1]
 PE_CACHE = STUDY / "_cache"
-OUT = STUDY / "results" / "supplementary" / "baseline"
 
-# 兼容既有调用；两张映射均由唯一标的配置生成，不单独维护。
-ETF_INDEX = {asset.etf_code: asset.index_code for asset in ASSETS}
-ETF_NAME = {asset.etf_code: asset.name for asset in ASSETS}
 COST = 0.0006          # 单边：佣金0.01% + 滑点0.05%
 LOT = 100
 CAPITAL = 1_000_000.0
@@ -49,8 +41,6 @@ GRID_STEP = 0.03
 GRID_N = 10            # 上下各10档
 VAL_LO, VAL_HI = 0.30, 0.70
 VAL_MIN_POINTS = 24
-AIP_MONTHLY = 10_000.0
-STRATS = ["长拿", "网格", "趋势", "估值"]
 
 
 # ---------------------------------------------------------------- 数据加载
@@ -332,6 +322,49 @@ def metrics(nav, expo, trades):
     }
 
 
+ROUND_TRIP_COLS = ["完整回合数", "回合胜率%", "平均盈利%", "平均亏损%", "盈亏比", "期末未平批次"]
+QTY_EPS = 1e-9
+
+
+def round_trip_stats(ledger):
+    """按 FIFO 把每一笔卖单配到最早买入且尚未卖出的份额，收益含双边成本。
+
+    长拿只有期初一笔买入，没有已平回合；网格的回合是库存份额层面的配对，
+    不等于按档位一买一卖的收割。
+    """
+    lots = deque()
+    returns = []
+    for record in ledger:
+        price, quantity = float(record["price"]), float(record["quantity"])
+        if record["side"] == "buy":
+            lots.append([price, quantity])
+            continue
+        while quantity > QTY_EPS and lots:
+            matched = min(quantity, lots[0][1])
+            returns.append(price * (1 - COST) / (lots[0][0] * (1 + COST)) - 1)
+            lots[0][1] -= matched
+            quantity -= matched
+            if lots[0][1] <= QTY_EPS:
+                lots.popleft()
+    wins = [r for r in returns if r > 0]
+    losses = [r for r in returns if r <= 0]
+    avg_win = float(np.mean(wins)) * 100 if wins else np.nan
+    avg_loss = float(np.mean(losses)) * 100 if losses else np.nan
+    return {
+        "完整回合数": len(returns),
+        "回合胜率%": float(np.mean([r > 0 for r in returns])) * 100 if returns else np.nan,
+        "平均盈利%": avg_win,
+        "平均亏损%": avg_loss,
+        "盈亏比": avg_win / abs(avg_loss) if wins and losses else np.nan,
+        "期末未平批次": len(lots),
+    }
+
+
+def attach_round_trips(met, ledgers):
+    rows = {name: round_trip_stats(ledgers.get(name, [])) for name in met.index}
+    return met.join(pd.DataFrame.from_dict(rows, orient="index")[ROUND_TRIP_COLS])
+
+
 def annual_returns(navs):
     rows = {}
     for name, nav in navs.items():
@@ -343,213 +376,3 @@ def annual_returns(navs):
     df = pd.DataFrame(rows)
     df.index = df.index.year
     return df
-
-
-def regime_table(navs, px, history=None):
-    """多头/空头段按 ETF 收盘 vs MA200 划分，段>=20 日，统计各策略段年化均值。"""
-    history = px if history is None else history
-    ma = history["close"].rolling(200, min_periods=200).mean().reindex(px.index)
-    bull = (px["close"] > ma).fillna(False)
-    seg_id = (bull != bull.shift()).cumsum()
-    stats = {s: {"bull": [], "bear": []} for s in navs}
-    for _, g in px.groupby(seg_id):
-        if len(g) < 20 or g["close"].isna().any():
-            continue
-        years = len(g) / ANN
-        for name, nav in navs.items():
-            seg = nav.reindex(g.index).dropna()
-            if len(seg) < 20:
-                continue
-            before = nav.loc[nav.index < g.index[0]].dropna()
-            base = before.iloc[-1] if len(before) else CAPITAL
-            r = ((seg.iloc[-1] / base) ** (1 / years) - 1) * 100
-            stats[name]["bull" if bull.loc[g.index[0]] else "bear"].append(r)
-    rows = {}
-    for name, d in stats.items():
-        rows[name] = {
-            "多头段年化均值%": np.mean(d["bull"]) if d["bull"] else np.nan,
-            "空头段年化均值%": np.mean(d["bear"]) if d["bear"] else np.nan,
-            "多头段数": len(d["bull"]),
-            "空头段数": len(d["bear"]),
-        }
-    return pd.DataFrame(rows).T
-
-
-# ---------------------------------------------------------------- 定投附录
-def sim_aip(px, monthly=AIP_MONTHLY):
-    units = 0.0
-    invested = 0.0
-    flows = []
-    seen = None
-    o_arr = px["open"].to_numpy()
-    for i, t in enumerate(px.index):
-        o = o_arr[i]
-        if t.to_period("M") != seen and not np.isnan(o):
-            seen = t.to_period("M")
-            s = int(monthly / (o * (1 + COST)) // LOT) * LOT
-            units += s
-            invested += s * o * (1 + COST)
-            flows.append((t, -s * o * (1 + COST)))
-    terminal = units * px["close"].iloc[-1] * (1 - COST)
-    flows.append((px.index[-1], terminal))
-    return invested, terminal, flows
-
-
-def xirr(flows):
-    dates = pd.to_datetime([f[0] for f in flows])
-    amounts = np.array([float(f[1]) for f in flows])
-    t = (dates - dates[0]).days.to_numpy() / 365.0
-
-    def npv(rate):
-        return float((amounts / (1 + rate) ** t).sum())
-
-    lo, hi = -0.95, 10.0
-    if npv(lo) * npv(hi) > 0:
-        return np.nan
-    f_lo = npv(lo)
-    for _ in range(200):
-        mid = (lo + hi) / 2
-        f_mid = npv(mid)
-        if f_lo * f_mid <= 0:
-            hi = mid
-        else:
-            lo, f_lo = mid, f_mid
-    return (lo + hi) / 2
-
-
-def aip_block(code):
-    px = load_etf(code).loc[window_start(load_etf(code)):]
-    invested, terminal, flows = sim_aip(px)
-    rate = xirr(flows) * 100
-    # 对照：同额资金期初一次性买入（长拿），同样计买卖成本
-    o0 = px["open"].iloc[0]
-    quantity = invested / (o0 * (1 + COST)) // LOT * LOT
-    residual = invested - quantity * o0 * (1 + COST)
-    lump_terminal = residual + quantity * px["close"].iloc[-1] * (1 - COST)
-    lump_rate = xirr([(px.index[0], -invested), (px.index[-1], lump_terminal)]) * 100
-    return {"投入(万)": invested / 1e4, "定投终值(万)": terminal / 1e4,
-            "定投XIRR%": rate, "同额期初买入XIRR%": lump_rate}
-
-
-# ---------------------------------------------------------------- 敏感性
-def sensitivity_510300():
-    code = "510300"
-    px_all = load_etf(code)
-    px = px_all.loc[window_start(px_all):]
-    rows = {}
-    res, t = sim_grid(px, reanchor=False)
-    rows["网格 固定中枢"] = metrics(res["nav"], res["exposure"], t)
-    for step in (0.02, 0.03, 0.05):
-        res, t = sim_grid(px, step=step)
-        rows[f"网格 step={step:.0%}"] = metrics(res["nav"], res["exposure"], t)
-    res, t = sim_grid(px, intraday_path="high_first")
-    rows["网格 O-H-L-C"] = metrics(res["nav"], res["exposure"], t)
-    for w in (120, 200, 250):
-        target = build_trend_target(px_all, window=w, start=px.index[0])
-        res, t = sim_target(px, target)
-        rows[f"趋势 MA{w}"] = metrics(res["nav"], res["exposure"], t)
-    return pd.DataFrame(rows).T
-
-
-# ---------------------------------------------------------------- 主流程
-def run_etf(code, pe, daily_out=None, ledger_out=None):
-    px_all = load_etf(code)
-    px = px_all.loc[window_start(px_all):]
-    res = {}
-    trades = {}
-    ledgers = {name: [] for name in STRATS}
-    res["长拿"], trades["长拿"] = sim_buyhold(px, ledger=ledgers["长拿"])
-    res["网格"], trades["网格"] = sim_grid(px, ledger=ledgers["网格"])
-    res["趋势"], trades["趋势"] = sim_target(
-        px, build_trend_target(px_all, start=px.index[0]), ledger=ledgers["趋势"])
-    if pe is not None:
-        res["估值"], trades["估值"] = sim_target(px, build_val_target(px, pe), ledger=ledgers["估值"])
-    if daily_out is not None:
-        daily_out.update(res)
-    if ledger_out is not None:
-        ledger_out.extend({"strategy": name, **trade}
-                          for name, records in ledgers.items() for trade in records)
-    navs = {k: v["nav"] for k, v in res.items()}
-    met = pd.DataFrame({k: metrics(v["nav"], v["exposure"], trades[k])
-                        for k, v in res.items()}).T
-    met = experience.add_benchmark_comparison(met, res)
-    return met, annual_returns(navs), regime_table(navs, px, history=px_all)
-
-
-def main():
-    OUT.mkdir(parents=True, exist_ok=True)
-    all_met, all_reg, all_ann, aip_rows = {}, {}, {}, {}
-    for asset in ASSETS:
-        code, idx = asset.etf_code, asset.index_code
-        daily, ledger = {}, []
-        pe = load_pe(idx) if asset.valuation is not None else None
-        met, ann, reg = run_etf(code, pe, daily, ledger)
-        pd.concat(daily, names=["strategy", "date"]).reset_index().to_csv(
-            OUT / f"daily_{code}.csv", index=False, encoding="utf-8-sig")
-        pd.DataFrame(ledger).sort_values("date", kind="stable").to_csv(
-            OUT / f"trades_{code}.csv", index=False, encoding="utf-8-sig")
-        # 三个标的均报告另一条固定日内路径，避免只检查沪深300。
-        px_all = load_etf(code)
-        px = px_all.loc[window_start(px_all):]
-        path_rows = {}
-        for path in ("low_first", "high_first"):
-            grid, count = sim_grid(px, intraday_path=path)
-            path_rows[path] = metrics(grid.nav, grid.exposure, count)
-        pd.DataFrame(path_rows).T.round(2).to_csv(
-            OUT / f"grid_paths_{code}.csv", encoding="utf-8-sig")
-        all_met[asset.name], all_ann[asset.name], all_reg[asset.name] = met, ann, reg
-        met.round(2).to_csv(OUT / f"metrics_{code}.csv", encoding="utf-8-sig")
-        ann.round(4).to_csv(OUT / f"annual_{code}.csv", encoding="utf-8-sig")
-        reg.round(2).to_csv(OUT / f"regime_{code}.csv", encoding="utf-8-sig")
-        aip_rows[asset.name] = aip_block(code)
-
-    sens = pd.DataFrame()
-    if any(asset.etf_code == "510300" for asset in ASSETS):
-        sens = sensitivity_510300()
-        sens.round(2).to_csv(OUT / "sensitivity_510300.csv", encoding="utf-8-sig")
-    aip = pd.DataFrame(aip_rows).T
-    aip.round(2).to_csv(OUT / "aip.csv", encoding="utf-8-sig")
-    cache_files = sorted(PE_CACHE.glob("*.csv"))
-    manifest = {
-        "revision": "2026-10-13-execution-fix",
-        "generated_at_utc": datetime.now(timezone.utc).isoformat(),
-        "script_sha256": hashlib.sha256(Path(__file__).read_bytes()).hexdigest(),
-        "assets_config_sha256": hashlib.sha256(Path(asset_config.__file__).read_bytes()).hexdigest(),
-        "experience_sha256": hashlib.sha256(Path(experience.__file__).read_bytes()).hexdigest(),
-        "data_sha256": {p.name: hashlib.sha256(p.read_bytes()).hexdigest() for p in cache_files},
-        "cutoff": "2026-09-30", "capital": CAPITAL, "one_way_cost": COST,
-        "lot_in_adjusted_price_space": LOT, "annual_trading_days": ANN,
-        "grid": {"step": GRID_STEP, "levels_each_side": GRID_N,
-                 "initial_units": GRID_N, "monthly_reanchor": True,
-                 "main_path": "O-L-H-C", "alternative_path": "O-H-L-C",
-                 "t_plus_one": True, "gap_fill": "open"},
-        "trend": {"ma": 200, "pre_window_history": True,
-                  "signal": "month_end_close", "execution": "next_open"},
-        "valuation": {"lo": VAL_LO, "hi": VAL_HI, "min_points": VAL_MIN_POINTS,
-                      "window": "expanding", "pe_date_strictly_before_execution": True},
-        "metrics_base": "initial_capital_including_first_day_pnl",
-        "versions": {"pandas": pd.__version__, "numpy": np.__version__},
-        "windows": {asset.etf_code: {"start": str(window_start(load_etf(asset.etf_code)).date()),
-                                     "end": str(load_etf(asset.etf_code).index[-1].date())} for asset in ASSETS},
-    }
-    (OUT / "run_manifest.json").write_text(
-        json.dumps(manifest, ensure_ascii=False, indent=2), encoding="utf-8")
-
-    for name, met in all_met.items():
-        print(f"\n## {name} 主指标")
-        print(met.round(2).to_markdown())
-    for name, reg in all_reg.items():
-        print(f"\n## {name} 市场状态（按收盘 vs MA200 分段）")
-        print(reg.round(2).to_markdown())
-    print("\n## 定投附录（月投1万，XIRR 口径）")
-    print(aip.round(2).to_markdown())
-    if not sens.empty:
-        print("\n## 510300 参数敏感性（仅报告，不选优）")
-        print(sens.round(2).to_markdown())
-    for name, ann in all_ann.items():
-        print(f"\n## {name} 分年收益%")
-        print((ann * 100).round(1).to_markdown())
-
-
-if __name__ == "__main__":
-    main()

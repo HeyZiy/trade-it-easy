@@ -4,7 +4,7 @@
 ETF 跨资产动量轮动 — 账户建议与独立模拟入口
 ===================================
 
-把研究线 `research/studies/etf_rotation/unified_coverage.py`（聚宽日频策略）
+把研究线 `research/studies/rotation/unified_coverage.py`（聚宽日频策略）
 接到本项目的名义成交台账上，每个交易日运行一次：
 
 1. 读独立流水（data/trade_ledger_etf_rotation.jsonl）推导策略账户持仓与现金

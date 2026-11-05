@@ -9,12 +9,12 @@
 > 生产引擎 [`src/etf/rotation.py`](../src/etf/rotation.py)，每日模拟账户入口
 > [`etf_rotation.py`](../etf_rotation.py)（cron 每交易日 10:40，对齐研究线决策
 > 时点）；判定核与研究线
-> 原15只导出版 [`study_etf_fit_jq.py`](../research/studies/etf_rotation/study_etf_fit_jq.py)
-> 一致；[`unified_coverage.py`](../research/studies/etf_rotation/unified_coverage.py)
-> 为同池15只平台入口，17只能源扩充版另行研究。行业研究统一归入
-> [`industry_momentum`](../research/studies/industry_momentum/README.md)，单独维护预算、规则与台账。
+> 原15只导出版 [`study_etf_fit_jq.py`](../research/studies/rotation/study_etf_fit_jq.py)
+> 一致；[`unified_coverage.py`](../research/studies/rotation/unified_coverage.py)
+> 为同池15只平台入口，17只能源扩充版另行研究。行业轮动是另一独立策略，见
+> [`industry_momentum.md`](industry_momentum.md)，单独维护预算、规则与台账。
 > 收益假设、回测结果与已知研究边界见
-> [`research/studies/etf_rotation/README.md`](../research/studies/etf_rotation/README.md)。
+> [`research/studies/rotation/README.md`](../research/studies/rotation/README.md)。
 > 本文件只写生产策略口径、执行边界与已知局限。
 
 ## 策略概述

@@ -82,6 +82,9 @@ CLAUDE.md
 *.pkl
 *.json
 
+# 研究绘图产物，可由 plot_curves.py 重新生成
+plots/
+
 
 # 行情源证券简称缓存
 data/security_names.sqlite3*

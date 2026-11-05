@@ -9,7 +9,7 @@
 仓库根运行：
 
 ```text
-python research/studies/broad_index_strategies/run_level1.py
+python research/studies/timing/run_level1.py
 ```
 
 只读取已有行情与PE缓存，按[标的配置](../assets.py)运行；不支持PE的标的省略估值策略。
@@ -27,7 +27,7 @@ MA20±1.5ATR20下轨退出。信号、成交、成本及网格路径均沿用原
 目前只运行恒生科技513180，入口为 [run_level2.py](../run_level2.py)：
 
 ```text
-python research/studies/broad_index_strategies/run_level2.py
+python research/studies/timing/run_level2.py
 ```
 
 | 规则 | 固定设置 |
@@ -37,12 +37,33 @@ python research/studies/broad_index_strategies/run_level2.py
 | ATR通道 | SMA20、Wilder ATR20，宽度1.0/1.5/2.0；另列ATR14×1.5作周期对照 |
 | 一级对照 | 长拿、原月度移动网格、原月末MA200 |
 
-ATR20沿用一级默认假设；所有ATR规则都是上轨入场、下轨退出。
+ATR20×1.5下轨退出是一级默认假设，其余宽度与周期只作维度对照；所有ATR规则都是上轨入场、下轨退出。
 共14条固定规则，脚本顶部PRESETS完整列出；每条都报告同一组体验指标、分年收益及1/3/5年多起点。
 不足完整持有期的结果留空。起点、成本及成交约束沿用一级。
 
 [二级结果](../results/level2/513180/summary.md)与一级结果分别保存。
 二级不根据结果自动扩展候选、打分挑选参数或更新一级配置。
+
+## 附加层：族扫描与单变量对照
+
+一级看标的差异，二级看单标的的固定参数组，附加层回答“这组参数是不是侥幸”。
+两份族扫描把一族规则的维度组合跑满12只ETF，只用于排除偶然，不用于挑赢家：
+
+```text
+python -m research.studies.timing.common.donchian      # 唐奇安10组：入场/离场周期，含收盘通道与日频MA200
+python -m research.studies.timing.common.atr_channel   # ATR通道10组：均线周期与算法、ATR周期与算法、宽度、出场线
+```
+
+单变量对照只改一个开关：
+
+```text
+python -m research.studies.timing.experiments.grid_reanchor       # 网格中枢重定频率
+python -m research.studies.timing.experiments.chi_next_drawdown   # 创业板回撤分解
+```
+
+维度组合事先列在各脚本的 CASES 中，结果不回写一级或二级配置。
+族扫描输出到 results/supplementary/<族名>/，对照输出到各自的 results 子目录，
+均为可重跑的原始产物（csv 与 json 不入库），结论写进[研究结论](FINDINGS.md)，不另设逐次运行的摘要。
 
 ## 统一设置
 
@@ -79,6 +100,13 @@ ATR20沿用一级默认假设；所有ATR规则都是上轨入场、下轨退出
 | 踏空 | 落后长拿时间占比、最长连续落后长拿交易日 | 同额初始资金下，策略净值严格低于长拿的观察数 |
 | 踏空幅度 | 最大相对落后、期末相对长拿差 | 策略净值/长拿净值−1；与年化差的单位不同 |
 | 操作 | 年均成交笔数 | 买单和卖单分别计数，不等于完整交易轮数 |
+| 交易质量 | 完整回合数、回合胜率 | 卖单按FIFO配到最早买入且尚未卖出的份额，配完即一个已平回合；胜率为盈利回合占比 |
+| 盈亏幅度 | 平均盈利、平均亏损、盈亏比 | 单回合收益=卖出净价/买入全价−1，含双边0.06%成本；盈亏比=平均盈利÷|平均亏损|，缺任一侧时留空 |
+| 期末持仓 | 期末未平批次 | 样本末仍未卖出的买入批次数；长拿为1，网格为剩余库存批次 |
+
+回合指标只在全期账户上计算，每月新建的多起点窗口不重复统计。
+长拿没有已平回合，胜率与盈亏比无值（表里显示nan）；网格的回合是库存份额配对，不等于按档位一买一卖。
+月胜率把空仓月计为不胜，仓位越低的规则该值天然越偏低，不与回合胜率混用。
 
 “水下”指未恢复此前净值高点，不是仍亏损于最初买入价。
 相等前高按恢复处理，浮点比较容差为相对1e-10。
@@ -102,17 +130,34 @@ ATR20沿用一级默认假设；所有ATR规则都是上轨入场、下轨退出
 - 分别看1/3/5年，不把不同期限混在一起；同一窗口配对的差值先计算再汇总。
   不将不同指标的中位数拼成一条真实账户路径。
 - 月度起点高度重叠，窗口数不等于独立样本量；各ETF全期窗口不同，不据此跨标的排名。
+- 全期单点会挑出假赢家：均线周期15/20/25的全期年化中位为4.08/6.87/4.86，看似MA20独好，
+  多起点后MA25反而略优。参数取舍以多起点为准，全期只作参照。
 
 低仓位本身也可能降低回撤；本工具描述账户体验，尚未通过同仓位对照归因择时贡献。
 
 ## 输出
 
+四层都输出全期指标、每起点配对指标、多起点汇总、daily 曲线、成交台账与运行清单；
+二级放在 results/level2/<代码>/ 下、文件不带代码后缀，指标文件名为 metrics.csv。
+下面以一级为例：
+
 - [metrics_all.csv](../results/level1/metrics_all.csv)：全期各策略指标及相对长拿的差值。
 - [rolling_cohorts.csv](../results/level1/rolling_cohorts.csv)：每一个起点/期限的配对指标。
 - [rolling_summary.csv](../results/level1/rolling_summary.csv)：按标的、策略、期限汇总。
 - daily_代码.csv：全期每日净值、仓位、现金和复权份额。
-- drawdowns_代码.csv：逐段前高、谷底、恢复日和持续时间；未恢复段的恢复日留空。
+- trades_代码.csv：全期逐笔成交台账，回合指标由它按FIFO配对得出。
+- drawdowns_代码.csv：逐段前高、谷底、恢复日和持续时间；未恢复段的恢复日留空。仅一级输出。
 - [run_manifest.json](../results/level1/run_manifest.json)：脚本、配置、数据摘要及指标口径。
+
+daily 曲线可另画成交互 HTML（净值、水下回撤、仓位三联），只读已有 csv、不重算账户：
+
+```text
+python -m research.studies.timing.plot_curves                       # 全部层全部标的
+python -m research.studies.timing.plot_curves --layer level1 --code 513180
+```
+
+输出到各层的 plots/，与 plotly.min.js 同为可再生产物，不入库。
+网格中枢重定频率对照没有 daily 曲线，因此不在绘图范围内。
 
 共享指标在 [experience.py](../common/experience.py)，账户与信号位于common目录。
 运行清单记录结果生成时的版本与数据摘要，目录调整不改写既有运行记录。

@@ -10,12 +10,12 @@ from pathlib import Path
 import pandas as pd
 import pytest
 
-from research.studies.etf_rotation.study_etf_fit import episode_metrics, summarize
-from research.studies.etf_rotation.study_etf_fit_forward import evaluate
-from research.studies.etf_rotation.study_etf_fit_control import compare
+from research.studies.rotation.study_etf_fit import episode_metrics, summarize
+from research.studies.rotation.study_etf_fit_forward import evaluate
+from research.studies.rotation.study_etf_fit_control import compare
 
 
-FOLDER = Path(__file__).resolve().parents[1] / 'research/studies/etf_rotation'
+FOLDER = Path(__file__).resolve().parents[1] / 'research/studies/rotation'
 
 
 def test_holding_metrics_and_open_segment_exclusion():

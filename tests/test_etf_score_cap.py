@@ -9,14 +9,14 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from research.studies.etf_rotation.study_score_cap import target_for
+from research.studies.rotation.study_score_cap import target_for
 from src.etf.momentum import momentum_score
 
 
 @pytest.fixture
 def platform(monkeypatch):
     monkeypatch.setitem(sys.modules, 'jqdata', types.ModuleType('jqdata'))
-    path = Path(__file__).resolve().parents[1] / 'research/studies/etf_rotation/study_score_cap_jq.py'
+    path = Path(__file__).resolve().parents[1] / 'research/studies/rotation/study_score_cap_jq.py'
     spec = importlib.util.spec_from_file_location('score_cap_test', path)
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)

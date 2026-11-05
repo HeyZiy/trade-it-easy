@@ -1,6 +1,4 @@
-"""Exercise asset configuration through fetch and backtest entrypoints."""
-from contextlib import redirect_stdout
-import io
+"""Exercise asset configuration through fetch and level1 entrypoints."""
 from pathlib import Path
 import tempfile
 import unittest
@@ -10,11 +8,11 @@ import numpy as np
 import pandas as pd
 
 from research.studies.timing.assets import ASSETS, AssetSpec, ValuationSource
-from research.studies.timing.common import backtest as b
+from research.studies.timing import run_level1 as l1
 from research.studies.timing import fetch_data as f
 
 
-class BroadIndexAssetTests(unittest.TestCase):
+class TimingAssetTests(unittest.TestCase):
     def test_existing_fetch_routes_are_preserved(self):
         with tempfile.TemporaryDirectory() as tmp, patch.object(f, 'CACHE', Path(tmp)), \
                 patch.object(f, 'fetch_etf_hfq') as etf, \
@@ -25,7 +23,6 @@ class BroadIndexAssetTests(unittest.TestCase):
         self.assertEqual([call.args for call in ak.call_args_list],
                          [('000300', '沪深300'), ('000905', '中证500')])
         direct.assert_called_once_with('399006', '399006.SZ')
-        self.assertEqual(b.ETF_INDEX, {asset.etf_code: asset.index_code for asset in ASSETS})
 
     def test_new_assets_skip_optional_pe_and_share_index_fetch(self):
         source = ValuationSource('direct', '000999.SH')
@@ -48,21 +45,15 @@ class BroadIndexAssetTests(unittest.TestCase):
                 f.main(assets)
         etf.assert_not_called()
 
-    def test_main_runs_price_strategies_for_asset_without_pe(self):
+    def test_asset_without_pe_runs_price_strategies_only(self):
         dates = pd.bdate_range('2019-01-01', periods=260)
         close = np.linspace(10, 12, len(dates))
         history = pd.DataFrame({'open': close, 'high': close + .1,
                                 'low': close - .1, 'close': close}, index=dates)
-        asset = AssetSpec('510001', '测试ETF', '000999')
-        with tempfile.TemporaryDirectory() as tmp, patch.object(b, 'OUT', Path(tmp)), \
-                patch.object(b, 'ASSETS', (asset,)), \
-                patch.object(b, 'load_etf', return_value=history), \
-                patch.object(b, 'load_pe', side_effect=AssertionError('未配置PE不得读取PE缓存')), \
-                patch.object(b, 'sensitivity_510300', side_effect=AssertionError('未配置300不得运行专属附录')), \
-                redirect_stdout(io.StringIO()):
-            b.main()
-            metrics = pd.read_csv(Path(tmp) / 'metrics_510001.csv', index_col=0)
-        self.assertEqual(set(metrics.index), {'长拿', '网格', '趋势'})
+        runners = l1.strategy_runners(history, None)
+        met, _, _ = l1.evaluate_window(history.loc[l1.base.window_start(history):], runners)
+        self.assertEqual(set(met.index), {'长拿', '网格', '月末MA200', '唐奇安20/10',
+                                          '唐奇安55/20', l1.ATR_CASE})
 
 
 if __name__ == '__main__':

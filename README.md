@@ -59,5 +59,5 @@ python -m pytest tests/ -ra
 ```
 
 ETF 研究分析与测试统一使用 Python，无需安装 Node.js。研究入口和输出口径见
-[ETF 研究复现说明](research/studies/etf_rotation/IMPLEMENTATION.md)。
+[ETF 研究复现说明](research/studies/rotation/IMPLEMENTATION.md)。
 

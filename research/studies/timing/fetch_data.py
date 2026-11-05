@@ -4,7 +4,7 @@
 共享缓存 research/tools/etf_data 中宽基 ETF 均为 legacy_sina_raw（无复权），
 无法计算含分红总回报，故本研究自取 hfq。PE 为乐咕 index-basic-pe 接口
 （滚动市盈率 ttmPe）。
-从仓库根运行：python research/studies/broad_index_strategies/fetch_data.py
+从仓库根运行：python research/studies/timing/fetch_data.py
 """
 from datetime import datetime
 from pathlib import Path

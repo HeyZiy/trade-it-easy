@@ -1,11 +1,11 @@
 """Regression checks for signal history and feasible grid fills."""
 import unittest
-from unittest.mock import patch
 
 import numpy as np
 import pandas as pd
 
 from research.studies.timing.common import backtest as b
+from research.studies.timing import run_level1 as h
 
 
 def prices(rows, start='2020-01-02'):
@@ -13,15 +13,14 @@ def prices(rows, start='2020-01-02'):
                         index=pd.bdate_range(start, periods=len(rows)))
 
 
-class BroadIndexRegressionTests(unittest.TestCase):
+class TimingEngineRegressionTests(unittest.TestCase):
     def test_run_keeps_pre_window_trend_history(self):
         index = pd.bdate_range('2019-01-01', periods=270)
         close = np.linspace(10, 20, len(index))
         px = pd.DataFrame({k: close for k in ['open', 'high', 'low', 'close']}, index=index)
-        pe = pd.Series(10., index=pd.date_range('2010-01-31', periods=130, freq='ME'))
-        with patch.object(b, 'load_etf', return_value=px):
-            met, _, _ = b.run_etf('510300', pe)
-        self.assertGreater(met.loc['趋势', '平均仓位%'], 50)
+        runners = h.strategy_runners(px, None)
+        met, _, _ = h.evaluate_window(px.loc[h.base.window_start(px):], runners)
+        self.assertGreater(met.loc['月末MA200', '平均仓位%'], 50)
 
     def test_grid_starts_half_invested(self):
         res, _ = b.sim_grid(prices([(10, 10, 10, 10)]))
@@ -117,6 +116,69 @@ class BroadIndexRegressionTests(unittest.TestCase):
                     self.assertGreaterEqual(px.loc[date, 'high'], trade['price'])
                     self.assertGreaterEqual(trade['sellable_after'], 0)
                 overnight = res.loc[date, 'shares']
+
+
+    def test_round_trip_stats_uses_fifo_and_charges_both_sides(self):
+        cost = (1 - b.COST) / (1 + b.COST)
+        ledger = [{'side': 'buy', 'price': 10., 'quantity': 100},
+                  {'side': 'sell', 'price': 9., 'quantity': 100},
+                  {'side': 'buy', 'price': 10., 'quantity': 100},
+                  {'side': 'sell', 'price': 12., 'quantity': 100}]
+        stats = b.round_trip_stats(ledger)
+        self.assertEqual(stats['完整回合数'], 2)
+        self.assertAlmostEqual(stats['回合胜率%'], 50.)
+        self.assertAlmostEqual(stats['平均盈利%'], (12 / 10 * cost - 1) * 100)
+        self.assertAlmostEqual(stats['平均亏损%'], (9 / 10 * cost - 1) * 100)
+        self.assertAlmostEqual(stats['盈亏比'], (12 / 10 * cost - 1) / (1 - 9 / 10 * cost))
+        self.assertEqual(stats['期末未平批次'], 0)
+
+    def test_round_trip_stats_matches_earliest_unsold_lot(self):
+        ledger = [{'side': 'buy', 'price': 10., 'quantity': 300},
+                  {'side': 'sell', 'price': 15., 'quantity': 100}]
+        stats = b.round_trip_stats(ledger)
+        self.assertEqual(stats['完整回合数'], 1)
+        self.assertAlmostEqual(stats['回合胜率%'], 100.)
+        self.assertEqual(stats['期末未平批次'], 1)
+        self.assertTrue(np.isnan(stats['平均亏损%']))
+        self.assertTrue(np.isnan(stats['盈亏比']))
+
+    def test_buyhold_has_no_closed_round_trip(self):
+        px = prices([(10, 10, 10, 10), (10, 11, 9, 11)])
+        ledger = []
+        b.sim_buyhold(px, ledger=ledger)
+        stats = b.round_trip_stats(ledger)
+        self.assertEqual(stats['完整回合数'], 0)
+        self.assertEqual(stats['期末未平批次'], 1)
+        self.assertTrue(np.isnan(stats['回合胜率%']))
+
+    def test_grid_round_trips_cover_every_sold_unit(self):
+        rng = np.random.default_rng(7)
+        previous = 10.
+        rows = []
+        for _ in range(60):
+            o = previous * rng.uniform(.9, 1.1)
+            c = o * rng.uniform(.94, 1.06)
+            rows.append((o, max(o, c) * 1.05, min(o, c) * .95, c))
+            previous = c
+        ledger = []
+        b.sim_grid(prices(rows), ledger=ledger)
+        sold = sum(t['quantity'] for t in ledger if t['side'] == 'sell')
+        unit = min(t['quantity'] for t in ledger)
+        stats = b.round_trip_stats(ledger)
+        self.assertEqual(stats['完整回合数'] * unit, sold)
+        self.assertGreater(stats['期末未平批次'], 0)
+
+    def test_attach_round_trips_keeps_one_row_per_strategy(self):
+        px = prices([(10, 10, 10, 10), (10, 11, 9, 11)])
+        ledgers, rows = {}, {}
+        for name, run in (('长拿', b.sim_buyhold), ('网格', b.sim_grid)):
+            ledgers[name] = []
+            curve, count = run(px, ledger=ledgers[name])
+            rows[name] = b.metrics(curve.nav, curve.exposure, count)
+        met = b.attach_round_trips(pd.DataFrame(rows).T, ledgers)
+        self.assertEqual(list(met.columns[-len(b.ROUND_TRIP_COLS):]), b.ROUND_TRIP_COLS)
+        self.assertEqual(met.loc['长拿', '完整回合数'], 0)
+        self.assertGreater(met.loc['网格', '完整回合数'], 0)
 
 
 if __name__ == '__main__':
