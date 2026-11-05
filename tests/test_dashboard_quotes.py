@@ -126,9 +126,9 @@ def test_background_refresh_coalesces_requests_and_preserves_failed_old_quotes(a
         calls.append(codes)
         started.set()
         assert release.wait(5)
-        return {'588000': 3, '510300': 4}, {}
+        return {'588000': 3, '510300': 4}
 
-    monkeypatch.setattr('data_provider.manager.realtime_quotes', fetch)
+    monkeypatch.setattr('data_provider.realtime_prices', fetch)
     rev = account_data(path)['quote_revision']
     cache.start(path, rev, ['588000', '510300', '588000'], day)
     assert started.wait(5)
@@ -142,7 +142,7 @@ def test_background_refresh_coalesces_requests_and_preserves_failed_old_quotes(a
     assert len(calls) == 1  # 完成后的短期重复点击也合并。
 
     cache._last_start -= 16
-    monkeypatch.setattr('data_provider.manager.realtime_quotes', lambda _: ({'588000': 3.5}, {}))
+    monkeypatch.setattr('data_provider.realtime_prices', lambda _: {'588000': 3.5})
     cache.start(path, rev, ['588000', '510300'], day)
     second = wait_finished(cache, path)
     assert second['quotes']['588000'] == first['quotes']['588000']
@@ -157,7 +157,7 @@ def test_fetch_failure_finishes_job_and_keeps_saved_valuation(account, monkeypat
     def fail(_):
         raise RuntimeError('offline')
 
-    monkeypatch.setattr('data_provider.manager.realtime_quotes', fail)
+    monkeypatch.setattr('data_provider.realtime_prices', fail)
     cache = QuoteRefresh()
     cache.start(path, account_data(path)['quote_revision'], ['588000', '510300'], day)
     state = wait_finished(cache, path)
@@ -173,7 +173,7 @@ def test_refresh_api_is_protected_and_overview_delivers_estimates(account, monke
     monkeypatch.setattr(dashboard, 'QUOTES', QuoteRefresh())
     monkeypatch.setattr(dashboard, 'AUTH_DELAY', 0)
     monkeypatch.setenv('TRADE_DASHBOARD_PASSWORD', 'secret')
-    monkeypatch.setattr('data_provider.manager.realtime_quotes', lambda _: ({'588000': 3}, {}))
+    monkeypatch.setattr('data_provider.realtime_prices', lambda _: {'588000': 3})
     original = path.read_bytes()
     server = ThreadingHTTPServer(('127.0.0.1', 0), dashboard.Handler)
     threading.Thread(target=server.serve_forever, daemon=True).start()

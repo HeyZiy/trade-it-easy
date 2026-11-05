@@ -1,9 +1,11 @@
 """行情原始表、价格矩阵、执行快照与 ETF 复权；不管理登录态。"""
+import logging
+import math
 import os
 from datetime import datetime, timedelta, timezone
 from typing import Dict, List
 import pandas as pd
-from data_provider.types import DataFetchError
+from data_provider.types import DataFetchError, safe_float
 from .client import client
 from ._utils import (_chunks, _tgw_codes, _normalize_map, _plain_code,
                      _resolve_cache_dir, date_range)
@@ -11,19 +13,24 @@ from ._utils import (_chunks, _tgw_codes, _normalize_map, _plain_code,
 AMAZINGDATA_CACHE_DIR = _resolve_cache_dir()
 _KLINE_CHUNK = 200
 _FACTOR_CHUNK = 500
-_INFO_CHUNK = 32
+_SNAPSHOT_CHUNK = 32
 _SHANGHAI = timezone(timedelta(hours=8))
+logger = logging.getLogger(__name__)
 
 
-def get_latest_snapshot(code: str, *, now=None):
-    """沪深股票/ETF 当天最近五分钟的快照；午休及盘后取本时段末尾。
+def _snapshot_clock(stamp: pd.Timestamp) -> int:
+    """SDK 的时钟参数采用 HHMMSSmmm 格式。"""
+    return int(stamp.strftime('%H%M%S')) * 1000 + stamp.microsecond // 1000
 
-    query_snapshot 是历史查询接口，不承诺实时推送。只接受查询窗口内、
-    不晚于请求时间的数据；当日无快照或时间无法验证时交给上层回退。
+
+def get_latest_prices(codes: List[str], *, now=None) -> dict[str, float]:
+    """批量获取沪深股票/ETF 当天近期快照的 `last`，缺价不入结果。
+
+    同一批使用北京时间的同一五分钟窗口，午休及盘后以该时段收盘为终点。
     """
-    tgw_codes = _tgw_codes([code])
+    tgw_codes = list(dict.fromkeys(_tgw_codes(codes)))
     if not tgw_codes:
-        return None
+        return {}
     now = pd.Timestamp(now if now is not None else datetime.now(_SHANGHAI))
     now = now.tz_localize(_SHANGHAI) if now.tzinfo is None else now.tz_convert(_SHANGHAI)
     # SDK 时钟参数精确到毫秒，时区由交易所（北京时间）定义。
@@ -36,20 +43,29 @@ def get_latest_snapshot(code: str, *, now=None):
     end = min(end, close)
     begin = max(end - timedelta(minutes=5), end.normalize())
 
-    def clock_value(stamp):
-        return int(stamp.strftime('%H%M%S')) * 1000 + stamp.microsecond // 1000
-
     day = int(end.strftime('%Y%m%d'))
+    begin_time, end_time = _snapshot_clock(begin), _snapshot_clock(end)
     try:
-        raw = client.get_market_data().query_snapshot(
-            tgw_codes, begin_date=day, end_date=day,
-            begin_time=clock_value(begin), end_time=clock_value(end))
+        market = client.get_market_data()
     except SystemExit as exc:
-        raise DataFetchError('AmazingData 快照查询被中断') from exc
-    except Exception as exc:
-        raise DataFetchError(f'AmazingData 最新快照查询失败: {exc}') from exc
-    frame = _normalize_map(raw, tgw_codes).get(_plain_code(tgw_codes[0]))
-    if frame is None or frame.empty:
+        raise DataFetchError('AmazingData 行情连接被中断') from exc
+    prices = {}
+    for batch in _chunks(tgw_codes, _SNAPSHOT_CHUNK):
+        try:
+            raw = market.query_snapshot(batch, begin_date=day, end_date=day,
+                                        begin_time=begin_time, end_time=end_time)
+        except (Exception, SystemExit) as error:
+            logger.info('[AmazingData] %d 只近期快照查询失败: %s', len(batch), type(error).__name__)
+            continue
+        for code, frame in _normalize_map(raw, batch).items():
+            price = _latest_price(frame, begin, end)
+            if price is not None:
+                prices[code] = price
+    return prices
+
+
+def _latest_price(frame: pd.DataFrame, begin: pd.Timestamp, end: pd.Timestamp) -> float | None:
+    if not isinstance(frame, pd.DataFrame) or frame.empty or 'last' not in frame:
         return None
     if 'trade_time' in frame.columns:
         raw_times = frame['trade_time']
@@ -57,13 +73,18 @@ def get_latest_snapshot(code: str, *, now=None):
         raw_times = frame.index
     else:
         return None
-    times = pd.DatetimeIndex(pd.to_datetime(raw_times, errors='coerce'))
+    try:
+        times = pd.DatetimeIndex(pd.to_datetime(raw_times, errors='coerce'))
+    except (TypeError, ValueError):
+        return None
     times = times.tz_localize(_SHANGHAI) if times.tz is None else times.tz_convert(_SHANGHAI)
-    valid = (times >= begin) & (times <= end)
-    if not valid.any():
+    positions = ((times >= begin) & (times <= end)).nonzero()[0]
+    if not len(positions):
         return None
     # 按交易所时间选择，不依赖 SDK 返回顺序；最新一笔价格无效时不偷用旧笔。
-    return frame.iloc[valid.nonzero()[0][times[valid].argmax()]]
+    latest = positions[times[positions].argmax()]
+    price = safe_float(frame['last'].iloc[latest])
+    return price if price is not None and math.isfinite(price) and price > 0 else None
 
 
 def get_raw_kline(code_list, begin_date, end_date, period=None):
@@ -150,14 +171,11 @@ def fetch_execution_data(codes: List[str], begin: pd.Timestamp, end: pd.Timestam
         info = base.get_code_info(security_type='EXTRA_STOCK_A_SH_SZ')
         day = int(end.strftime('%Y%m%d'))
 
-        def clock_value(stamp):
-            return int(stamp.strftime('%H%M%S')) * 1000 + stamp.microsecond // 1000
-
         frames = {}
-        for batch in _chunks(_tgw_codes(codes), _INFO_CHUNK):
+        for batch in _chunks(_tgw_codes(codes), _SNAPSHOT_CHUNK):
             raw = client.get_market_data().query_snapshot(
                 batch, begin_date=day, end_date=day,
-                begin_time=clock_value(begin), end_time=clock_value(end))
+                begin_time=_snapshot_clock(begin), end_time=_snapshot_clock(end))
             frames.update(_normalize_map(raw, batch))
         return info, frames
     except Exception as exc:

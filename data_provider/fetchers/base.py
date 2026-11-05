@@ -46,9 +46,9 @@ class BaseFetcher(ABC):
     # 声明过宽 → 无效请求 + 误导性日志；声明过窄 → 可用源被跳过：按实测能力如实填。
     SUPPORTS: Optional[frozenset] = None
 
-    # 实时端点能力声明：{源名: get_realtime_quote 调用参数}，如
+    # 现价端点声明：{源名: get_realtime_prices 调用参数}，如
     # {"akshare_em": {"source": "em"}, "tushare": {}}。源名的唯一权威——
-    # realtime.merge_realtime_quotes 从各 fetcher 的声明建索引、按 config 优先级串取数，
+    # realtime.fetch_prices 从各 fetcher 的声明建索引、按 config 优先级补缺价，
     # 非空即"会实时"（不再进 SUPPORTS 的 kind 声明，避免无人消费的假承诺）。
     REALTIME_VARIANTS: Dict[str, dict] = {}
 
@@ -123,6 +123,26 @@ class BaseFetcher(ABC):
         默认返回 None，表示「该数据源不支持实时行情」。子类若支持实时行情应覆写此方法；
         """
         return None
+
+    def get_realtime_prices(self, codes: list[str], **kwargs) -> dict[str, float]:
+        """单标的适配器复用各自端点；支持原生批量的来源可直接覆写。"""
+        from data_provider.security_names import remember
+
+        prices, names = {}, {}
+        for code in codes:
+            try:
+                quote = self.get_realtime_quote(code, **kwargs)
+            except Exception as error:
+                logger.info("[%s] %s 取价失败: %s", self.name, code, type(error).__name__)
+                continue
+            if quote is None:
+                continue
+            if quote.price is not None:
+                prices[code] = quote.price
+            if quote.name:
+                names[code] = quote.name
+        remember(names)
+        return prices
 
     def get_main_fund_flow(self, stock_code: str, days: int = 5) -> Optional[pd.DataFrame]:
         """

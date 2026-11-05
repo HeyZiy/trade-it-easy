@@ -12,7 +12,7 @@
   _raw_trend_bars_ad     唐奇安观察日线（AmazingData 累积复权，主源，批量）
   _raw_trend_bars        唐奇安观察日线（东财 hfq，备源）
   _raw_daily_close       补价日线收盘
-  _raw_realtime_quotes   缺价实时兜底（批量）
+  _raw_realtime_prices   缺价实时兜底（批量）
 建议只读账户状态，不写成交。plan.should 用于报告分级，展示单笔偏离达到阈值的建议。
   估值口径分两层不互相兜底；任何估值不进自动决策——核心仓目标恒等于中性基准。
 """
@@ -78,10 +78,9 @@ def _raw_daily_close(code):
     return get_etf_daily(code)
 
 
-def _raw_realtime_quotes(codes):
-    """批量实时报价 → ({code: 现价}, {code: 简称}）（data_provider.manager）。"""
-    from data_provider.manager import realtime_quotes
-    return realtime_quotes(codes)
+def _raw_realtime_prices(codes):
+    from data_provider import realtime_prices
+    return realtime_prices(codes)
 
 
 # ── 周度取数上下文（一次性装配，各节纯渲染）──
@@ -242,7 +241,7 @@ def _fetch_missing_prices(baseline: List, positions: List[dict]) -> dict:
             logger.debug(f"日线收盘获取 {code} 价格失败: {e}")
         missed.append(code)
     if missed:
-        prices.update(_raw_realtime_quotes(missed)[0])
+        prices.update(_raw_realtime_prices(missed))
     return prices
 
 

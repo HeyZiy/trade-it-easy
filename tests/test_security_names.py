@@ -30,14 +30,16 @@ def test_corrupt_cache_does_not_break_price_fetch_or_name_lookup():
 
 
 def test_existing_quote_request_caches_name_without_extra_request():
-    from data_provider.manager import realtime_quotes
+    from data_provider.fetchers.base import BaseFetcher
     calls = []
     def quote(code):
         calls.append(code)
         return SimpleNamespace(name='科创50ETF', price=1.228)
-    prices, _ = realtime_quotes(['588000'], manager=SimpleNamespace(get_realtime_quote=quote))
+    adapter = SimpleNamespace(get_realtime_quote=quote)
+    prices = BaseFetcher.get_realtime_prices(adapter, ['588000'])
     assert calls == ['588000'] and prices == {'588000': 1.228}
     assert names.security_name('588000') == '科创50ETF'
+    assert names.names_for(['sh588000', '510300']) == {'sh588000': '科创50ETF'}
 
 
 def test_account_code_only_renames_without_rewriting_ledger_or_nav(tmp_path):

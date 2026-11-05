@@ -30,13 +30,13 @@ float_value = fundamentals.get_float_market_value(codes[:10], 20260101, 20261030
 
 高级 SDK 查询可以使用 `client.get_base_data()`、`client.get_info_data()`、`client.get_market_data()`；公共查询有复用需求时，加入对应能力模块。
 
-## 统一实时报价
+## 批量现价
 
-`AmazingDataFetcher.get_realtime_quote(code)` 使用 `market.get_latest_snapshot` 查询沪深股票与 ETF 的当日近期快照。统一实时源默认顺序为 `amazingdata,tencent,akshare_sina,efinance,akshare_em`；显式设置 `REALTIME_SOURCE_PRIORITY` 时以该配置为准。没有完整 AD/TGW 凭证时跳过 AD。
+业务使用 `data_provider.realtime_prices(codes)` 获取现价。AD 通过 `market.get_latest_prices` 每批最多查询 32 只沪深股票及 ETF。价格源默认顺序为 `amazingdata,tencent,akshare_sina,efinance,akshare_em`，可由 `REALTIME_SOURCE_PRIORITY` 配置。没有完整 AD/TGW 凭证时跳过 AD。
 
 快照通过 `query_snapshot` 查询北京时间最近五分钟，午休以 11:30、收盘后以 15:00 为窗口终点；只接受窗口内且不晚于请求时间的快照，按交易所 `trade_time`（缺列时使用日期时间索引）选最新一笔。该接口提供查询时可获得的近期快照，不是实时订阅；当日无数据、数据过旧、查询异常或最新价无效时，统一路由继续尝试其他来源。
 
-报价使用 `last`，不拿 `close` 或更早一笔替代无效最新价。昨收有效时计算涨跌额、涨跌幅和振幅。文档未明确快照成交量单位，`volume` 保持缺失。缺失估值等字段仍由统一实时路由按原规则补充，补充源不覆盖 AD 价格。网页刷新通过该接口更新展示估值，报价不写入账户流水或收盘收益曲线。
+价格使用最新一笔的 `last`。后备来源只处理缺价的代码，取价接口只返回有效价格。简称单独通过 `security_names.names_for(codes)` 读取本地缓存。看板整组取得价格后更新展示估值。
 
 ## 配置与会话
 

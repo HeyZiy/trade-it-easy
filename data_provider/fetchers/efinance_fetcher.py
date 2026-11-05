@@ -224,7 +224,7 @@ class EfinanceFetcher(BaseFetcher):
         (KIND_SECTOR_QUOTE, "cn"), (KIND_BELONG_BOARD, "cn"),
     })
 
-    # 实时端点自声明（源名唯一权威，merge_realtime_quotes 按此建索引）
+    # 现价端点自声明（现价路由按此建索引）
     REALTIME_VARIANTS = {"efinance": {}}
     
     def __init__(self, sleep_min: float = 1.5, sleep_max: float = 3.0):

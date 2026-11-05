@@ -315,6 +315,9 @@ def fetch_execution_status(codes: List[str], exec_date: str) -> pd.DataFrame:
     info.index = info.index.astype(str).str.split('.').str[0]
     if info.index.has_duplicates:
         raise RuntimeError('当天证券信息同一股票出现重复记录')
+    if 'symbol' in info:
+        from data_provider.security_names import remember
+        remember({code: info.at[code, 'symbol'] for code in codes if code in info.index})
     rows = {}
     for code in codes:
         raw = snapshots.get(code)
@@ -520,12 +523,11 @@ def _latest_total_shares(structure: Optional[pd.DataFrame],
     return None if pd.isna(value) else float(value)
 
 
-def fetch_realtime_quotes(codes: List[str]) -> Tuple[Dict[str, float], Dict[str, str]]:
-    """执行时实时价与简称（批量实时口径见 data_provider.manager.realtime_quotes；
-    失败/无效价不入结果，fail-soft）。"""
-    from data_provider.manager import realtime_quotes
+def fetch_realtime_prices(codes: List[str]) -> Dict[str, float]:
+    """获取执行时现价，缺价由执行层判断。"""
+    from data_provider import realtime_prices
 
-    return realtime_quotes(codes)
+    return realtime_prices(codes)
 
 
 def raw_closes_at(codes: List[str], asof: str) -> Dict[str, float]:

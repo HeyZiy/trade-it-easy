@@ -4,6 +4,7 @@ import datetime as dt
 import pandas as pd
 import pytest
 
+from data_provider.security_names import names_for
 from src.quality_pool import config, feeds, signal, state
 from test_quality_pool_state import env, _patch_signal_data, _seed_positions
 
@@ -36,7 +37,8 @@ def test_signal_status_uses_previous_trading_day(env, deferred):
 def test_execution_status_does_not_use_history_table(monkeypatch):
     monkeypatch.setattr(feeds, '_raw_status', lambda *a: pytest.fail('历史表不能确认当天状态'))
     monkeypatch.setattr(feeds, '_execution_now', lambda: pd.Timestamp('2026-10-15 09:31:00'))
-    info = pd.DataFrame({'security_status': ['0', '4']}, index=['600001.SH', '000001.SZ'])
+    info = pd.DataFrame({'security_status': ['0', '4'], 'symbol': ['示例证券', '平安银行']},
+                        index=['600001.SH', '000001.SZ'])
     snapshots = {
         c: pd.DataFrame({'trade_time': ['2026-10-15 09:30:59'],
                          'trading_phase_code': [phase],
@@ -49,6 +51,7 @@ def test_execution_status_does_not_use_history_table(monkeypatch):
     assert result.at['000001', 'is_st']
     assert not result['is_suspended'].any()
     assert result.at['600001', 'high_limit'] == 11.
+    assert names_for(['600001', '000001']) == {'600001': '示例证券', '000001': '平安银行'}
 
 
 def test_blank_risk_flag_still_yields_tradable_row(monkeypatch):

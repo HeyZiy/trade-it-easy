@@ -1,4 +1,4 @@
-"""证券简称缓存。代码是标识；这里只保存行情源提供的展示名称，不主动联网。"""
+"""证券简称缓存。代码是标识；简称来自已有行情和证券资料，读取不联网。"""
 
 import logging
 from functools import lru_cache
@@ -36,8 +36,15 @@ def security_name(code):
     return "现金" if code == "CASH" else names().get(code, code)
 
 
+def names_for(codes):
+    """批量读取已知简称，保留请求中的代码写法，省略未知简称。"""
+    known = names()
+    normalized = {code: normalize_stock_code(code) for code in codes}
+    return {code: known[plain] for code, plain in normalized.items() if plain in known}
+
+
 def remember(values):
-    """合并行情顺带返回的名称；失败不影响报价、成交和旧缓存。"""
+    """保存已取到的简称；失败不影响原数据和旧缓存。"""
     rows = []
     for code, name in values.items():
         code = normalize_stock_code(code)

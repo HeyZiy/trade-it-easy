@@ -50,8 +50,13 @@ class World:
         self.g.pool = self.codes.copy()
         self.g.pool_valid = True
         self.real_score = self.ns['momentum_score']
-        self.ns['momentum_score'] = lambda tail, px: self.scores[
-            next(c for c in self.codes if self.quotes[c].last_price == px)]
+        self.real_details = self.ns['momentum_details']
+        self.ns['momentum_details'] = self.score_details
+
+    def score_details(self, tail, px):
+        code = next(c for c in self.codes if self.quotes[c].last_price == px)
+        score = self.scores[code]
+        return score, score, False
 
     def history_close(self, code, count, *args, **kwargs):
         return self.closes[code].tail(count).to_frame('close')
@@ -114,8 +119,10 @@ def world():
 def test_entry_cannot_fall_through_to_rank_seven(world):
     for code in world.codes[:6]:
         world.money[code][-20:] *= .5
+    world.logs.clear()
     world.run()
     assert world.attempts == []
+    assert world.logs == []
 
 
 def test_valid_empty_pool_still_stops_existing_position(world):
@@ -253,6 +260,7 @@ def test_recovery_resets_confirmation_counter(world):
     world.scores['E7'] = 2.
     world.run()
     assert world.g.neg_run['E7'] == 0
+    assert any('E7 计数2->0' in line for line in world.logs)
     world.scores['E7'] = .4
     world.run()
     assert world.sells == []
@@ -305,7 +313,7 @@ def test_volume_uses_disjoint_twenty_and_forty_day_windows(world):
 
 def test_short_high_score_candidate_cannot_remove_mature_representative(world):
     world.g.pool = []
-    world.ns['momentum_score'] = world.real_score
+    world.ns['momentum_details'] = world.real_details
     x = np.arange(250)
     world.closes['E1'][:] = np.exp(.001*x + .01*np.sin(x))
     world.closes['E2'] = pd.Series(np.exp(.004*x[50:] + .01*np.sin(x[50:])),
@@ -339,17 +347,33 @@ def test_late_buy_fill_is_logged_once(world):
 @pytest.mark.parametrize('bad', [np.nan, np.inf, 0., -1.])
 def test_invalid_price_never_becomes_a_valid_score(world, bad):
     prices = np.linspace(10., 11., 25)
-    assert world.real_score(prices, bad) == 0.
+    assert world.real_details(prices, bad) == (0., None, None)
 
 
 @pytest.mark.parametrize('slope', [.001, -.001])
 def test_geometric_price_path_has_full_trend_fit(world, slope):
+    world.ns['momentum_details'] = world.real_details
     prices = np.exp(slope * np.arange(26))
     expected = round(float(np.exp(slope * 250) - 1), 4)
     assert world.real_score(prices[:-1], prices[-1]) == expected
 
 
-def test_latest_sharp_drop_vetoes_an_otherwise_positive_trend(world):
-    prices = np.exp(.01 * np.arange(26))
-    prices[-1] = prices[-2] * .94
-    assert world.real_score(prices[:-1], prices[-1]) == 0.
+def test_sharp_drop_exit_logs_each_count_and_the_raw_trend(world):
+    world.ns['momentum_details'] = world.real_details
+    closes = world.closes['E1']
+    closes[:] = np.exp(.01 * np.arange(len(closes)))
+    shocked = closes.iloc[-1] * .94
+    world.hold('E1', cost=shocked)
+    for price in (shocked, shocked * 1.02, shocked * 1.03):
+        world.quotes['E1'].last_price = price
+        world.run()
+        closes.loc[closes.index[-1] + pd.offsets.BDay(1)] = price
+
+    evaluations = [line for line in world.logs if line.startswith('持仓评估')]
+    assert len(evaluations) == 3
+    for previous, line in enumerate(evaluations):
+        assert 'E1 计数%d->%d' % (previous, previous + 1) in line
+        assert '原始分=+' in line and '跳水=True score=0.0000' in line
+        assert '本次排名掉队=False' in line
+    assert '触发卖出' in evaluations[-1]
+    assert world.sells == ['E1']

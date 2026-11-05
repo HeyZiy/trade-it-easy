@@ -6,7 +6,7 @@
 
 持有已实例化的 fetcher（带凭证），把入口调用转成「需求 + 数据源集合」的编排调用：
 - get_daily_data：个股日线 → daily.fetch_stock_daily（failover + 新鲜度校验 + 换手率回补）
-- get_realtime_quote：实时报价 → A 股委托 realtime.merge_realtime_quotes 跨源合并
+- get_realtime_prices：批量现价 → realtime.fetch_prices 按优先级补缺价
 - get_market_stats / get_main_fund_flow：路由.routing.query_first（多源取首个非空）
 
 分层：codes/classify_market（市场归属）→ routing（筛源 + failover）→ daily/realtime（策略）
@@ -17,8 +17,7 @@ realtime 开关/优先级在构造时读一次 src.config；交易日历谓词�
 src.trading_calendar 供料给 daily 管道。其余模块（daily/bars/各 fetcher）零 src 依赖。
 """
 import logging
-import math
-from typing import Any, Callable, Dict, List, Optional, Tuple
+from typing import Any, Callable, Dict, List, Optional, Sequence
 
 import pandas as pd
 
@@ -30,7 +29,7 @@ from .types import (
     KIND_BELONG_BOARD, KIND_FUND_FLOW, KIND_SECTOR_QUOTE,
     KIND_STOCK_DAILY, Need,
 )
-from .realtime import merge_realtime_quotes
+from .realtime import fetch_prices
 
 logger = logging.getLogger(__name__)
 
@@ -46,35 +45,15 @@ def get_fetcher():
         return None
 
 
-def realtime_quotes(codes: List[str],
-                    manager: Optional["DataFetcherManager"] = None
-                    ) -> Tuple[Dict[str, float], Dict[str, str]]:
-    """批量实时报价 → ({code: 现价}, {code: 简称})。
-
-    批量实时取数的唯一口径：循环逐只拉取 + 有效性校验（quote 非空、价格
-    非 None、有限、正数）+ 单只失败 warning（fail-soft，不中断整批）；
-    取不到的代码不出现在结果里。回退 policy（阻止当次执行 / 沿用旧值 /
-    日线优先兜底）归调用方。manager 缺省时经 get_fetcher() 本调用内构造一次。
-    """
-    fm = manager or get_fetcher()
-    prices: Dict[str, float] = {}
-    names: Dict[str, str] = {}
-    for code in codes:
-        try:
-            quote = fm.get_realtime_quote(code)
-        except Exception:
-            logger.warning("实时报价获取失败 %s", code, exc_info=True)
-            continue
-        if quote is None:
-            continue
-        if quote.name:
-            names[code] = quote.name
-        px = getattr(quote, "price", None)
-        if px is not None and math.isfinite(px) and px > 0:
-            prices[code] = float(px)
-    from .security_names import remember
-    remember(names)
-    return prices, names
+def realtime_prices(codes: Sequence[str], manager: Optional["DataFetcherManager"] = None) -> dict[str, float]:
+    """获取有效现价，键与请求一致；缺价省略，日线回退与否由业务决定。"""
+    if not codes:
+        return {}
+    fm = manager if manager is not None else get_fetcher()
+    if fm is None:
+        logger.warning("[现价] 数据源初始化失败")
+        return {}
+    return fm.get_realtime_prices(codes)
 
 
 class DataFetcherManager:
@@ -115,17 +94,17 @@ class DataFetcherManager:
             from src.config import get_config
             _config = get_config()
             self._realtime_enabled = bool(_config.enable_realtime_quote)
-            self._realtime_source_priority = _config.realtime_source_priority
+            priority = _config.realtime_source_priority
         except Exception as e:
             logger.warning(f"[组装] src.config 不可用，realtime 按全开+兜底优先级: {e}")
             self._realtime_enabled = True
-            self._realtime_source_priority = _FALLBACK_REALTIME_PRIORITY
+            priority = _FALLBACK_REALTIME_PRIORITY
 
+        sources = priority.split(',')
         # AD 是可选凭证源；未注册时不把默认项当成拼写错误逐票告警。
         if not any('amazingdata' in getattr(f, 'REALTIME_VARIANTS', {}) for f in self._fetchers):
-            self._realtime_source_priority = ','.join(
-                source for source in self._realtime_source_priority.split(',')
-                if source.strip().lower() != 'amazingdata')
+            sources = [source for source in sources if source.strip().lower() != 'amazingdata']
+        self._realtime_source_priority = sources
 
 
     def _init_default_fetchers(self) -> None:
@@ -227,36 +206,13 @@ class DataFetcherManager:
 
 
     
-    def get_realtime_quote(self, stock_code: str):
-        """
-        获取实时行情数据（自动故障切换）
-        
-        取数路径：
-        1. A 股 → 委托 realtime.merge_realtime_quotes 按 source_priority 跨源合并
-        2. 全部失败返回 None（降级兜底）
-        
-        Args:
-            stock_code: 股票代码
-            
-        Returns:
-            UnifiedRealtimeQuote 对象，所有数据源都失败则返回 None
-        """
-        # Normalize code (strip SH/SZ prefix etc.)
-        stock_code = normalize_stock_code(stock_code)
-
-        # 如果实时行情功能被禁用，直接返回 None（口径在组装点读定，见 __init__）
+    def get_realtime_prices(self, codes: Sequence[str]) -> dict[str, float]:
+        """同一代码只查询一次，兼容带市场前后缀的请求。"""
         if not self._realtime_enabled:
-            logger.debug(f"[实时行情] 功能已禁用，跳过 {stock_code}")
-            return None
-
-        # 跨源合并（A 股按 source_priority）抽离为与 manager 解耦的纯函数。
-        # 未来剪除日线杂活后，调用方只需持有 fetcher 集合即可直接调用，不再依赖本类。
-        source_priority = self._realtime_source_priority.split(',')
-        quote = merge_realtime_quotes(stock_code, self._fetchers, source_priority)
-        if quote is not None:
-            from .security_names import remember
-            remember({stock_code: quote.name})
-        return quote
+            return {}
+        normalized = {code: normalize_stock_code(code) for code in codes}
+        prices = fetch_prices(normalized.values(), self._fetchers, self._realtime_source_priority)
+        return {code: prices[plain] for code, plain in normalized.items() if plain in prices}
 
     def get_market_stats(self) -> Dict[str, Any]:
         """获取市场涨跌统计（自动切换数据源）；全部源无数据返回 {}。"""

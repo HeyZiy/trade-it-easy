@@ -5,7 +5,7 @@
 ===================================
 
 本包实现策略模式管理多个数据源，实现：
-1. 统一的数据获取接口
+1. 按用途提供数据接口
 2. 自动故障切换
 3. 防封禁流控策略
 
@@ -15,7 +15,8 @@
 - routing.py       多源编排纯函数（supporting 按能力声明筛源 / query_first 取首个非空）
 - daily.py         个股日线策略（多源 failover + 新鲜度校验 + 换手率列回补）
 - bars.py          ETF/指数日线入口（akshare 单源薄路由）
-- realtime.py      实时报价跨源合并
+- realtime.py      按来源优先级补齐缺失的现价
+- security_names.py  本地证券简称缓存
 - manager.py       DataFetcherManager（持有 fetcher 集合，入口方法委托上述策略）
 - fetchers/        BaseFetcher（SUPPORTS 能力声明 + SUPPORTS_COLUMNS）+ 各数据源实现
                    （akshare / efinance / tushare / amazingdata）
@@ -23,10 +24,10 @@
 - fetchers/amazingdata/            共享客户端及基础信息、行情、财务、行业、公告查询
 
 访问约定（两层）：
-- 统一接口（日线 / 实时报价 / 市场统计）→ 从 data_provider 顶层导入；
+- 日线、现价、市场统计从 data_provider 顶层导入；简称单独读取 security_names；
 - 特性接口（板块名称 / 板块涨跌幅 / 因子 / 基本面等数据源独有能力）→
   直接从 data_provider.fetchers.xxx_fetcher 导入对应 Fetcher（不在统一契约内）。
-- 编排纯函数（daily.fetch_stock_daily / routing.query_first / realtime.merge_realtime_quotes）
+- 取数编排（daily.fetch_stock_daily / routing.query_first / realtime.fetch_prices）
   → 需自持 fetcher 集合的场景（研究 / 回测）直接 import 子模块，无需构造 manager。
 
 数据源优先级（默认列表，数字越小越先试）：
@@ -39,19 +40,18 @@ Pro 接口）；`TushareFetcher` 类仍在，需要时在本列表显式加入�
 """
 
 from data_provider.fetchers.base import BaseFetcher
-from .manager import DataFetcherManager, get_fetcher
+from .manager import DataFetcherManager, get_fetcher, realtime_prices
 from .codes import (
     normalize_stock_code, canonical_stock_code, is_etf_code,
     is_bse_code, is_st_stock, is_kc_cy_stock,
     market_suffix, is_a_stock_code,
 )
 from .types import (
-    STANDARD_COLUMNS, UnifiedRealtimeQuote,
+    STANDARD_COLUMNS,
     DataFetchError, RateLimitError, DataSourceUnavailableError,
     CircuitBreaker,
 )
 from .bars import get_etf_daily, get_index_daily
-from .realtime import merge_realtime_quotes
 
 # 各数据源 Fetcher 类不再在包导入时急切加载（import data_provider 不再拖全部实现模块）；
 # 仍按需可用：常规路径走 DataFetcherManager，特性场景直接 from data_provider.fetchers.xxx_fetcher import Y，
@@ -74,6 +74,7 @@ __all__ = [
     'BaseFetcher',
     'DataFetcherManager',
     'get_fetcher',
+    'realtime_prices',
     'normalize_stock_code',
     'canonical_stock_code',
     'is_etf_code',
@@ -83,13 +84,11 @@ __all__ = [
     'market_suffix',
     'is_a_stock_code',
     'STANDARD_COLUMNS',
-    'UnifiedRealtimeQuote',
     'DataFetchError',
     'RateLimitError',
     'DataSourceUnavailableError',
     'CircuitBreaker',
     'get_etf_daily',
     'get_index_daily',
-    'merge_realtime_quotes',
     *_FETCHER_EXPORTS,
 ]

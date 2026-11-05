@@ -44,9 +44,8 @@ def env(tmp_path, monkeypatch):
 
     import src.quality_pool.feeds as feeds
     monkeypatch.setattr(feeds, "fetch_execution_status", _count_status)
-    monkeypatch.setattr(feeds, "fetch_realtime_quotes",
-                        lambda cs: ({c: 12.0 for c in cs},
-                                    {c: f"股{c}" for c in cs}))
+    monkeypatch.setattr(feeds, "fetch_realtime_prices", lambda cs: {c: 12.0 for c in cs})
+    monkeypatch.setattr(assembly, "names_for", lambda cs: {c: f"股{c}" for c in cs})
     monkeypatch.setattr(feeds, "raw_closes_at",
                         lambda cs, asof: {c: 12.0 for c in cs})
     monkeypatch.calls = calls

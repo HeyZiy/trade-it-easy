@@ -33,6 +33,7 @@ from src.trade_ledger.batch import BatchOrder, BatchResult, execute_batch
 from src.trade_ledger.ledger import derive, load_trades
 from src.trade_ledger.performance import execution_summary
 import src.trading_calendar as trading_calendar
+from data_provider.security_names import names_for
 
 logger = logging.getLogger(__name__)
 
@@ -63,7 +64,7 @@ def build_snapshot(exec_date: str, selected: List[str], *, account_facts=None) -
     trades = load_trades(config.POOL_LEDGER_PATH) if account_facts is None else []
     codes = sorted(({t.code for t in trades} if account_facts is None else
                     {p["code"] for p in account_facts["positions"]}) | set(selected))
-    prices, names = feeds.fetch_realtime_quotes(codes)
+    prices = feeds.fetch_realtime_prices(codes)
 
     if account_facts is None:
         snap0 = derive(trades, as_of=exec_date, prices=prices)
@@ -101,7 +102,7 @@ def build_snapshot(exec_date: str, selected: List[str], *, account_facts=None) -
 
     return execution.ExecSnapshot(
         trade_date=exec_date, counts=counts, avail=avail, cash=cash,
-        equity=equity, prices=prices, names=names,
+        equity=equity, prices=prices, names=names_for(codes),
         suspended=suspended, st=st, limits=limits, unavailable=unavailable)
 
 

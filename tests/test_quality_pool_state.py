@@ -57,7 +57,6 @@ def _patch_signal_data(monkeypatch, universe={"600001", "600002"},
                             index=pd.Index(list(codes), name="code")))
     monkeypatch.setattr(feeds, "fetch_unlock_codes", lambda codes, d: set())
     monkeypatch.setattr(feeds, "fetch_industries", lambda codes, asof: {c: c for c in codes})
-    monkeypatch.setattr(feeds, 'fetch_realtime_quotes', lambda codes: ({}, {c: c for c in codes}))
 
 
 def _patch_execute_data(monkeypatch, prices, names=None,
@@ -72,9 +71,8 @@ def _patch_execute_data(monkeypatch, prices, names=None,
          "high_limit": [prices.get(c, 10.0) * 1.1 for c in codes],
          "low_limit": [prices.get(c, 10.0) * 0.9 for c in codes]},
         index=pd.Index(codes, name="code"))
-    monkeypatch.setattr(feeds, "fetch_realtime_quotes",
-                        lambda cs: ({c: prices[c] for c in cs if c in prices},
-                                    {c: names.get(c, f"股{c}") for c in cs}))
+    monkeypatch.setattr(feeds, "fetch_realtime_prices", lambda cs: {c: prices[c] for c in cs if c in prices})
+    monkeypatch.setattr('src.quality_pool.assembly.names_for', lambda cs: {c: names.get(c, f"股{c}") for c in cs})
     monkeypatch.setattr(feeds, "raw_closes_at",
                         lambda cs, asof: {c: prices.get(c, 10.0) for c in cs})
     monkeypatch.setattr(feeds, "fetch_execution_status",

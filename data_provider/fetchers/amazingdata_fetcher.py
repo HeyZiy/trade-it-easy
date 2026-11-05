@@ -18,7 +18,6 @@ AmazingDataFetcher - 星耀数智数据源
 """
 
 import logging
-import math
 import os
 from datetime import date as date_cls, timedelta
 from typing import ClassVar, Optional, Dict, Any
@@ -27,10 +26,7 @@ import numpy as np
 import pandas as pd
 
 from data_provider.fetchers.base import BaseFetcher
-from data_provider.types import (
-    KIND_STOCK_DAILY, DataFetchError, STANDARD_COLUMNS, UnifiedRealtimeQuote, safe_float,
-)
-from data_provider.codes import normalize_stock_code
+from data_provider.types import KIND_STOCK_DAILY, DataFetchError, STANDARD_COLUMNS
 from .amazingdata import market
 from .amazingdata.client import client, is_configured as tgw_configured
 from .amazingdata._utils import (
@@ -71,33 +67,8 @@ class AmazingDataFetcher(BaseFetcher):
 
     # ---------- BaseFetcher 接口 ----------
 
-    def get_realtime_quote(self, stock_code: str) -> Optional[UnifiedRealtimeQuote]:
-        """当日近期快照适配统一报价；缺失/过期/异常由实时路由回退。"""
-        code = normalize_stock_code(stock_code)
-        row = market.get_latest_snapshot(code)
-        if row is None:
-            return None
-
-        def number(field):
-            value = safe_float(row.get(field))
-            return value if value is not None and math.isfinite(value) else None
-
-        def positive(field):
-            value = number(field)
-            return value if value is not None and value > 0 else None
-
-        last = positive('last')
-        if last is None:
-            return None
-        pre_close, high, low = positive('pre_close'), positive('high'), positive('low')
-        return UnifiedRealtimeQuote(
-            code=code, source='amazingdata', price=last,
-            pre_close=pre_close, open_price=positive('open'), high=high, low=low,
-            amount=number('amount'),
-            change_amount=last - pre_close if pre_close else None,
-            change_pct=(last / pre_close - 1) * 100 if pre_close else None,
-            amplitude=(high - low) / pre_close * 100 if pre_close and high and low else None,
-        )
+    def get_realtime_prices(self, codes: list[str]) -> dict[str, float]:
+        return market.get_latest_prices(codes)
 
     def _fetch_raw_data(self, stock_code: str, start_date: str, end_date: str) -> pd.DataFrame:
         """

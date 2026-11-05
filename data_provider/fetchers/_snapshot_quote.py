@@ -18,7 +18,7 @@ akshare 与 efinance 的全量快照端点共用一个形状：
 重试耗尽记失败并存哨兵——TTL 内同端点不再反复请求。
 
 日志口径：本模块只记单源遥测（INFO），不发 WARNING——单源失败是正常
-failover 的一步，最终是否有行情由调用方（realtime.merge_realtime_quotes
+failover 的一步，最终是否有价格由调用方（realtime.fetch_prices
 汇总 / 策略入口的降级汇总）判一次。
 """
 

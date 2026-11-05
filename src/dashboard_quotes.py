@@ -45,9 +45,9 @@ class QuoteRefresh:
 
     def _fetch(self, codes):
         try:
-            from data_provider.manager import realtime_quotes
+            from data_provider import realtime_prices
 
-            prices, _ = realtime_quotes(codes) if codes else ({}, {})
+            prices = realtime_prices(codes)
             prices = {code: value for code, value in prices.items()
                       if code in codes and type(value) in (int, float)
                       and math.isfinite(value) and value > 0}

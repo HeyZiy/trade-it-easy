@@ -245,7 +245,7 @@ class AkshareFetcher(BaseFetcher):
         (KIND_FUND_FLOW, "cn"), (KIND_SECTOR_QUOTE, "cn"),
     })
 
-    # 实时端点自声明（源名唯一权威，merge_realtime_quotes 按此建索引）；
+    # 现价端点自声明（现价路由按此建索引）；
     # akshare_qq 为 tencent 别名，与历史优先级串兼容
     REALTIME_VARIANTS = {
         "akshare_em": {"source": "em"},

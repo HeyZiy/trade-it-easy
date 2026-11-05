@@ -42,7 +42,7 @@ def quotes(monkeypatch):
 
     monkeypatch.setattr(allocation, "_raw_trend_bars", no_bars)
     monkeypatch.setattr(allocation, "_raw_daily_close", lambda code: pd.DataFrame({"close": [5.0]}))
-    monkeypatch.setattr(allocation, "_raw_realtime_quotes", lambda codes: ({}, {}))
+    monkeypatch.setattr(allocation, "_raw_realtime_prices", lambda codes: {})
     monkeypatch.setattr(factors, "_fetch_csindex_indicator", lambda code: pd.DataFrame([{
         "index_code": code, "index_name": f"指数{code}", "date": "2025-01-07", "pe": 8., "dy": 5.,
     }]))
@@ -251,9 +251,9 @@ def test_missing_prices_daily_first_realtime_only_for_missed(monkeypatch):
 
     def _fake_rt(codes):
         seen.append(list(codes))
-        return {"510500": 6.1}, {}
+        return {"510500": 6.1}
 
-    monkeypatch.setattr(allocation, "_raw_realtime_quotes", _fake_rt)
+    monkeypatch.setattr(allocation, "_raw_realtime_prices", _fake_rt)
     baseline = [SimpleNamespace(code="510300"), SimpleNamespace(code="510500")]
     prices = allocation._fetch_missing_prices(baseline, [])
 
@@ -270,9 +270,9 @@ def test_missing_prices_batch_realtime_fallback(monkeypatch):
 
     def _fake_rt(codes):
         seen.append(list(codes))
-        return {"510300": 4.9}, {}
+        return {"510300": 4.9}
 
-    monkeypatch.setattr(allocation, "_raw_realtime_quotes", _fake_rt)
+    monkeypatch.setattr(allocation, "_raw_realtime_prices", _fake_rt)
     prices = allocation._fetch_missing_prices([SimpleNamespace(code="510300")], [])
 
     assert prices == {"510300": 4.9}

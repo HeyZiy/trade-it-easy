@@ -70,7 +70,7 @@ class TushareFetcher(BaseFetcher):
     # 日线仅 A 股（字母 ticker 明确拒绝，见 _fetch_raw_data；港股不在支持范围）
     SUPPORTS = frozenset({(KIND_STOCK_DAILY, "cn")})
 
-    # 实时端点自声明（源名唯一权威，merge_realtime_quotes 按此建索引）
+    # 现价端点自声明（现价路由按此建索引）
     REALTIME_VARIANTS = {"tushare": {}}
 
     def __init__(self, rate_limit_per_minute: int = 80,

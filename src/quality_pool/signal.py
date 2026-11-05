@@ -19,6 +19,7 @@ from typing import Dict, List, Optional
 import pandas as pd
 
 import src.trading_calendar as trading_calendar
+from data_provider.security_names import names_for
 from src.quality_pool import config, feeds, screener, state as pool_state
 from src.trade_ledger.ledger import derive, load_trades
 
@@ -200,7 +201,7 @@ def run_signal(today: date, dry_run: bool = False, retry: bool = False,
     lines.append(f"- 质量池 {len(pool)} 只 | 可排名 {len(ranked)} 只 | "
                  f"留存 {len(kept)} | 目标 {len(selected)} | 计划退出 {len(exit_reasons)}")
     lines.append(f"- 下一调仓信号日 {nxt}；本轮随后先卖后买；暂缓判断 {len(deferred)} 只")
-    names = _decision_names([d["code"] for d in decisions] + ranked)
+    names = names_for([d["code"] for d in decisions] + ranked)
     lines += render_decision_table(decisions, ranked, rank, scores, names)
     return SignalReport("\n".join(lines), True)
 
@@ -273,13 +274,3 @@ def review_deferred(today: date, st: dict, dry_run: bool, *, held_codes=None, st
     return (f'# 质量动量补判（{today_str}）\n'
             f'- 已检查 {len(codes)} 只；仍未知 {len(unresolved)} 只；'
             '不重建买入名单，确认出池者本轮随后尝试退出。')
-
-
-def _decision_names(codes) -> Dict[str, str]:
-    """报告涉及代码的简称（实时行情，fail-soft；取不到就只显代码）。"""
-    try:
-        _, names = feeds.fetch_realtime_quotes(sorted(set(codes)))
-    except Exception:
-        logger.exception("信号报告简称抓取失败，降级为只显代码")
-        return {}
-    return names

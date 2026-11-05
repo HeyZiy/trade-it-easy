@@ -18,7 +18,7 @@
 与 _snapshot_quote（全量快照形）并列：那是「拉全表查行」，这是「一票一请求」。
 
 日志口径：单源失败只记 INFO 遥测（failover 的一步），是否真的取不到行情
-由调用方（realtime.merge_realtime_quotes 汇总 / 策略入口降级汇总）判一次。
+由现价路由汇总，策略入口决定缺价处置。
 """
 
 import logging

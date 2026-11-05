@@ -339,11 +339,10 @@ def fetch_bars(codes: Sequence[str], decision_date: Optional[date] = None) -> Di
 
 
 def fetch_prices(codes: Sequence[str]) -> Dict[str, float]:
-    """池成员当日现价（批量实时口径见 data_provider.manager.realtime_quotes；
-    单只失败/缺价不入结果，由入口阻止当次执行）。"""
-    from data_provider.manager import realtime_quotes
+    """池成员当日现价，单只缺价由入口阻止当次执行。"""
+    from data_provider import realtime_prices
 
-    return realtime_quotes(list(codes))[0]
+    return realtime_prices(codes)
 
 
 def rotation_snapshot(decision_date: Optional[date] = None

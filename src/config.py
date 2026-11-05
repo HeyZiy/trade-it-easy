@@ -21,7 +21,7 @@ from typing import Any, Dict, List, Literal, Optional, Tuple
 logger = logging.getLogger(__name__)
 
 # 实时源优先级默认串（排序 policy 唯一显式列表；源名须与各 fetcher 的
-# REALTIME_VARIANTS 声明匹配，未声明名会在 merge_realtime_quotes 启动汇总 warning）
+# REALTIME_VARIANTS 声明匹配，未声明名由现价路由汇总告警）
 DEFAULT_REALTIME_PRIORITY = "amazingdata,tencent,akshare_sina,efinance,akshare_em"
 
 
