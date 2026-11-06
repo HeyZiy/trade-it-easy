@@ -25,6 +25,7 @@ const reportCache = new Map();
 let quoteRequestPending = false, quotePollTimer, quotePolling = false, quoteError = '';
 const quoteTime = value => new Date(value).toLocaleString('zh-CN', {timeZone:'Asia/Shanghai',hour12:false});
 const quotePrice = row => `${price(row.close)}${!finite(row.close) ? '<small class="price-pending">待估值</small>' : row.quote_missing && !data.accounts[0]?.quote_refresh?.running ? '<small class="price-pending">保留上一组估值</small>' : ''}${row.quote_fetched_at ? `<small>获取于 ${esc(quoteTime(row.quote_fetched_at))}</small>` : ''}`;
+const refreshInProgress = state => state?.running || state?.funds?.running;
 
 function valuationLabel(valuation) {
   if (valuation.mode === 'live') {
@@ -38,7 +39,8 @@ function updateQuoteControls() {
   const active = selected===0 ? account : [...data.strategies,...data.observations][selected-1];
   document.querySelector('#quote-panel').hidden = !account.can_record || (selected!==0 && active?.account_id!=='etf');
   const state = account.quote_refresh;
-  const running = quoteRequestPending || state?.running;
+  const funds = state?.funds;
+  const running = quoteRequestPending || refreshInProgress(state);
   const button = document.querySelector('#quote-refresh');
   button.disabled = !!running;
   button.setAttribute('aria-busy',String(!!running));
@@ -46,12 +48,20 @@ function updateQuoteControls() {
   const valuation=account.valuation;
   let note = valuation ? valuationLabel(valuation) : '';
   let message = '';
-  if (running) note = `正在刷新行情…${state?.estimated ? ' · 暂显示上次估值' : ''}`;
+  if (quoteRequestPending || state?.running) note = `正在刷新行情…${state?.estimated ? ' · 暂显示上次估值' : ''}`;
   else if (state && !state.applicable) message = '估值已变化，请刷新行情。';
   else if (state?.applicable && state.missing?.length) {
     const names = state.missing.map(code=>account.positions.find(row=>row.code===code)?.name || code);
     message = `${names.join('、')}未能更新，本轮不切换，整组保留上一份完整估值。`;
   } else if (state?.error) message = '行情暂时无法更新，请稍后重试。';
+  if (funds?.running && !quoteRequestPending && !state.running) note = '正在更新场外基金净值…';
+  if (funds?.updated || funds?.unchanged || funds?.failed) {
+    const parts = [];
+    if (funds.updated?.length) parts.push(`已更新 ${funds.updated.length} 只`);
+    if (funds.unchanged?.length) parts.push(`${funds.unchanged.length} 只保留原日期`);
+    if (funds.failed?.length) parts.push(`${funds.failed.join('、')} 取数失败，保留原净值`);
+    if (parts.length) message += `${message?' ':''}场外净值 · ${parts.join('，')}。`;
+  }
   if (quoteError) message = quoteError;
   if(valuation?.missing?.length) message += `${message?' ':''}${valuation.missing.join('、')}缺少同日价格，总资产与相关盈亏待估值；可刷新行情。`;
   const status = document.querySelector('#quote-status');
@@ -62,7 +72,13 @@ function updateQuoteControls() {
 
 function scheduleQuotePoll() {
   clearTimeout(quotePollTimer);
-  if (data.accounts[0]?.quote_refresh?.running) quotePollTimer = setTimeout(pollQuotes, 1500);
+  if (refreshInProgress(data.accounts[0]?.quote_refresh)) quotePollTimer = setTimeout(pollQuotes, 1500);
+}
+
+function clearQuoteRefreshPending() {
+  const state = data.accounts[0]?.quote_refresh;
+  if (state) state.running = false;
+  if (state?.funds) state.funds.running = false;
 }
 
 async function pollQuotes() {
@@ -76,7 +92,7 @@ async function pollQuotes() {
   } catch {
     quoteError = '连接中断，请重试。';
     // 网络断开时允许主动重试；服务器会合并正在进行的刷新。
-    if (data.accounts[0]?.quote_refresh) data.accounts[0].quote_refresh.running = false;
+    clearQuoteRefreshPending();
     updateQuoteControls();
   } finally { quotePolling = false; }
 }
@@ -89,7 +105,7 @@ document.querySelector('#quote-refresh').onclick = async () => {
     scheduleQuotePoll();
   } catch (error) {
     quoteError = error.message || '行情刷新失败，请稍后重试。';
-    if (data.accounts[0]?.quote_refresh) data.accounts[0].quote_refresh.running = false;
+    clearQuoteRefreshPending();
   }
   finally { quoteRequestPending = false; updateQuoteControls(); }
 };
@@ -442,10 +458,13 @@ async function accountRequest(path, payload) {
 async function reloadAccount({deferWhileRefreshing=false} = {}) {
   const response = await fetch('/api/overview', {cache:'no-store'});
   if (!response.ok) throw Error('页面暂时无法更新，请重试。');
+  const previous = data.accounts[0]?.quote_refresh;
   data = await response.json();
   document.querySelector('#status').textContent=`页面更新于 ${quoteTime(data.generated_at)}`;
   document.querySelector('#states').innerHTML=data.states.map(state => `<p><strong>${esc(state.name)}</strong> · ${esc(state.detail)}</p>`).join('');
-  if (!deferWhileRefreshing || !data.accounts[0]?.quote_refresh?.running) render();
+  const state = data.accounts[0]?.quote_refresh;
+  const completed = (previous?.running && !state?.running) || (previous?.funds?.running && !state?.funds?.running);
+  if (!deferWhileRefreshing || completed || !refreshInProgress(state)) render();
 }
 
 function bindAccountActions(view) {

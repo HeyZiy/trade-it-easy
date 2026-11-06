@@ -268,7 +268,8 @@ class Handler(BaseHTTPRequestHandler):
                 account = etf_account_data(path)
                 QUOTES.start(path, account["quote_revision"],
                              [row["code"] for row in account["positions"]],
-                             datetime.now(SHANGHAI).date().isoformat())
+                             datetime.now(SHANGHAI).date().isoformat(),
+                             fund_codes=account["fund_codes"])
             except Exception:
                 logging.exception("启动网页行情刷新失败")
                 self.respond(json.dumps({"error": "无法刷新行情，请检查账户数据后重试。"}, ensure_ascii=False).encode(),

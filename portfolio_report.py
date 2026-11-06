@@ -67,10 +67,14 @@ def run(*, asof=None, dry_run=False, now=None, backfill=False):
     feed = ClosingPrices()
     accounts = all_sources()
     from pathlib import Path
-    from src.etf_account import FILENAME, collect_close as collect_core_close, load as load_core, render_summary as core_summary, revision
+    from src.etf_account import (
+        FILENAME, collect_close as collect_core_close, load as load_core, refresh_fund_navs,
+        render_summary as core_summary, revision,
+    )
     sections = [f"# 账户收盘采集 — {target}", ""]
     notes = []
     errors = 0
+    fund_path = None
     window = _backfill_dates(target) if backfill else []
     for account in accounts:
         path, label, benchmark = (account.ledger_path, account.label,
@@ -78,6 +82,7 @@ def run(*, asof=None, dry_run=False, now=None, backfill=False):
         if Path(path).name == FILENAME:
             try:
                 state = load_core(path)
+                fund_path = path
                 for day in window:
                     if day >= target or day.isoformat() <= state["initial"]["date"]:
                         continue
@@ -142,6 +147,15 @@ def run(*, asof=None, dry_run=False, now=None, backfill=False):
             sections.append(f"## {label}\n\n⚠️ 本次收盘采集失败，保留已有成绩。\n\n"
                             + render_summary(path, today=target, label=label))
             errors += 1
+    if asof is None and not dry_run and fund_path is not None:
+        try:
+            funds = refresh_fund_navs(fund_path, target.isoformat())
+            if funds["updated"]:
+                logger.info("场外基金净值已更新 %s 只", len(funds["updated"]))
+            if funds["failed"]:
+                logger.warning("场外净值未能更新，保留已有净值：%s", "、".join(funds["failed"]))
+        except Exception:
+            logger.exception("每日场外净值更新失败，保留已有净值")
     if notes:
         sections += ["## 本次回补（目标日之前）", "", *notes]
     if dry_run:
@@ -156,8 +170,7 @@ def main():
     args = parser.parse_args()
     setup_env()
     setup_logging(log_prefix="portfolio_report")
-    asof = args.date or closed_date(datetime.now(SHANGHAI)).isoformat()
-    report, errors = run(asof=asof, dry_run=args.dry_run, backfill=args.date is None)
+    report, errors = run(asof=args.date, dry_run=args.dry_run, backfill=args.date is None)
     if args.dry_run:
         # 预览采集结果；正式运行静默采集——成绩看板在 dashboard，不再生成收盘日报。
         import io

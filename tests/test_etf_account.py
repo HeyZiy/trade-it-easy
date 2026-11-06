@@ -212,6 +212,69 @@ def test_scheduled_report_recollects_changed_actual_history(account, monkeypatch
     assert '投资账户' in report
 
 
+def test_daily_report_refreshes_fund_nav_once_and_preserves_backfill_boundary(account, monkeypatch):
+    from datetime import date
+    from types import SimpleNamespace
+
+    import portfolio_report as entry
+    from src.etf_account import save_fund_position
+
+    target = date(2025, 1, 7)
+    days = [date(2025, 1, 6), target]
+    monkeypatch.setattr("src.account_sources.all_sources", lambda: [
+        SimpleNamespace(ledger_path=str(account), label="投资账户", benchmark={}),
+    ])
+    monkeypatch.setattr(entry, "closed_date", lambda _: target)
+    monkeypatch.setattr(entry, "get_trading_dates", lambda start, end: [d for d in days if start <= d <= end])
+    monkeypatch.setattr(entry.ClosingPrices, "close_prices", lambda self, codes, day: {c: 2 for c in codes})
+    save_fund_position(account, {"revision": account_data(account)["fund_revision"],
+                                 "code": "000051", "qty": 100.5, "nav": 1.2, "date": "2025-01-06"})
+    calls = []
+
+    def fetch_fund(code, through):
+        calls.append((code, through))
+        return through, 1.3
+
+    monkeypatch.setattr("data_provider.fund_nav.latest_fund_nav", fetch_fund)
+    assert entry.run(asof="2025-01-06")[1] == 0
+    assert entry.run(backfill=True, dry_run=True)[1] == 0
+    assert not calls
+    assert entry.run(backfill=True)[1] == 0
+    assert calls == [("000051", "2025-01-07")]
+    assert load(account)["fund_positions"]["000051"]["market_value"] == 130.65
+    assert entry.run(backfill=True)[1] == 0
+    assert len(calls) == 1
+
+
+def test_fund_refresh_uses_latest_shares_and_keeps_same_date_manual_correction(account, monkeypatch):
+    from src.etf_account import refresh_fund_navs, save_fund_position
+
+    def save_mark(code, qty, nav, day):
+        save_fund_position(account, {"revision": account_data(account)["fund_revision"],
+                                     "code": code, "qty": qty, "nav": nav, "date": day})
+
+    for code in ("000051", "000123", "000124"):
+        save_mark(code, 100, 1.2, "2025-01-06")
+
+    def fetch_fund(code, through):
+        if code == "000051":
+            save_mark(code, 120.5, 1.2, "2025-01-06")
+        elif code == "000123":
+            save_mark(code, 100, 1.31, through)
+        else:
+            save_mark(code, 0, None, None)
+        return through, 1.3
+
+    monkeypatch.setattr("data_provider.fund_nav.latest_fund_nav", fetch_fund)
+    result = refresh_fund_navs(account, "2025-01-07")
+    assert result == {"updated": ["000051"], "unchanged": ["000123", "000124"], "failed": []}
+    positions = load(account)["fund_positions"]
+    assert positions["000051"]["market_value"] == 156.65
+    assert positions["000051"]["qty"] == 120.5
+    assert positions["000123"]["nav"] == 1.31
+    assert "000124" not in positions
+
+
 def test_core_cron_can_only_recommend_after_initialization(account, monkeypatch):
     from src.etf import allocation
     from src.etf.rebalancer import RebalancePlan

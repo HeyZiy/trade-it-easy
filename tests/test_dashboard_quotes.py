@@ -14,7 +14,7 @@ import pytest
 
 import dashboard
 from src.dashboard_quotes import QuoteRefresh, SHANGHAI
-from src.etf_account import account_data, collect_close, initialize, record_event
+from src.etf_account import account_data, collect_close, initialize, record_event, save_fund_position
 
 
 def basic(user, password):
@@ -46,7 +46,7 @@ def wait_finished(cache, path):
     deadline = time.monotonic() + 5
     while time.monotonic() < deadline:
         state = cache.read(path)
-        if not state.get('running'):
+        if not state.get('running') and not state.get('funds', {}).get('running'):
             return state
         time.sleep(.01)
     pytest.fail('后台取价未结束')
@@ -198,3 +198,55 @@ def test_refresh_api_is_protected_and_overview_delivers_estimates(account, monke
     finally:
         server.shutdown()
         server.server_close()
+
+
+def test_dashboard_refresh_updates_fund_nav_independently_of_listed_quotes(account, monkeypatch):
+    path, day = account
+    day_before = (datetime.fromisoformat(day) - timedelta(days=1)).date().isoformat()
+    before = account_data(path)
+    for code in ("000051", "000123"):
+        save_fund_position(path, {"revision": account_data(path)["fund_revision"],
+                                  "code": code, "qty": 123.45, "nav": 1.5, "date": day_before})
+    monkeypatch.setattr("data_provider.realtime_prices", lambda _: {"588000": 3})
+
+    def fetch_fund(code, through):
+        assert through == day
+        if code == "000051":
+            return day, 1.6
+        raise TimeoutError("test fund unavailable")
+
+    monkeypatch.setattr("data_provider.fund_nav.latest_fund_nav", fetch_fund)
+    cache = QuoteRefresh()
+    core = account_data(path)
+    cache.start(path, core["quote_revision"], ["588000", "510300"], day, fund_codes=core["fund_codes"])
+    result = account_data(path, live_quotes=wait_finished(cache, path))
+    assert result["quote_refresh"]["missing"] == ["510300"]
+    assert result["quote_refresh"]["funds"] == {
+        "running": False, "updated": ["000051"], "unchanged": [], "failed": ["000123"],
+    }
+    for key in ("cash", "equity", "history", "trades", "revision", "quote_revision"):
+        assert result[key] == before[key]
+    assert [(r["code"], r["count"], r["market_value"]) for r in result["positions"]] == [
+        (r["code"], r["count"], r["market_value"]) for r in before["positions"]
+    ]
+    groups = {row["id"]: row for row in result["strategies"][0]["allocation_groups"]}
+    assert groups["outside-fund:000051"]["market_value"] == 197.52
+    assert groups["outside-fund:000123"]["products"][0]["date"] == day_before
+
+
+def test_fund_nav_source_selects_latest_valid_unit_nav_at_cutoff(monkeypatch):
+    import pandas as pd
+
+    from data_provider.fund_nav import latest_fund_nav
+
+    def fetch(_, code, *, pz, timeout):
+        assert code == "000051"
+        assert pz == 10 and timeout > 0
+        return pd.DataFrame({
+            "日期": ["2025-01-04", "2025-01-07", "2025-01-08", "2025-01-06", "invalid"],
+            "单位净值": [1.2, float("nan"), 1.8, 1.4, 99],
+            "累计净值": [2.2, 2.3, 2.8, 2.4, 99],
+        })
+
+    monkeypatch.setattr("data_provider.fetchers.efinance_fetcher._ef_call_with_timeout", fetch)
+    assert latest_fund_nav("000051", "2025-01-07") == ("2025-01-06", 1.4)

@@ -303,6 +303,11 @@ def _fund_revision(state):
     return portfolio_config.revision(state.get("fund_positions", {}))
 
 
+def _fund_market_value(qty, nav):
+    amount = Decimal(str(qty)) * Decimal(str(nav))
+    return float(amount.quantize(Decimal(".01"), rounding=ROUND_HALF_UP))
+
+
 def save_fund_position(path, payload):
     """保存场外持仓快照。现金、场内流水和历史收益继续按券商账户计算。"""
     with _locked(path):
@@ -326,9 +331,48 @@ def save_fund_position(path, payload):
             if not isinstance(nav_date, str):
                 raise ValueError("请选择净值日期")
             _day(nav_date)
-            value = (Decimal(str(qty)) * Decimal(str(nav))).quantize(Decimal(".01"), rounding=ROUND_HALF_UP)
-            funds[code] = {"code": code, "qty": qty, "nav": nav, "date": nav_date, "market_value": float(value)}
+            funds[code] = {"code": code, "qty": qty, "nav": nav, "date": nav_date,
+                           "market_value": _fund_market_value(qty, nav)}
         _save(path, state)
+
+
+def refresh_fund_navs(path, through):
+    """锁外查询已录入的基金，锁内按最新份额合并更晚日期的净值。"""
+    from data_provider.fund_nav import latest_fund_nav
+
+    marks = {}
+    result = {"updated": [], "unchanged": [], "failed": []}
+    funds = load(path).get("fund_positions", {})
+    for code, fund in funds.items():
+        if fund["date"] >= through:
+            result["unchanged"].append(code)
+            continue
+        try:
+            mark = latest_fund_nav(code, through)
+        except Exception:
+            logger.exception("场外基金 %s 净值获取失败", code)
+            mark = None
+        if mark is None:
+            result["failed"].append(code)
+        elif mark[0] > fund["date"]:
+            marks[code] = mark
+        else:
+            result["unchanged"].append(code)
+    if not marks:
+        return result
+
+    with _locked(path):
+        state = load(path)
+        for code, (nav_date, nav) in marks.items():
+            fund = state.get("fund_positions", {}).get(code)
+            if fund is None or fund["date"] >= nav_date:
+                result["unchanged"].append(code)
+                continue
+            fund.update(date=nav_date, nav=nav, market_value=_fund_market_value(fund["qty"], nav))
+            result["updated"].append(code)
+        if result["updated"]:
+            _save(path, state)
+    return result
 
 
 def _allocation_groups(config, strategy, funds):
@@ -809,6 +853,8 @@ def account_data(path, *, live_quotes=None):
                       and live_quotes.get("day") == today)
         quote_refresh = {key: live_quotes.get(key) for key in
                          ("running", "fetched_at", "missing", "error")}
+        if live_quotes.get("day") == today:
+            quote_refresh["funds"] = live_quotes.get("funds")
         quote_refresh["applicable"] = applicable
         quotes = live_quotes.get("quotes", {}) if applicable else {}
         live_prices = {code: item["price"] for code, item in quotes.items() if _positive(item.get("price"))}
@@ -856,7 +902,7 @@ def account_data(path, *, live_quotes=None):
                 strategy[f"allocation_{key}"] = round(strategy[key] + external, 2) if strategy[key] is not None else None
     return {"id": "etf", "name": "投资账户", "can_record": True, **view,
             "holdings_by_kind": holdings_by_kind, "net_contributed": net_contributed,
-            "fund_revision": _fund_revision(state),
+            "fund_revision": _fund_revision(state), "fund_codes": sorted(state.get("fund_positions", {})),
             "performance": latest, "trades": [{**{k: v for k, v in e.items() if k != "request"},
                          **({"name": security_name(e["code"])} if e.get("code") else {})}
                        for e in reversed(state["events"])],
