@@ -19,10 +19,11 @@ DAY = date(2026, 10, 2)
 def account(env, tmp_path):
     env.setattr(wallet, "_today", lambda: DAY)
     path = tmp_path / "data" / "etf_account.json"
-    wallet.initialize(path, asof="2026-10-01", cash=119000,
+    wallet.initialize(path, asof="2026-09-30", cash=119000,
                       positions=[dict(code="510300", count=1000, price=1, strategy="core")],
                       budgets={"core": .83, "rotation": .07, "quality": .1},
                       cash_allocations={"core": 100000, "rotation": 7000, "quality": 12000})
+    wallet.collect_close(path, "2026-10-01", lambda *_: {"510300": 1})
     _patch_signal_data(env)
     _patch_execute_data(env, {"600001": 10, "600002": 20, "600003": 10})
     return path

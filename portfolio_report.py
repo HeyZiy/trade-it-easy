@@ -58,6 +58,7 @@ def run(*, asof=None, dry_run=False, now=None, backfill=False):
     from src.account_sources import all_sources
 
     now = now or datetime.now(SHANGHAI)
+    today = now.astimezone(SHANGHAI).date()
     latest = closed_date(now)
     target = datetime.strptime(asof, "%Y-%m-%d").date() if asof else latest
     if target > latest:
@@ -68,13 +69,12 @@ def run(*, asof=None, dry_run=False, now=None, backfill=False):
     accounts = all_sources()
     from pathlib import Path
     from src.etf_account import (
-        FILENAME, collect_close as collect_core_close, load as load_core, refresh_fund_navs,
-        render_summary as core_summary, revision,
+        FILENAME, collect_close as collect_core_close, load as load_core, refresh_close_prices,
+        refresh_fund_navs, render_summary as core_summary, revision, valuation_day,
     )
     sections = [f"# 账户收盘采集 — {target}", ""]
     notes = []
     errors = 0
-    fund_path = None
     window = _backfill_dates(target) if backfill else []
     for account in accounts:
         path, label, benchmark = (account.ledger_path, account.label,
@@ -82,7 +82,15 @@ def run(*, asof=None, dry_run=False, now=None, backfill=False):
         if Path(path).name == FILENAME:
             try:
                 state = load_core(path)
-                fund_path = path
+                if asof is None and not dry_run:
+                    try:
+                        funds = refresh_fund_navs(path, today.isoformat())
+                        if funds["updated"]:
+                            logger.info("场外基金净值已更新 %s 只", len(funds["updated"]))
+                        if funds["failed"]:
+                            logger.warning("场外净值未能更新，保留已有净值：%s", "、".join(funds["failed"]))
+                    except Exception:
+                        logger.exception("每日场外净值更新失败，保留已有净值")
                 for day in window:
                     if day >= target or day.isoformat() <= state["initial"]["date"]:
                         continue
@@ -90,6 +98,13 @@ def run(*, asof=None, dry_run=False, now=None, backfill=False):
                     if not _complete(old) or old.get("revision") != revision(state, day.isoformat()):
                         state = collect_core_close(path, day.isoformat(), feed.close_prices, dry_run=dry_run)
                 state = collect_core_close(path, target.isoformat(), feed.close_prices, dry_run=dry_run)
+                if asof is None and not dry_run:
+                    try:
+                        missing = refresh_close_prices(path, today, valuation_day(today), feed.close_prices)
+                        if missing:
+                            logger.warning("[账户估值] 收盘价缺失：%s", "、".join(missing))
+                    except Exception:
+                        logger.exception("盘前账户估值补价失败")
                 if target.isoformat() >= state["initial"]["date"]:
                     sections.append(core_summary(path))
                 row = _record(state, target.isoformat())
@@ -147,15 +162,6 @@ def run(*, asof=None, dry_run=False, now=None, backfill=False):
             sections.append(f"## {label}\n\n⚠️ 本次收盘采集失败，保留已有成绩。\n\n"
                             + render_summary(path, today=target, label=label))
             errors += 1
-    if asof is None and not dry_run and fund_path is not None:
-        try:
-            funds = refresh_fund_navs(fund_path, target.isoformat())
-            if funds["updated"]:
-                logger.info("场外基金净值已更新 %s 只", len(funds["updated"]))
-            if funds["failed"]:
-                logger.warning("场外净值未能更新，保留已有净值：%s", "、".join(funds["failed"]))
-        except Exception:
-            logger.exception("每日场外净值更新失败，保留已有净值")
     if notes:
         sections += ["## 本次回补（目标日之前）", "", *notes]
     if dry_run:

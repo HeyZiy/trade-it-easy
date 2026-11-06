@@ -36,7 +36,7 @@
 # ── 质量动量：每交易日09:30独立模拟并更新实际账户建议，有行动时推送；实际成交由人工确认 ──
 30 9 * * 1-5 cd /root/trade-it-easy && flock -n /tmp/quality-pool.lock /root/miniconda/envs/rt/bin/python quality_pool.py > /dev/null 2>> logs/cron_error.log
 
-# ── 多资产配置周度观察：每周一 14:40 生成报告与配置建议；成交由人工确认，统一记入投资账户 ──
+# ── 市场观察周报：每周一 14:40 生成市场观察报告并推送 ──
 40 14 * * 1 cd /root/trade-it-easy && flock -n /tmp/etf.lock /root/miniconda/envs/rt/bin/python etf_observe.py > /dev/null 2>> logs/cron_error.log
 
 # ── 跨资产动量：每交易日 10:40 更新账户建议、独立模拟台账并推送 ──

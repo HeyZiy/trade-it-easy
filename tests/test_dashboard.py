@@ -120,8 +120,11 @@ def test_core_and_industry_use_independent_ledgers(tmp_path):
 
 
 
-def test_strategy_positions_carry_last_close_snapshot(tmp_path):
+def test_strategy_positions_carry_t1_close(tmp_path, monkeypatch):
+    from datetime import date
     from src.etf_account import initialize, collect_close
+
+    monkeypatch.setattr("src.etf_account._today", lambda: date(2025, 1, 3))
     path = tmp_path / "data" / "etf_account.json"
     initialize(path, asof="2025-01-01", cash=1000,
                positions=[dict(code="510300", name="核心ETF", count=100, price=3, strategy="core")])

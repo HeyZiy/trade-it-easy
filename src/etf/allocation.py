@@ -1,21 +1,5 @@
 # -*- coding: utf-8 -*-
-"""周度批次——多资产配置观察与再平衡建议。
-
-单动词 interface：run() -> str，完成账户快照 → 再平衡建议 → 周报。
-投资账户台账由用户确认成交记账，报告生成不写入成交。
-
-数据 seam：行情取数经 *_raw 函数进入（函数内懒导入），账户与配置由账户 module
-一次读取。完整报告可用临时账户文件与替代行情 adapter 验证：
-  _raw_market_pe / _raw_treasury_yield_y10 / _raw_erp_percentile  市场估值三件套
-  _raw_valuation_rows    标的级估值行（跟踪指数 PE/股息率）
-  _raw_snapshot          同一批次的生效配置与核心账户快照
-  _raw_trend_bars_ad     唐奇安观察日线（AmazingData 累积复权，主源，批量）
-  _raw_trend_bars        唐奇安观察日线（东财 hfq，备源）
-  _raw_daily_close       补价日线收盘
-  _raw_realtime_prices   缺价实时兜底（批量）
-建议只读账户状态，不写成交。plan.should 用于报告分级，展示单笔偏离达到阈值的建议。
-  估值口径分两层不互相兜底；任何估值不进自动决策——核心仓目标恒等于中性基准。
-"""
+"""多资产配置的市场观察周报与配置参考计算。"""
 
 import logging
 from collections import Counter
@@ -83,15 +67,11 @@ def _raw_realtime_prices(codes):
     return realtime_prices(codes)
 
 
-# ── 周度取数上下文（一次性装配，各节纯渲染）──
+# ── 持仓对照渲染数据 ──
 
 @dataclass(frozen=True)
 class WeekContext:
-    """一次装配的取数快照；渲染节只读此上下文，不再各自发起同主题取数。
-
-    baseline 使用启动时配置，market_pe/y10/erp_pct 单点取齐；
-    alloc 为账户+决策快照（None = 台账不可读，策略参考节渲染跳过文案，不再重算链路）。
-    """
+    """持仓对照所需的配置、持仓及观察数据。"""
     market_pe: Optional[dict]    # get_market_pe()：{pe, pe_pct, ...} 或 None
     y10: Optional[float]         # 10 年期国债收益率（%）
     erp_pct: Optional[float]     # 风险溢价自身近 5 年分位
@@ -99,28 +79,6 @@ class WeekContext:
     baseline: List[AssetAllocation]  # 本批次配置，计算、观察和渲染共同使用
     trends: dict = field(default_factory=dict)  # 标的自身唐奇安20/10观察快照
     valuations: list = field(default_factory=list)  # 持仓表与估值明细共用
-    grouped_targets: bool = False
-
-
-def _build_week_context() -> WeekContext:
-    """先固定账户和配置，再装配行情；计算与渲染均不重新读取配置。"""
-    from src.portfolio_config import allocations, grouped
-
-    config, snapshot = _raw_snapshot()
-    baseline = allocations(config)
-    market_pe = _raw_market_pe()
-    y10 = _raw_treasury_yield_y10()
-    try:
-        erp = _raw_erp_percentile()
-    except Exception:
-        erp = None
-    erp_pct = erp.get("erp_pct") if erp else None
-    equity_etfs = [a for a in baseline if a.asset_type == AssetType.EQUITY]
-    return WeekContext(market_pe=market_pe, y10=y10, erp_pct=erp_pct,
-                       alloc=_compute_allocation(snapshot, baseline), baseline=baseline,
-                       trends=_fetch_trend_observations(baseline),
-                       valuations=_raw_valuation_rows(equity_etfs, y10),
-                       grouped_targets=any(grouped(row) for row in config["core"]))
 
 
 def _fetch_trend_observations(baseline) -> dict:
@@ -184,25 +142,23 @@ def _valuation_cell(row: dict) -> str:
 
 # ── 市场宏观 ──
 
-def _market_overview(ctx: WeekContext) -> str:
-    """市场宏观（未完善）：全市场 PE / 收益率 / 风险溢价，纯数据不给操作建议。"""
-    lines = ["## 市场宏观（未完善）", ""]
+def _market_overview(market_pe, y10, erp_pct) -> str:
+    """展示全市场 PE、国债收益率和风险溢价。"""
+    lines = ["## 市场观察", ""]
 
-    market_pe = ctx.market_pe
     if market_pe:
         pe, pe_pct = market_pe["pe"], market_pe["pe_pct"]
         level = pe_level(pe_pct)
         lines.append(f"- **全市场 PE**：{pe:.1f} 倍 | 近 5 年 **{pe_pct:.0f}%** 分位 →  **{level}**")
         lines.append(f"- **股票内在收益率（1/PE）**：{100/pe:.2f}%")
 
-        y10 = ctx.y10
         if y10:
             spread = 100/pe - y10
             # ERP 自身分位与 PE 分位同窗口可比：PE 分位受窗口锚定影响（含深熊底部则读高），
             # ERP 分位是跨资产口径的独立参照，两者并列展示供互相印证
             erp_note = ""
-            if ctx.erp_pct is not None:
-                erp_note = f"，自身近 5 年 **{ctx.erp_pct:.0f}%** 分位"
+            if erp_pct is not None:
+                erp_note = f"，自身近 5 年 **{erp_pct:.0f}%** 分位"
             spread_note = "承担风险有额外回报" if spread > 0 else "股票还不如国债"
             lines.append(
                 f"- **风险溢价**：{100/pe:.2f}% − 国债 {y10:.2f}% = **{spread:+.2f}%**{erp_note} "
@@ -210,8 +166,8 @@ def _market_overview(ctx: WeekContext) -> str:
             )
     else:
         lines.append("- **全市场 PE**：数据不可用")
-        if ctx.y10:
-            lines.append(f"- **10 年期国债收益率**：{ctx.y10:.2f}%")
+        if y10:
+            lines.append(f"- **10 年期国债收益率**：{y10:.2f}%")
 
     lines.append("")
     return "\n".join(lines)
@@ -374,35 +330,19 @@ def _recommendation_section(alloc: dict) -> str:
 # ── 报告生成（单动词 interface）──
 
 def run() -> str:
-    """生成周报与配置建议，不写入成交记录。
+    """从市场数据生成周报。"""
+    now = datetime.now()
+    market_pe = _raw_market_pe()
+    y10 = _raw_treasury_yield_y10()
+    try:
+        erp = _raw_erp_percentile()
+    except Exception:
+        erp = None
 
-    取数一次装配进 WeekContext，各节纯渲染。
-    """
-    now = datetime.now().strftime("%Y-%m-%d %H:%M")
-
-    ctx = _build_week_context()
-    alloc = ctx.alloc
-
-    sections = [
-        f"# 多资产配置周度观察 — {datetime.now().strftime('%Y-%m-%d')}",
-        "",
-        f"**生成时间**: {now}",
-        "",
-    ]
-
-    if ctx.grouped_targets:
-        sections.append("## 本次建议\n\n配置包含多产品或场外基金，合并配比请查看交易看板。")
-    else:
-        recommendation = (_recommendation_section(alloc) if alloc is not None
-                          else "## 本次建议\n\n持仓数据不可用，暂不生成建议。")
-        sections.append(recommendation)
-        sections.append(_holding_overview(ctx))
-    sections.append(_market_overview(ctx))
-
-    sections.extend([
+    return "\n\n".join((
+        f"# 市场观察周报 — {now:%Y-%m-%d}",
+        f"**生成时间**：{now:%Y-%m-%d %H:%M}",
+        _market_overview(market_pe, y10, erp.get("erp_pct") if erp else None),
         "---",
-        "",
-        "*免责声明：本报告仅供观察参考，不构成投资建议。*",
-    ])
-
-    return "\n\n".join(sections)
+        "*本报告仅供观察参考。*",
+    ))

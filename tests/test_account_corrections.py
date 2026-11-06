@@ -1,4 +1,5 @@
 """现金便捷划转、历史更正及收益口径的回归账例。"""
+from datetime import date
 from uuid import uuid4
 
 import pytest
@@ -7,11 +8,13 @@ from src import etf_account as account
 
 
 @pytest.fixture
-def path(tmp_path):
+def path(tmp_path, monkeypatch):
+    monkeypatch.setattr(account, "_today", lambda: date(2025, 1, 7))
     path = tmp_path / 'etf_account.json'
     account.initialize(path, asof='2025-01-02', cash=1000,
                        positions=[dict(code='588000', count=1000, price=2, strategy='core')],
                        cash_allocations={'core': 1000}, budgets={'core': 1}, targets={'588000': 1})
+    account.collect_close(path, '2025-01-06', lambda *_: {'588000': 2})
     return path
 
 
@@ -109,10 +112,9 @@ def test_edit_rejects_later_overselling_and_stale_revision(path):
     assert path.read_bytes() == before
 
 
-def test_edit_invalidates_nav_and_intraday_quotes_and_old_plans(path):
+def test_edit_invalidates_nav_and_old_plans_but_preserves_close_price(path):
     first = account.record_event(path, payload(path, 'sell', code='588000', qty=100, price=3, fee=1))
     account.collect_close(path, '2025-01-06', lambda *_: {'588000': 3})
-    old = account.account_data(path)
     state = account.load(path)
     state['rotation_signal'] = {'date': '2025-01-06'}
     account._save(path, state)
@@ -120,7 +122,7 @@ def test_edit_invalidates_nav_and_intraday_quotes_and_old_plans(path):
     view = account.account_data(path)
     assert view['history'][-1]['nav'] is None
     assert view['positions'][0]['close'] == 3
-    assert view['quote_revision'] != old['quote_revision']
+    assert view['valuation']['date'] == '2025-01-06'
     assert '更正' in account.load(path)['rotation_signal']['issues']
 
 
@@ -163,6 +165,33 @@ def test_edit_preserves_future_transfer_valuation_and_rejects_conflicting_retry(
     assert account.load(path)['events'][1] == transfer
     with pytest.raises(ValueError, match='内容不一致'):
         account.edit_event(path, {**request, 'amount': 300})
+
+
+def test_edit_replays_same_day_close_and_next_day_availability(path):
+    purchase = account.record_event(path, payload(path, "buy", code="510300", qty=100, price=3, fee=0))
+    transfer = account.record_event(path, payload(path, "assign", from_strategy="core",
+                                                  strategy="rotation", code="510300", qty=100))
+    assert transfer["transfer_price"] == 3
+    account.collect_close(path, "2025-01-06", lambda *_: {"588000": 2, "510300": 4})
+    sale = account.record_event(path, payload(path, "sell", date="2025-01-07", strategy="rotation",
+                                              code="510300", qty=100, price=5, fee=0))
+    account.edit_event(path, edit_payload(path, purchase, price=3.5))
+
+    state = account.load(path)
+    assert state["events"][1:] == [transfer, sale]
+    assert state["events"][0]["id"] == purchase["id"]
+
+    def position_before(event):
+        view = account.event_context(path, {"event_id": event["id"], "revision": account.revision(state)})
+        return next(row for row in view["strategy_positions"] if row["code"] == "510300")
+
+    before_transfer = position_before(transfer)
+    before_sale = position_before(sale)
+    assert (before_transfer["avail_count"], before_transfer["close"]) == (0, 4)
+    assert (before_sale["avail_count"], before_sale["close"]) == (100, 4)
+    after = account.snapshot(state, "2025-01-07")
+    assert after["cash_by_strategy"] == {"core": 650, "rotation": 500, "quality": 0, "unassigned": 0}
+    assert after["strategy_pnl"] == {"core": -50, "rotation": 200, "quality": 0, "unassigned": 0}
 
 
 def test_edit_cannot_cross_neighbor_dates(path):

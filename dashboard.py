@@ -17,8 +17,8 @@ import time
 from src.trade_ledger.ledger import derive, load_trades
 from data_provider.security_names import security_name
 from src.trade_ledger.performance import load_performance, valid_records
-from src.etf_account import FILENAME as ETF_FILENAME, account_data as etf_account_data
-from src.dashboard_quotes import QuoteRefresh, SHANGHAI
+from src.etf_account import FILENAME as ETF_FILENAME, SHANGHAI, account_data as etf_account_data
+from src.dashboard_quotes import QuoteRefresh
 from src.portfolio_config import STRATEGY_NAMES
 
 APP_ROOT = Path(__file__).resolve().parent
@@ -102,7 +102,10 @@ def authorized(header, user, password):
 def account_data(root, filename):
     if filename == ETF_FILENAME:
         path = root / "data" / filename
-        return etf_account_data(path, live_quotes=QUOTES.read(path))
+        refresh = QUOTES.read(path)
+        account = etf_account_data(path)
+        account["quote_refresh"] = refresh if refresh and refresh["date"] == account["valuation_date"] else None
+        return account
     path = root / "data" / filename
     if not path.exists():
         return {"error": "台账文件不存在", "positions": [], "trades": []}
@@ -254,25 +257,21 @@ class Handler(BaseHTTPRequestHandler):
             self.respond(b'{}', "application/json", status=403)
             return
         from src.etf_account import (
-            FILENAME, cash_rebalance, dismiss, edit_event, event_context, record_event, save_fund_position, set_budgets,
+            FILENAME, cash_rebalance, dismiss, edit_event, event_context, lookup_fund_nav, record_event, set_budgets,
         )
         handlers = {"/api/etf/event": record_event, "/api/etf/dismiss": dismiss,
                     "/api/etf/budgets": set_budgets, "/api/etf/event/edit": edit_event,
-                    "/api/etf/event/context": event_context, "/api/etf/fund": save_fund_position,
-                    "/api/etf/cash/rebalance": lambda path, payload: cash_rebalance(path, payload, live_quotes=QUOTES.read(path))}
+                    "/api/etf/event/context": event_context, "/api/etf/fund/nav": lookup_fund_nav,
+                    "/api/etf/cash/rebalance": cash_rebalance}
         from src.portfolio_config import update
         handlers["/api/etf/config"] = update
         if self.path == "/api/etf/refresh":
             try:
                 path = ROOT / "data" / FILENAME
-                account = etf_account_data(path)
-                QUOTES.start(path, account["quote_revision"],
-                             [row["code"] for row in account["positions"]],
-                             datetime.now(SHANGHAI).date().isoformat(),
-                             fund_codes=account["fund_codes"])
+                QUOTES.start(path, datetime.now(SHANGHAI).date())
             except Exception:
-                logging.exception("启动网页行情刷新失败")
-                self.respond(json.dumps({"error": "无法刷新行情，请检查账户数据后重试。"}, ensure_ascii=False).encode(),
+                logging.exception("启动网页估值刷新失败")
+                self.respond(json.dumps({"error": "无法刷新估值，请检查账户数据后重试。"}, ensure_ascii=False).encode(),
                              "application/json; charset=utf-8", status=503)
                 return
             self.respond(b'{"ok":true}', "application/json; charset=utf-8", status=202)
@@ -297,7 +296,7 @@ class Handler(BaseHTTPRequestHandler):
             self.respond(json.dumps({"error": "保存失败，请刷新核对后重试。"}, ensure_ascii=False).encode(),
                          "application/json; charset=utf-8", status=500)
             return
-        self.respond(json.dumps(result if self.path in {"/api/etf/event/context", "/api/etf/cash/rebalance"} else {"ok": True},
+        self.respond(json.dumps(result if self.path in {"/api/etf/event/context", "/api/etf/cash/rebalance", "/api/etf/fund/nav"} else {"ok": True},
                                 ensure_ascii=False).encode(), "application/json; charset=utf-8")
 
     def do_GET(self):

@@ -1,4 +1,5 @@
 from copy import deepcopy
+from datetime import date
 import json
 from pathlib import Path
 from concurrent.futures import ThreadPoolExecutor
@@ -8,12 +9,18 @@ import pytest
 from src import etf_account as wallet, portfolio_config as config
 
 
+@pytest.fixture(autouse=True)
+def account_day(monkeypatch):
+    monkeypatch.setattr(wallet, "_today", lambda: date(2025, 1, 7))
+
+
 @pytest.fixture
 def account(tmp_path):
     path=tmp_path/'etf_account.json'
     wallet.initialize(path,asof='2025-01-03',cash=1000,
                       positions=[dict(code='512010',count=100,price=2,strategy='core')],
                       targets={'512010':.5},budgets={'core':.8,'rotation':.1},cash_allocations={'core':1000})
+    wallet.collect_close(path, '2025-01-06', lambda *_: {'512010': 2})
     return path
 
 
@@ -100,7 +107,7 @@ def test_metadata_changes_take_effect_without_restart(account):
     assert config.allocations(config.load(config.path_for(account)))[0].tracked_index=='000922'
 
 
-def test_grouped_targets_and_manual_funds_keep_broker_values_separate(account):
+def test_grouped_targets_include_fund_once_in_account(account):
     initial = wallet.account_data(account)
     active = config.data(account)
     draft = active["config"]
@@ -117,18 +124,17 @@ def test_grouped_targets_and_manual_funds_keep_broker_values_separate(account):
                                   "qty": 100, "price": 2, "fee": 0, "strategy": "core"})
     wallet.collect_close(account, "2025-01-06", lambda *_: {"512010": 2, "510300": 2})
     broker = wallet.account_data(account)
-    payload = {"code": "512010", "qty": 12.345, "nav": 2, "date": "2025-01-06",
-               "revision": broker["fund_revision"]}
-    wallet.save_fund_position(account, payload)
-    with pytest.raises(ValueError, match="场外持仓已更新"):
-        wallet.save_fund_position(account, payload)
-
+    purchase = {"code": "512010", "qty": 12.345, "nav": 2, "nav_date": "2025-01-06",
+                "side": "fund_buy", "amount": 24.69, "date": "2025-01-06",
+                "revision": broker["revision"], "request_id": "confirmed-fund-1"}
+    wallet.record_event(account, purchase)
     combined = wallet.account_data(account)
-    for key in ("cash", "equity", "pnl", "positions", "history", "trades", "revision"):
-        assert combined[key] == broker[key]
+    assert combined["cash"] == broker["cash"] - 24.69
     assert combined["equity"] == initial["equity"]
+    assert combined["positions"] == broker["positions"]
+    assert combined["fund_positions"]["512010"]["qty"] == 12.345
     core = combined["strategies"][0]
-    assert core["allocation_budget"] == 984.69
+    assert core["allocation_budget"] == 960
     group = next(row for row in core["allocation_groups"] if row["id"] == "512010")
     assert group["name"] == "医药配置"
     assert group["market_value"] == 424.69
@@ -136,10 +142,6 @@ def test_grouped_targets_and_manual_funds_keep_broker_values_separate(account):
         ("listed", "512010"), ("listed", "510300"), ("fund", "512010")]
     assert not core["suggestions"]
     assert wallet.strategy_snapshot(account)[1] is None
-
-    wallet.save_fund_position(account, {**payload, "revision": combined["fund_revision"], "qty": 0})
-    assert wallet.account_data(account)["strategies"][0]["external_fund_value"] == 0
-
 
 def test_fund_only_target_remains_in_config_after_position_is_removed(account):
     active = config.data(account)
@@ -149,12 +151,14 @@ def test_fund_only_target_remains_in_config_after_position_is_removed(account):
     config.update(account, {"revision": active["revision"], "config": draft})
     assert [row.code for row in config.allocations(draft)] == ["CASH"]
     view = wallet.account_data(account)
-    payload = {"code": "012345", "qty": 100.5, "nav": 1.2, "date": "2025-01-06",
-               "revision": view["fund_revision"]}
-    wallet.save_fund_position(account, payload)
-    core = wallet.account_data(account)["strategies"][0]
-    assert core["allocation_groups"][0]["market_value"] == 120.6
-    wallet.save_fund_position(account, {**payload, "revision": wallet.account_data(account)["fund_revision"], "qty": 0})
+    purchase = {"code": "012345", "qty": 100.5, "nav": 1.2, "nav_date": "2025-01-06",
+                "side": "fund_buy", "amount": 120.6, "date": "2025-01-06",
+                "revision": view["revision"], "request_id": "fund-only-buy"}
+    wallet.record_event(account, purchase)
+    view = wallet.account_data(account)
+    assert view["strategies"][0]["allocation_groups"][0]["market_value"] == 120.6
+    wallet.record_event(account, {**purchase, "side": "fund_redeem", "request_id": "fund-only-redeem",
+                                  "revision": view["revision"]})
     group = wallet.account_data(account)["strategies"][0]["allocation_groups"][0]
     assert group["id"] == "FUND:012345" and group["market_value"] == 0
     assert group["weight"] == .5
@@ -168,7 +172,8 @@ def test_legacy_migration_is_exact_and_never_overwrites_new_config(tmp_path):
     path.write_text(json.dumps(legacy),encoding='utf-8')
     c=config.migrate(path)
     assert c['core'][0]['weight']==.123456789
-    assert 'targets' not in json.loads(path.read_text())
+    assert 'targets' not in json.loads(path.read_text(encoding='utf-8'))
+    wallet.collect_close(path, '2025-01-06', lambda *_: {'512010': 2})
     before=wallet.account_data(path)
     raw=path.read_bytes();config.migrate(path)
     assert path.read_bytes()==raw

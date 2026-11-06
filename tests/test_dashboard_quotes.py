@@ -1,237 +1,254 @@
-"""主动行情刷新只影响展示估值，保留台账、资金流及收盘曲线口径。"""
+"""T−1 收盘估值及看板主动补价的回归测试。"""
 
-from datetime import datetime, timedelta
 import base64
+from datetime import date, datetime
 from http.server import ThreadingHTTPServer
 import json
 import threading
 import time
 import urllib.error
 import urllib.request
+from types import SimpleNamespace
 from uuid import uuid4
 
 import pytest
 
 import dashboard
-from src.dashboard_quotes import QuoteRefresh, SHANGHAI
-from src.etf_account import account_data, collect_close, initialize, record_event, save_fund_position
+from src import etf_account as wallet, trading_calendar
+from src.dashboard_quotes import QuoteRefresh
+from src.trade_ledger.closing_prices import ClosingPrices
 
-
-def basic(user, password):
-    return 'Basic ' + base64.b64encode(f'{user}:{password}'.encode()).decode()
+TODAY = date(2025, 1, 7)
+PRICE_DAY = "2025-01-06"
 
 
 @pytest.fixture
 def account(tmp_path, monkeypatch):
-    today = datetime.now(SHANGHAI).date()
-    monkeypatch.setattr('src.etf_account._today', lambda: today)
-    path = tmp_path / 'data' / 'etf_account.json'
-    initialize(path, asof=(today - timedelta(days=3)).isoformat(), cash=1000,
-               positions=[dict(code='588000', count=1000, price=2, strategy='core'),
-                          dict(code='510300', count=100, price=3, strategy='rotation')],
-               targets={'588000': .5}, budgets={'core': .8, 'rotation': .2},
-               cash_allocations={'core': 1000})
-    return path, today.isoformat()
+    monkeypatch.setattr(wallet, "_today", lambda: TODAY)
+    path = tmp_path / "data" / "etf_account.json"
+    wallet.initialize(path, asof="2025-01-02", cash=10000,
+                      positions=[dict(code="588000", count=1000, price=2, strategy="core")],
+                      targets={"588000": .6, "159915": .4}, budgets={"core": 1},
+                      cash_allocations={"core": 10000})
+    wallet.collect_close(path, PRICE_DAY, lambda *_: {"588000": 3})
+    return path
 
 
-def quotes_for(path, day, prices):
-    return {'revision': account_data(path)['quote_revision'], 'day': day, 'running': False,
-            'quotes': {code: {'price': price, 'fetched_at': day + 'T10:00:00+08:00'}
-                       for code, price in prices.items()},
-            'missing': [code for code in ('588000', '510300') if code not in prices],
-            'fetched_at': day + 'T10:00:00+08:00', 'error': None}
+def buy(path, code="510300", price=4):
+    return wallet.record_event(path, dict(
+        request_id=str(uuid4()), revision=wallet.revision(wallet.load(path)),
+        date=TODAY.isoformat(), side="buy", strategy="core", code=code, qty=100, price=price, fee=1,
+    ))
 
 
-def wait_finished(cache, path):
+def wait_finished(refresh, path):
     deadline = time.monotonic() + 5
     while time.monotonic() < deadline:
-        state = cache.read(path)
-        if not state.get('running') and not state.get('funds', {}).get('running'):
+        state = refresh.read(path)
+        if not state.get("running") and not state.get("funds", {}).get("running"):
             return state
         time.sleep(.01)
-    pytest.fail('后台取价未结束')
+    pytest.fail("后台刷新未结束")
 
 
-def test_quotes_revalue_account_and_strategies_without_changing_close_or_signals(account):
-    path, day = account
-    yesterday = (datetime.fromisoformat(day).date() - timedelta(days=1)).isoformat()
-    collect_close(path, yesterday, lambda *_: {'588000': 2.1, '510300': 3.1})
-    before = account_data(path)
-    original = path.read_bytes()
-    view = account_data(path, live_quotes=quotes_for(path, day, {'588000': 3, '510300': 3.1}))
-    assert view['equity'] == 4310
-    assert view['cash'] == before['cash'] == 1000
-    assert view['pnl'] == 1010
-    positions = {row['code']: row for row in view['positions']}
-    assert positions['588000']['market_value'] == 3000
-    assert not positions['588000']['quote_missing']
-    assert positions['510300']['close'] == 3.1
-    assert not positions['510300']['quote_missing']
-    assert view['strategies'][0]['pnl'] == 1000
-    assert view['strategies'][1]['pnl'] == 10
-    for key in ('revision', 'history', 'performance', 'valuation_date'):
-        assert view[key] == before[key]
-    assert [s['suggestions'] for s in view['strategies']] == [s['suggestions'] for s in before['strategies']]
-    assert path.read_bytes() == original
+def test_valuation_day_uses_confirmed_calendar_for_weekends_and_holidays(monkeypatch):
+    monkeypatch.setattr(wallet, "latest_trading_day_on_or_before", trading_calendar.latest_trading_day_on_or_before)
+    dates = [date(2025, 1, 24), date(2025, 1, 27), date(2025, 2, 5)]
+    monkeypatch.setattr(trading_calendar, "get_trading_dates",
+                        lambda start, end: [day for day in dates if start <= day <= end])
+    assert wallet.valuation_day(date(2025, 1, 25)) == "2025-01-24"
+    assert wallet.valuation_day(date(2025, 2, 5)) == "2025-01-27"
+    assert wallet.valuation_day(date(2025, 2, 6)) == "2025-02-05"
+    monkeypatch.setattr(trading_calendar, "get_trading_dates", lambda *_: [])
+    assert wallet.valuation_day(TODAY) is None
 
 
-def test_deposit_is_not_profit_and_old_quotes_expire_on_account_change(account):
-    path, day = account
-    old_quotes = quotes_for(path, day, {'588000': 3, '510300': 3})
-    record_event(path, dict(request_id=str(uuid4()), revision=account_data(path)['revision'],
-                            date=day, side='deposit', strategy='core', amount=500))
-    stale = account_data(path, live_quotes=old_quotes)
-    assert not stale['quote_refresh']['applicable']
-    assert stale['equity'] == 3800
-    fresh = account_data(path, live_quotes=quotes_for(path, day, {'588000': 3, '510300': 3}))
-    assert fresh['cash'] == 1500
-    assert fresh['pnl'] == 1000
-    assert fresh['strategies'][0]['pnl'] == 1000
+def test_calendar_recovers_after_temporary_failure(monkeypatch):
+    import sys
+
+    import pandas as pd
+
+    now = [0]
+
+    def download():
+        if now[0] == 0:
+            raise TimeoutError("calendar unavailable")
+        return pd.DataFrame({"trade_date": [date.fromisoformat(PRICE_DAY)]})
+
+    monkeypatch.setitem(sys.modules, "akshare", SimpleNamespace(tool_trade_date_hist_sina=download))
+    monkeypatch.setattr(trading_calendar, "monotonic", lambda: now[0])
+    monkeypatch.setattr(trading_calendar, "_refresh_after", float("-inf"))
+    monkeypatch.setattr(trading_calendar, "_trading_dates", [])
+    monkeypatch.setattr(wallet, "latest_trading_day_on_or_before", trading_calendar.latest_trading_day_on_or_before)
+    assert wallet.valuation_day(TODAY) is None
+    now[0] = 59
+    assert wallet.valuation_day(TODAY) is None
+    now[0] = 60
+    assert wallet.valuation_day(TODAY) == PRICE_DAY
 
 
-def test_old_day_and_invalid_prices_never_override_saved_estimates(account):
-    path, day = account
-    saved = account_data(path)
-    stale = quotes_for(path, '2000-01-01', {'588000': 99})
-    view = account_data(path, live_quotes=stale)
-    assert not view['quote_refresh']['applicable']
-    assert view['equity'] == saved['equity']
-    invalid = quotes_for(path, day, {'588000': float('nan'), '510300': -1})
-    view = account_data(path, live_quotes=invalid)
-    assert view['equity'] == saved['equity']
-    assert not view['quote_refresh']['estimated']
-    assert all(row['quote_missing'] for row in view['positions'])
+def test_scheduled_report_collects_targets_and_current_holdings_for_valuation(account, monkeypatch):
+    import portfolio_report as entry
 
-
-def test_new_close_invalidates_earlier_intraday_quotes(account):
-    path, day = account
-    cached = quotes_for(path, day, {'588000': 3, '510300': 4})
-    before = account_data(path)
-    collect_close(path, day, lambda *_: {'588000': 3.5, '510300': 4.5})
-    view = account_data(path, live_quotes=cached)
-    assert view['revision'] == before['revision']
-    assert view['quote_revision'] != before['quote_revision']
-    assert not view['quote_refresh']['applicable']
-    assert view['equity'] == 4950
-    assert view['positions'][0]['close'] == 3.5
-
-
-def test_background_refresh_coalesces_requests_and_preserves_failed_old_quotes(account, monkeypatch):
-    path, day = account
-    cache = QuoteRefresh()
-    started, release = threading.Event(), threading.Event()
+    buy(account)
+    days = [date.fromisoformat(PRICE_DAY), TODAY]
+    monkeypatch.setattr(entry, "get_trading_dates", lambda start, end: [d for d in days if start <= d <= end])
+    monkeypatch.setattr("src.account_sources.all_sources", lambda: [
+        SimpleNamespace(ledger_path=str(account), label="投资账户", benchmark={}),
+    ])
     calls = []
 
-    def fetch(codes):
-        calls.append(codes)
-        started.set()
-        assert release.wait(5)
-        return {'588000': 3, '510300': 4}
+    def fetch(self, codes, day):
+        calls.append((codes, day))
+        return {code: 3 for code in codes}
 
-    monkeypatch.setattr('data_provider.realtime_prices', fetch)
-    rev = account_data(path)['quote_revision']
-    cache.start(path, rev, ['588000', '510300', '588000'], day)
-    assert started.wait(5)
-    assert cache.read(path)['running']
-    cache.start(path, rev, ['588000'], day)
-    release.set()
-    first = wait_finished(cache, path)
-    assert calls == [['510300', '588000']]
-    assert not first['missing']
-    cache.start(path, rev, ['588000', '510300'], day)
-    assert len(calls) == 1  # 完成后的短期重复点击也合并。
-
-    cache._last_start -= 16
-    monkeypatch.setattr('data_provider.realtime_prices', lambda _: {'588000': 3.5})
-    cache.start(path, rev, ['588000', '510300'], day)
-    second = wait_finished(cache, path)
-    assert second['quotes']['588000'] == first['quotes']['588000']
-    assert second['quotes']['510300'] == first['quotes']['510300']
-    assert second['missing'] == ['510300']
-    assert cache.read(path.with_name('other.json')) == {}
+    monkeypatch.setattr(ClosingPrices, "close_prices", fetch)
+    report, errors = entry.run(now=datetime(2025, 1, 7, 8, 30, tzinfo=entry.SHANGHAI), backfill=True)
+    assert errors == 0 and "总资产 12,899.00 元" in report
+    assert calls == [(["588000"], PRICE_DAY), (["159915", "510300"], PRICE_DAY)]
+    state = wallet.load(account)
+    assert state["records"][-1]["closing_prices"] == {"588000": 3}
+    assert state["valuation_closes"]["prices"]["510300"] == 3
 
 
-def test_fetch_failure_finishes_job_and_keeps_saved_valuation(account, monkeypatch):
-    path, day = account
-
-    def fail(_):
-        raise RuntimeError('offline')
-
-    monkeypatch.setattr('data_provider.realtime_prices', fail)
-    cache = QuoteRefresh()
-    cache.start(path, account_data(path)['quote_revision'], ['588000', '510300'], day)
-    state = wait_finished(cache, path)
-    assert state['error']
-    assert state['missing'] == ['510300', '588000']
-    assert not state['quotes']
-    assert account_data(path, live_quotes=state)['equity'] == account_data(path)['equity']
+def test_new_holding_is_pending_even_with_trade_price_and_today_close(account):
+    buy(account)
+    wallet.collect_close(account, TODAY.isoformat(), lambda *_: {"588000": 5, "510300": 6})
+    view = wallet.account_data(account)
+    assert view["valuation"] == {"date": PRICE_DAY, "missing": ["510300"]}
+    assert {row["code"]: row["market_value"] for row in view["positions"]} == {
+        "588000": 3000, "510300": None,
+    }
+    assert view["cash"] == 9599 and view["equity"] is None
+    assert not view["strategies"][0]["suggestions"]
+    with pytest.raises(ValueError, match="待估值"):
+        wallet.cash_rebalance(account, {"revision": view["revision"]})
 
 
-def test_refresh_api_is_protected_and_overview_delivers_estimates(account, monkeypatch):
-    path, day = account
-    monkeypatch.setattr(dashboard, 'ROOT', path.parent.parent)
-    monkeypatch.setattr(dashboard, 'QUOTES', QuoteRefresh())
-    monkeypatch.setattr(dashboard, 'AUTH_DELAY', 0)
-    monkeypatch.setenv('TRADE_DASHBOARD_PASSWORD', 'secret')
-    monkeypatch.setattr('data_provider.realtime_prices', lambda _: {'588000': 3})
-    original = path.read_bytes()
-    server = ThreadingHTTPServer(('127.0.0.1', 0), dashboard.Handler)
-    threading.Thread(target=server.serve_forever, daemon=True).start()
-    base = f'http://127.0.0.1:{server.server_port}'
-    headers = {'Content-Type': 'application/json'}
+def test_same_date_refresh_uses_latest_account_and_keeps_partial_success(account, monkeypatch):
+    entered, released = threading.Event(), threading.Event()
+    calls = []
+
+    def fetch(self, codes, day):
+        calls.append((codes, day))
+        if len(calls) == 1:
+            entered.set()
+            assert released.wait(5)
+            return {"159915": 2, "510300": float("nan")}
+        return {"510300": 3.5}
+
+    monkeypatch.setattr(ClosingPrices, "close_prices", fetch)
+    refresh = QuoteRefresh()
+    refresh.start(account, TODAY)
     try:
-        for expected, additions in ((401, {}), (403, {'Authorization': basic('trader', 'secret')})):
-            with pytest.raises(urllib.error.HTTPError) as denied:
-                urllib.request.urlopen(urllib.request.Request(base + '/api/etf/refresh', data=b'{}',
-                                                              headers=headers | additions))
-            assert denied.value.code == expected
-        headers.update(Authorization=basic('trader', 'secret'), **{'X-Trade-Request': 'dashboard'})
-        with urllib.request.urlopen(urllib.request.Request(base + '/api/etf/refresh', data=b'{}', headers=headers)) as response:
+        assert entered.wait(5)
+        refresh.start(account, TODAY)
+        buy(account)
+        before = wallet.account_data(account)
+    finally:
+        released.set()
+    assert wait_finished(refresh, account)["error"] is None
+    assert calls == [(["159915"], PRICE_DAY)]
+    assert wallet.account_data(account)["valuation"]["missing"] == ["510300"]
+    refresh.start(account, TODAY)
+    assert wait_finished(refresh, account)["error"] is None
+    assert calls[-1] == (["510300"], PRICE_DAY)
+    assert len(calls) == 2
+
+    view = wallet.account_data(account)
+    assert view["equity"] == 12949
+    assert view["valuation"] == {"date": PRICE_DAY, "missing": []}
+    for key in ("cash", "history", "trades", "revision"):
+        assert view[key] == before[key]
+    assert {item["code"]: item["price"] for item in view["strategies"][0]["suggestions"]} == {
+        "588000": 3, "159915": 2,
+    }
+    assert all(item["price_date"] == PRICE_DAY for item in view["strategies"][0]["suggestions"])
+    assert wallet.cash_rebalance(account, {"revision": view["revision"]})["valuation"] == view["valuation"]
+    refresh.start(account, TODAY)
+    assert len(calls) == 2
+
+
+def test_target_missing_only_blocks_that_reference(account):
+    view = wallet.account_data(account)
+    core = view["strategies"][0]
+    assert view["equity"] == 13000 and core["allocation_budget"] == 13000
+    groups = {row["id"]: row for row in core["allocation_groups"]}
+    assert groups["159915"]["reference_price_missing"]
+    assert groups["159915"]["market_value"] == 0 and groups["159915"]["weight"] == .4
+    assert not groups["588000"]["reference_price_missing"]
+    assert [item["code"] for item in core["suggestions"]] == ["588000"]
+    assert wallet.cash_rebalance(account, {"revision": view["revision"]})["valuation"]["date"] == PRICE_DAY
+
+
+def test_refresh_api_keeps_t1_and_updates_fund_nav_independently(account, monkeypatch):
+    buy(account)
+    for code in ("000051", "000123"):
+        wallet.record_event(account, dict(request_id=str(uuid4()), revision=wallet.revision(wallet.load(account)),
+                                          date=TODAY.isoformat(), side="fund_buy", code=code,
+                                          qty=123.45, amount=185.18, nav=1.5, nav_date=PRICE_DAY))
+    before = wallet.account_data(account)
+    fetches = []
+
+    def fetch_close(self, codes, day):
+        fetches.append((codes, day))
+        return {"159915": 2}
+
+    def fetch_fund(code, through):
+        assert through == TODAY.isoformat()
+        if code == "000051":
+            return through, 1.6
+        raise TimeoutError("test fund unavailable")
+
+    class TestClock(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return cls(2025, 1, 7, 10, tzinfo=tz)
+
+    monkeypatch.setattr(ClosingPrices, "close_prices", fetch_close)
+    monkeypatch.setattr("data_provider.fund_nav.latest_fund_nav", fetch_fund)
+    monkeypatch.setattr(dashboard, "datetime", TestClock)
+    monkeypatch.setattr(dashboard, "ROOT", account.parent.parent)
+    monkeypatch.setattr(dashboard, "QUOTES", QuoteRefresh())
+    monkeypatch.setattr(dashboard, "AUTH_DELAY", 0)
+    monkeypatch.setenv("TRADE_DASHBOARD_USER", "test")
+    monkeypatch.setenv("TRADE_DASHBOARD_PASSWORD", "local-test-password")
+    server = ThreadingHTTPServer(("127.0.0.1", 0), dashboard.Handler)
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    base = f"http://127.0.0.1:{server.server_port}"
+    auth = base64.b64encode(b"test:local-test-password").decode()
+    headers = {"Authorization": f"Basic {auth}", "Content-Type": "application/json"}
+    try:
+        for request_headers, status in (({}, 401), (headers, 403)):
+            with pytest.raises(urllib.error.HTTPError) as error:
+                urllib.request.urlopen(urllib.request.Request(base + "/api/etf/refresh", b"{}", request_headers))
+            assert error.value.code == status
+        write_headers = {**headers, "X-Trade-Request": "dashboard"}
+        nav_request = urllib.request.Request(base + "/api/etf/fund/nav",
+            json.dumps({"code": "000051", "date": TODAY.isoformat()}).encode(), write_headers)
+        with urllib.request.urlopen(nav_request) as response:
+            assert json.load(response) == {"date": TODAY.isoformat(), "nav": 1.6}
+        with urllib.request.urlopen(urllib.request.Request(base + "/api/etf/refresh", b"{}", write_headers)) as response:
             assert response.status == 202
-        wait_finished(dashboard.QUOTES, path)
-        with urllib.request.urlopen(urllib.request.Request(base + '/api/overview', headers=headers)) as response:
-            result = json.loads(response.read())
-        assert result['accounts'][0]['equity'] == 3300
-        assert result['accounts'][0]['quote_refresh']['missing'] == ['510300']
-        assert result['strategies'][0]['invested'] == 2000
-        assert path.read_bytes() == original
+        wait_finished(dashboard.QUOTES, account)
+        with urllib.request.urlopen(urllib.request.Request(base + "/api/overview", headers=headers)) as response:
+            result = json.load(response)
     finally:
         server.shutdown()
         server.server_close()
-
-
-def test_dashboard_refresh_updates_fund_nav_independently_of_listed_quotes(account, monkeypatch):
-    path, day = account
-    day_before = (datetime.fromisoformat(day) - timedelta(days=1)).date().isoformat()
-    before = account_data(path)
-    for code in ("000051", "000123"):
-        save_fund_position(path, {"revision": account_data(path)["fund_revision"],
-                                  "code": code, "qty": 123.45, "nav": 1.5, "date": day_before})
-    monkeypatch.setattr("data_provider.realtime_prices", lambda _: {"588000": 3})
-
-    def fetch_fund(code, through):
-        assert through == day
-        if code == "000051":
-            return day, 1.6
-        raise TimeoutError("test fund unavailable")
-
-    monkeypatch.setattr("data_provider.fund_nav.latest_fund_nav", fetch_fund)
-    cache = QuoteRefresh()
-    core = account_data(path)
-    cache.start(path, core["quote_revision"], ["588000", "510300"], day, fund_codes=core["fund_codes"])
-    result = account_data(path, live_quotes=wait_finished(cache, path))
-    assert result["quote_refresh"]["missing"] == ["510300"]
-    assert result["quote_refresh"]["funds"] == {
+    assert fetches == [(["159915", "510300"], PRICE_DAY)]
+    overview, = result["accounts"]
+    assert overview["equity"] is None and overview["valuation"]["missing"] == ["510300"]
+    assert overview["quote_refresh"]["funds"] == {
         "running": False, "updated": ["000051"], "unchanged": [], "failed": ["000123"],
     }
-    for key in ("cash", "equity", "history", "trades", "revision", "quote_revision"):
-        assert result[key] == before[key]
-    assert [(r["code"], r["count"], r["market_value"]) for r in result["positions"]] == [
-        (r["code"], r["count"], r["market_value"]) for r in before["positions"]
-    ]
-    groups = {row["id"]: row for row in result["strategies"][0]["allocation_groups"]}
+    for key in ("cash", "history", "trades", "revision"):
+        assert overview[key] == before[key]
+    core = next(row for row in result["strategies"] if row["id"] == "core")
+    groups = {row["id"]: row for row in core["allocation_groups"]}
     assert groups["outside-fund:000051"]["market_value"] == 197.52
-    assert groups["outside-fund:000123"]["products"][0]["date"] == day_before
+    assert groups["outside-fund:000051"]["products"][0]["date"] == TODAY.isoformat()
+    assert groups["outside-fund:000123"]["products"][0]["date"] == PRICE_DAY
 
 
 def test_fund_nav_source_selects_latest_valid_unit_nav_at_cutoff(monkeypatch):

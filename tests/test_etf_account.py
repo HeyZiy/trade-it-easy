@@ -1,3 +1,4 @@
+from datetime import date, datetime
 import json
 import threading
 import urllib.error
@@ -10,14 +11,18 @@ import pytest
 from src.etf_account import account_data, collect_close, initialize, load, record_event, revision, dismiss
 
 
-@pytest.fixture
-def account(tmp_path, monkeypatch):
-    from datetime import date
+@pytest.fixture(autouse=True)
+def account_day(monkeypatch):
     monkeypatch.setattr('src.etf_account._today', lambda: date(2025, 1, 7))
+
+
+@pytest.fixture
+def account(tmp_path):
     path = tmp_path / 'data' / 'etf_account.json'
     initialize(path, asof='2025-01-04', cash=1000,
                positions=[dict(code='588000', name='ETF', count=1000, price=2, strategy='core')],
                targets={'588000': .4}, budgets={'core':1}, cash_allocations={'core':1000})
+    collect_close(path, '2025-01-06', lambda *_: {'588000': 2})
     return path
 
 
@@ -217,9 +222,9 @@ def test_daily_report_refreshes_fund_nav_once_and_preserves_backfill_boundary(ac
     from types import SimpleNamespace
 
     import portfolio_report as entry
-    from src.etf_account import save_fund_position
 
     target = date(2025, 1, 7)
+    now = datetime(2025, 1, 8, 8, 30, tzinfo=entry.SHANGHAI)
     days = [date(2025, 1, 6), target]
     monkeypatch.setattr("src.account_sources.all_sources", lambda: [
         SimpleNamespace(ledger_path=str(account), label="投资账户", benchmark={}),
@@ -227,8 +232,8 @@ def test_daily_report_refreshes_fund_nav_once_and_preserves_backfill_boundary(ac
     monkeypatch.setattr(entry, "closed_date", lambda _: target)
     monkeypatch.setattr(entry, "get_trading_dates", lambda start, end: [d for d in days if start <= d <= end])
     monkeypatch.setattr(entry.ClosingPrices, "close_prices", lambda self, codes, day: {c: 2 for c in codes})
-    save_fund_position(account, {"revision": account_data(account)["fund_revision"],
-                                 "code": "000051", "qty": 100.5, "nav": 1.2, "date": "2025-01-06"})
+    record_event(account, event(account, "fund_buy", code="000051", qty=100.5,
+                                amount=120.6, nav=1.2, nav_date="2025-01-06"))
     calls = []
 
     def fetch_fund(code, through):
@@ -236,43 +241,94 @@ def test_daily_report_refreshes_fund_nav_once_and_preserves_backfill_boundary(ac
         return through, 1.3
 
     monkeypatch.setattr("data_provider.fund_nav.latest_fund_nav", fetch_fund)
-    assert entry.run(asof="2025-01-06")[1] == 0
-    assert entry.run(backfill=True, dry_run=True)[1] == 0
+    assert entry.run(now=now, asof="2025-01-06")[1] == 0
+    assert entry.run(now=now, backfill=True, dry_run=True)[1] == 0
     assert not calls
-    assert entry.run(backfill=True)[1] == 0
-    assert calls == [("000051", "2025-01-07")]
-    assert load(account)["fund_positions"]["000051"]["market_value"] == 130.65
-    assert entry.run(backfill=True)[1] == 0
+    assert entry.run(now=now, backfill=True)[1] == 0
+    assert calls == [("000051", "2025-01-08")]
+    assert load(account)["fund_navs"]["000051"] == {"2025-01-08": 1.3}
+    assert entry.run(now=now, backfill=True)[1] == 0
     assert len(calls) == 1
 
 
-def test_fund_refresh_uses_latest_shares_and_keeps_same_date_manual_correction(account, monkeypatch):
-    from src.etf_account import refresh_fund_navs, save_fund_position
-
-    def save_mark(code, qty, nav, day):
-        save_fund_position(account, {"revision": account_data(account)["fund_revision"],
-                                     "code": code, "qty": qty, "nav": nav, "date": day})
+def test_fund_refresh_uses_latest_shares_and_keeps_same_date_confirmation(account, monkeypatch):
+    from src.etf_account import refresh_fund_navs
 
     for code in ("000051", "000123", "000124"):
-        save_mark(code, 100, 1.2, "2025-01-06")
+        record_event(account, event(account, "fund_buy", code=code, qty=100, amount=120,
+                                    nav=1.2, nav_date="2025-01-06"))
 
     def fetch_fund(code, through):
         if code == "000051":
-            save_mark(code, 120.5, 1.2, "2025-01-06")
+            record_event(account, event(account, "fund_redeem", code=code, qty=.5, amount=.6, date=through))
         elif code == "000123":
-            save_mark(code, 100, 1.31, through)
+            record_event(account, event(account, "fund_buy", code=code, qty=1, amount=1.31,
+                                        nav=1.31, nav_date=through, date=through))
         else:
-            save_mark(code, 0, None, None)
+            record_event(account, event(account, "fund_redeem", code=code, qty=100, amount=120, date=through))
         return through, 1.3
 
     monkeypatch.setattr("data_provider.fund_nav.latest_fund_nav", fetch_fund)
     result = refresh_fund_navs(account, "2025-01-07")
     assert result == {"updated": ["000051"], "unchanged": ["000123", "000124"], "failed": []}
-    positions = load(account)["fund_positions"]
-    assert positions["000051"]["market_value"] == 156.65
-    assert positions["000051"]["qty"] == 120.5
+    positions = account_data(account)["fund_positions"]
+    assert positions["000051"]["market_value"] == 129.35
+    assert positions["000051"]["qty"] == 99.5
     assert positions["000123"]["nav"] == 1.31
     assert "000124" not in positions
+
+
+def test_confirmed_fund_trades_use_core_cash_and_are_replayed_on_edit(account, monkeypatch):
+    from src import etf_account as wallet
+
+    request = event(account, "fund_buy", code="000051", qty=50.025, amount=100.05, date="2025-01-07")
+    buy = record_event(account, request)
+    assert record_event(account, request) == buy
+    pending = account_data(account)
+    assert pending["cash_by_strategy"]["core"] == 899.95
+    assert pending["fund_positions"]["000051"]["market_value"] is None
+    assert pending["equity"] is None and pending["valuation"]["missing_funds"] == ["000051"]
+
+    monkeypatch.setattr("data_provider.fund_nav.latest_fund_nav", lambda code, day: (day, 2.5))
+    assert wallet.refresh_fund_navs(account, "2025-01-07")["updated"] == ["000051"]
+    valued = account_data(account)
+    assert valued["equity"] == 3025.01
+    assert valued["holdings_by_kind"]["fund"] == 125.06
+    assert valued["strategies"][0]["invested"] == 2125.06
+    assert valued["strategies"][0]["allocation_budget"] == valued["equity"]
+    assert valued["net_contributed"] == 3000
+    close = collect_close(account, "2025-01-07", lambda *_: {"588000": 2})["records"][-1]
+    assert close["nav"] == pytest.approx(3025.01 / 3000)
+    assert wallet.cash_rebalance(account, {"revision": valued["revision"]})["rows"][0]["deviation"] == 0
+
+    with pytest.raises(ValueError, match="现金不足"):
+        record_event(account, event(account, "fund_buy", date="2025-01-07", code="000051", qty=100, amount=1000))
+    with pytest.raises(ValueError, match="超过已确认持仓"):
+        record_event(account, event(account, "fund_redeem", date="2025-01-07", code="000051", qty=51, amount=50))
+
+    sell = record_event(account, event(account, "fund_redeem", date="2025-01-07", code="000051", qty=.025, amount=.05))
+    view = account_data(account)
+    assert view["fund_positions"]["000051"]["qty"] == 50
+    assert view["cash_by_strategy"]["core"] == 900
+    assert view["equity"] == 3025
+    edit = {**request, "event_id": buy["id"], "revision": view["revision"], "request_id": str(uuid4()), "qty": .01}
+    with pytest.raises(ValueError, match="第2笔"):
+        wallet.edit_event(account, edit)
+    assert wallet.load(account)["events"] == [buy, sell]
+    wallet.edit_event(account, {**edit, "qty": 50.025, "amount": 99.05})
+    assert account_data(account)["cash"] == 901
+
+
+def test_old_fund_snapshot_is_excluded_from_account_ledger(account):
+    from src import etf_account as wallet
+
+    state = load(account)
+    state["fund_positions"] = {"000051": {"code": "000051", "qty": 100, "nav": 1.3,
+                                           "date": "2025-01-06", "market_value": 130}}
+    wallet._save(account, state)
+    view = account_data(account)
+    assert view["cash"] == 1000 and view["equity"] == 3000
+    assert view["fund_positions"] == {} and "fund" not in view["holdings_by_kind"]
 
 
 def test_core_cron_can_only_recommend_after_initialization(account, monkeypatch):
@@ -320,21 +376,19 @@ def test_gap_amount_is_separate_from_rounded_trade_value(account):
     assert item['gap_amount'] == 796
     assert item['qty'] == 300
     assert item['amount'] == 600
-    assert item['price_date'] == '2025-01-04'
+    assert item['price_date'] == '2025-01-06'
 
 
 def test_stale_or_incomplete_prices_hide_reference_shares(account, monkeypatch):
-    from datetime import date
     monkeypatch.setattr('src.etf_account._today', lambda: date(2025, 1, 20))
-    item = account_data(account)['strategies'][0]['suggestions'][0]
-    assert item['gap_amount'] == 800
-    assert item['qty'] is None and item['amount'] is None
-    assert '超过7天' in item['price_issue']
+    view = account_data(account)
+    assert view['equity'] is None and not view['strategies'][0]['suggestions']
+    assert view['valuation'] == {'date': '2025-01-17', 'missing': ['588000']}
     monkeypatch.setattr('src.etf_account._today', lambda: date(2025, 1, 7))
     collect_close(account, '2025-01-06', lambda *_: {})
-    item = account_data(account)['strategies'][0]['suggestions'][0]
-    assert item['qty'] is None
-    assert '不完整' in item['price_issue']
+    view = account_data(account)
+    assert view['equity'] is None and not view['strategies'][0]['suggestions']
+    assert view['valuation'] == {'date': '2025-01-06', 'missing': ['588000']}
 
 
 @pytest.mark.parametrize('targets,expected', [
@@ -346,6 +400,7 @@ def test_buy_suggestions_do_not_treat_projected_sales_as_actual_cash(account, ta
     initialize(path, asof='2025-01-04', cash=0,
                positions=[dict(code='588000', name='ETF1', count=1000, price=2, strategy='core'),
                           dict(code='510300', name='ETF2', count=100, price=2, strategy='core')], targets=targets, budgets={'core':1})
+    collect_close(path, '2025-01-06', lambda codes, _: dict.fromkeys(codes, 2))
     view = account_data(path)
     buy = next(r for r in view['strategies'][0]['suggestions'] if r['side'] == 'buy')
     assert expected in buy['cash_note']
@@ -356,6 +411,7 @@ def test_unknown_budgets_and_positions_are_not_assigned_automatically(tmp_path):
     path = tmp_path / 'etf_account.json'
     initialize(path, asof='2025-01-04', cash=1000,
                positions=[dict(code='588000', name='ETF', count=1000, price=2)], targets={'588000': .4})
+    collect_close(path, '2025-01-06', lambda *_: {'588000': 2})
     view = account_data(path)
     assert view['equity'] == 3000 and view['cash'] == 1000
     assert view['strategy_positions'][0]['strategy'] == 'unassigned'
@@ -449,12 +505,13 @@ def test_split_odd_shares_does_not_create_rounding_profit(tmp_path):
     path = tmp_path / 'etf_account.json'
     initialize(path, asof='2025-01-04', cash=0,
                positions=[dict(code='588000', name='ETF', count=2, price=2.657, strategy='core')])
+    collect_close(path, '2025-01-06', lambda *_: {'588000': 2.657})
     before = account_data(path)
     record_event(path, event(path, 'assign', code='588000', qty=1, from_strategy='core', strategy='rotation'))
     after = account_data(path)
     assert after['equity'] == before['equity']
 
-def test_strategy_pnl_keeps_past_gains_at_source_when_shares_move(account):
+def test_strategy_pnl_keeps_past_gains_at_source_when_shares_move(account, monkeypatch):
     collect_close(account, '2025-01-06', lambda codes, day: {c: 3 for c in codes})
     before = account_data(account)
     assert before['strategies'][0]['pnl'] == 1000
@@ -463,6 +520,7 @@ def test_strategy_pnl_keeps_past_gains_at_source_when_shares_move(account):
     assert [s['pnl'] for s in after['strategies']] == [1000, 0, 0]
     assert after['pnl'] == before['pnl'] == 1000
     collect_close(account, '2025-01-07', lambda codes, day: {c: 4 for c in codes})
+    monkeypatch.setattr('src.etf_account._today', lambda: date(2025, 1, 8))
     after = account_data(account)
     assert [s['pnl'] for s in after['strategies']] == [1900, 100, 0]
     assert after['pnl'] == 2000

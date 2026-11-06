@@ -1,14 +1,14 @@
-"""网页主动取价：后台独立刷新场内报价与场外单位净值。"""
+"""看板后台补查场内收盘价和场外单位净值。"""
 
 from copy import deepcopy
-from datetime import datetime, timedelta, timezone
 import logging
-import math
 from pathlib import Path
 import threading
 import time
 
-SHANGHAI = timezone(timedelta(hours=8))
+from src import etf_account
+from src.trade_ledger.closing_prices import ClosingPrices
+
 logger = logging.getLogger(__name__)
 
 
@@ -16,65 +16,47 @@ class QuoteRefresh:
     def __init__(self):
         self._lock = threading.Lock()
         self._state = {}
-        self._path = None
-        self._fund_codes = ()
+        self._request = None
         self._last_start = float("-inf")
 
     def read(self, path):
         with self._lock:
-            return deepcopy(self._state) if self._path == Path(path).resolve() else {}
+            return deepcopy(self._state) if self._request and self._request[0] == Path(path).resolve() else {}
 
-    def start(self, path, revision, codes, day, *, fund_codes=()):
-        """合并重复点击；取数期间不持有账户锁，完成后再按账户版本应用。"""
+    def start(self, path, today):
+        """合并重复点击；记账或配置变化后允许立即刷新新增标的。"""
         path = Path(path).resolve()
-        codes = sorted(set(codes))
-        fund_codes = tuple(sorted(set(fund_codes)))
+        account = etf_account.load(path)
+        price_day = etf_account.valuation_day(today)
+        fund_codes = tuple(sorted(etf_account.snapshot(account, today.isoformat())["fund_positions"]))
+        request = (path, today, price_day, etf_account.revision(account), fund_codes)
         with self._lock:
             if self._state.get("running") or self._state.get("funds", {}).get("running"):
                 return
-            same = (path == self._path and self._state.get("revision") == revision
-                    and self._state.get("day") == day)
-            if same and fund_codes == self._fund_codes and time.monotonic() - self._last_start < 15:
+            if request == self._request and time.monotonic() - self._last_start < 15:
                 return
-            previous = self._state.get("quotes", {}) if same else {}
-            self._path = path
-            self._fund_codes = fund_codes
+            self._request = request
             self._last_start = time.monotonic()
-            self._state = {"running": True, "revision": revision, "day": day,
-                           "quotes": previous,
-                           "missing": self._state.get("missing", []) if same else [], "error": None,
-                           "fetched_at": self._state.get("fetched_at") if same else None,
+            self._state = {"running": True, "date": price_day, "error": None,
                            "funds": {"running": True} if fund_codes else {}}
-            threading.Thread(target=self._fetch, args=(codes,), daemon=True).start()
+            threading.Thread(target=self._fetch, args=(path, today, price_day), daemon=True).start()
             if fund_codes:
-                threading.Thread(target=self._fetch_funds, args=(path, day, fund_codes), daemon=True).start()
+                threading.Thread(target=self._fetch_funds,
+                                 args=(path, today.isoformat(), fund_codes), daemon=True).start()
 
-    def _fetch(self, codes):
+    def _fetch(self, path, today, price_day):
         try:
-            from data_provider import realtime_prices
-
-            prices = realtime_prices(codes)
-            prices = {code: value for code, value in prices.items()
-                      if code in codes and type(value) in (int, float)
-                      and math.isfinite(value) and value > 0}
+            etf_account.refresh_close_prices(path, today, price_day, ClosingPrices().close_prices)
             error = None
         except Exception:
-            logger.exception("网页行情刷新失败")
-            prices, error = {}, "行情获取失败，请稍后重试。"
-        fetched_at = datetime.now(SHANGHAI).isoformat(timespec="seconds")
+            logger.exception("网页收盘价刷新失败")
+            error = "收盘价暂时无法更新，请稍后重试。"
         with self._lock:
-            missing = [code for code in codes if code not in prices]
-            # 完整批次原子替换；部分成功不能把新旧报价混成一次账户估值。
-            if not missing:
-                self._state.update(quotes={code: {"price": prices[code], "fetched_at": fetched_at}
-                                           for code in codes}, fetched_at=fetched_at)
-            self._state.update(running=False, missing=missing, error=error)
+            self._state.update(running=False, error=error)
 
     def _fetch_funds(self, path, day, codes):
-        from src.etf_account import refresh_fund_navs
-
         try:
-            result = refresh_fund_navs(path, day)
+            result = etf_account.refresh_fund_navs(path, day)
         except Exception:
             logger.exception("网页场外净值刷新失败")
             result = {"updated": [], "unchanged": [], "failed": list(codes)}

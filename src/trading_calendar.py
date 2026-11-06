@@ -8,12 +8,14 @@ A 股交易日历（公共模块）
 
 数据来源：akshare `tool_trade_date_hist_sina()`（新浪交易日历）。
 设计：
-- 模块级缓存，进程内只拉一次
+- 进程内按日缓存；取数失败后短暂退避
 - 拉取失败时按交易日放行（避免节假日误杀，宁可多跑也不漏跑）
 """
 
 import logging
 from datetime import date, datetime, timedelta
+from threading import Lock
+from time import monotonic
 from typing import List, Optional
 
 import pandas as pd
@@ -21,26 +23,29 @@ import pandas as pd
 logger = logging.getLogger(__name__)
 
 _trading_dates: List[date] = []
-_loaded = False
+_calendar_lock = Lock()
+_refresh_after = float("-inf")
 
 
 def _ensure_loaded() -> None:
-    """惰性加载交易日历到模块级缓存（幂等）"""
-    global _trading_dates, _loaded
-    if _loaded:
-        return
-    try:
-        import akshare as ak
-        cal_df = ak.tool_trade_date_hist_sina()
-        _trading_dates = sorted(
-            pd.to_datetime(row["trade_date"]).date()
-            for _, row in cal_df.iterrows()
-        )
-        _loaded = True
-        logger.info(f"交易日历已加载：{len(_trading_dates)} 个交易日")
-    except Exception as e:
-        logger.error(f"获取交易日历失败（按交易日放行）: {e}")
-        _loaded = True  # 标记已尝试，避免重复失败
+    """长驻进程按日更新日历，临时故障后允许重试。"""
+    global _trading_dates, _refresh_after
+    with _calendar_lock:
+        if monotonic() < _refresh_after:
+            return
+        try:
+            import akshare as ak
+            cal_df = ak.tool_trade_date_hist_sina()
+            days = sorted(pd.to_datetime(row["trade_date"]).date() for _, row in cal_df.iterrows())
+            if not days:
+                raise ValueError("交易日历为空")
+        except Exception as error:
+            logger.error("获取交易日历失败: %s", error)
+            _refresh_after = monotonic() + 60
+        else:
+            _trading_dates = days
+            _refresh_after = monotonic() + 86400
+            logger.info("交易日历已加载：%s 个交易日", len(days))
 
 
 def get_trading_dates(start_date: date, end_date: date) -> List[date]:

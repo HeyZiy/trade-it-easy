@@ -18,6 +18,7 @@ def account(tmp_path, monkeypatch):
     wallet.initialize(path, asof='2025-01-03', cash=3000,
                       positions=[dict(code='588000', name='核心', count=1000, price=2, strategy='core')],
                       budgets={'core': .6, 'rotation': .4}, cash_allocations={'core': 1000, 'rotation': 2000})
+    wallet.collect_close(path, '2025-01-06', lambda *_: {'588000': 2})
     return path
 
 
