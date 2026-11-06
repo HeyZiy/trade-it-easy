@@ -887,6 +887,8 @@ function openFundTrade(account, side, code, edit=null) {
   const field = name => form.elements.namedItem(name);
   const buy = side === 'fund_buy';
   const fetchNav = document.querySelector('#fund-fetch-nav');
+  const recalcQty = document.querySelector('#fund-recalc-qty');
+  let manualQty = !!edit, fetchedNavKey;
   let saving = false, saved = false, requestId = crypto.randomUUID();
   const today = new Intl.DateTimeFormat('en-CA',{timeZone:'Asia/Shanghai',year:'numeric',month:'2-digit',day:'2-digit'}).format(new Date());
   const session = crypto.randomUUID();
@@ -899,6 +901,7 @@ function openFundTrade(account, side, code, edit=null) {
   error.hidden = true;
   document.querySelector('#fund-title').textContent = edit ? `修改${SIDES[side]}` : SIDES[side];
   document.querySelector('#fund-amount-label').textContent = buy ? '实际扣款 / 元' : '实际到账 / 元';
+  document.querySelector('#fund-qty-label').textContent = buy ? '份额（自动计算，可修正）' : '确认赎回份额';
   document.querySelector('#fund-buy-tools').hidden = !buy;
   for (const name of ['fee_kind','fee','nav_date','nav']) field(name).disabled = !buy;
   field('code').value = code || '';
@@ -912,6 +915,14 @@ function openFundTrade(account, side, code, edit=null) {
   field('nav_date').value = edit?.nav_date || '';
   field('nav_date').max = field('date').value;
   const showError = message => { error.textContent = message; error.hidden = false; };
+  const navKey = () => `${field('code').value}:${field('nav_date').value}`;
+  function estimateQty(amount, kind) {
+    const nav = Number(field('nav').value), fee = Number(field('fee').value);
+    if (!buy || !(amount > 0 && nav > 0) || !kind || !field('nav_date').value) return '';
+    if (kind !== 'none' && (!field('fee').value || !finite(fee) || fee < 0)) return '';
+    const net = kind === 'rate' ? amount / (1 + fee / 100) : kind === 'fixed' ? amount - fee : amount;
+    return net > 0 ? (Math.round(net * 100) / 100 / nav).toFixed(2) : '';
+  }
   function update() {
     const code = field('code').value;
     const held = account.fund_positions?.[code]?.qty || 0;
@@ -924,10 +935,23 @@ function openFundTrade(account, side, code, edit=null) {
     field('fee').disabled = !usesFee;
     field('nav_date').max = field('date').value;
     field('qty').max = buy ? '1000000000' : String(held);
+    const estimate = estimateQty(amount, kind);
+    if (buy && !manualQty) field('qty').value = estimate;
+    recalcQty.hidden = !manualQty || !estimate;
     preview.textContent = `多资产配置现金 ${money(cash)} 元 · 持有 ${fundShares(held)} 份${amount > 0 ? ` · 记账后现金 ${money(cash + (buy ? -amount : amount))} 元` : ''}`;
     field('amount').setCustomValidity(buy && amount > cash ? '多资产配置现金不足，请先分配现金。' : '');
   }
-  form.oninput = () => { requestId = crypto.randomUUID(); error.hidden = true; update(); };
+  form.oninput = event => {
+    if (event?.target === field('qty')) manualQty = !!field('qty').value;
+    if (event?.target === field('nav')) fetchedNavKey = undefined;
+    if (fetchedNavKey && fetchedNavKey !== navKey()) {
+      field('nav').value = '';
+      fetchedNavKey = undefined;
+    }
+    requestId = crypto.randomUUID();
+    error.hidden = true;
+    update();
+  };
   update();
 
   fetchNav.onclick = async () => {
@@ -939,6 +963,7 @@ function openFundTrade(account, side, code, edit=null) {
       const result = await accountRequest('/api/etf/fund/nav', {code,date});
       if (!saving && !saved && dialog.open && dialog.dataset.session === session && field('code').value === code && field('nav_date').value === date) {
         field('nav').value = result.nav;
+        fetchedNavKey = navKey();
         form.oninput();
       }
     } catch (failure) {
@@ -947,15 +972,8 @@ function openFundTrade(account, side, code, edit=null) {
       if (dialog.dataset.session === session) fetchNav.disabled = false;
     }
   };
-  document.querySelector('#fund-prefill-qty').onclick = () => {
-    const amount = Number(field('amount').value), nav = Number(field('nav').value);
-    const kind = field('fee_kind').value, fee = Number(field('fee').value);
-    if (!(amount > 0 && nav > 0) || !field('nav_date').value) return showError('请填写扣款和申购适用的单位净值及日期。');
-    if (!kind) return showError('请选择这笔申购的实际费型。');
-    if (kind !== 'none' && (!field('fee').value || !finite(fee) || fee < 0)) return showError('请填写实际费率或费用。');
-    const net = kind === 'rate' ? amount / (1 + fee / 100) : kind === 'fixed' ? amount - fee : amount;
-    if (!(net > 0)) return showError('扣除申购费后，金额须为正数。');
-    field('qty').value = (Math.round(net * 100) / 100 / nav).toFixed(2);
+  recalcQty.onclick = () => {
+    manualQty = false;
     form.oninput();
   };
   document.querySelector('#fund-cancel').onclick = () => { if (!saving) dialog.close(); };

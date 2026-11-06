@@ -83,7 +83,7 @@
             <label>基金代码<input name="code" inputmode="numeric" pattern="[0-9]{6}" maxlength="6" required></label>
             <label>记账日期<input name="date" type="date" required></label>
             <label><span id="fund-amount-label">实际扣款 / 元</span><input name="amount" type="number" min="0.01" step="0.01" required></label>
-            <label>确认份额<input name="qty" type="number" min="0.000001" max="1000000000" step="0.000001" required></label>
+            <label><span id="fund-qty-label">份额</span><input name="qty" type="number" min="0.000001" max="1000000000" step="0.000001" required></label>
           </div>
           <div id="fund-buy-tools">
             <div class="entry-grid">
@@ -93,8 +93,8 @@
               <label>单位净值 / 元<input name="nav" type="number" min="0.00000001" max="100000000" step="0.00000001"></label>
             </div>
             <button type="button" class="text-button" id="fund-fetch-nav">查该日净值</button>
-            <button type="button" class="text-button" id="fund-prefill-qty">预填份额</button>
-            <p class="subtle">预填按常用的分和两位份额取整，可按确认单修改。</p>
+            <button type="button" class="text-button" id="fund-recalc-qty" hidden>按净值重算份额</button>
+            <p class="subtle">扣款、费型和净值齐全后自动计算份额，可按确认单修正。</p>
           </div>
           <p id="fund-preview" class="entry-preview"></p>
         </fieldset>
