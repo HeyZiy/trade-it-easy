@@ -21,6 +21,7 @@ let data, selected = 0, chartRange = 'all', chartObserver;
 let selectedReport, reportRequest, configRequest;
 let showAllRecords = false;
 let holdingKind = '';
+const expandedAllocationGroups = new Set();
 const reportCache = new Map();
 let quoteRequestPending = false, quotePollTimer, quotePolling = false, quoteError = '';
 const quoteTime = value => new Date(value).toLocaleString('zh-CN', {timeZone:'Asia/Shanghai',hour12:false});
@@ -492,6 +493,18 @@ function bindAccountActions(view) {
   if (budgetButton) budgetButton.onclick = () => openBudgets(account);
   const coreButton = document.querySelector('#core-settings');
   if (coreButton) coreButton.onclick = () => openConfiguration();
+  for (const button of document.querySelectorAll('[data-allocation-toggle]')) {
+    button.onclick = () => {
+      const code = button.dataset.allocationToggle;
+      const open = !expandedAllocationGroups.has(code);
+      if (open) expandedAllocationGroups.add(code);
+      else expandedAllocationGroups.delete(code);
+      button.setAttribute('aria-expanded', String(open));
+      for (const id of button.getAttribute('aria-controls').split(' ')) {
+        document.getElementById(id).hidden = !open;
+      }
+    };
+  }
   const fundButtons = document.querySelectorAll('[data-edit-fund]');
   if (fundButtons.length) {
     const funds = new Map(view.allocation_groups.flatMap(group => group.products)
@@ -787,18 +800,24 @@ function bindOverviewCharts(account) {
   });
 }
 
-function allocationProductDetails(products, strategyId) {
-  const items = products.map(row => {
-    if (row.kind === 'fund') {
-      const mark = row.qty
-        ? `${row.qty.toLocaleString('zh-CN',{maximumFractionDigits:6})} 份 · ${money(row.market_value)} 元<br>净值 ${row.nav.toLocaleString('zh-CN',{maximumFractionDigits:8})} · ${esc(row.date)}`
-        : '未录入份额与净值';
-      return `<div>场外基金 ${esc(row.code)}<small>${mark}</small><button type="button" class="text-button" data-edit-fund="${esc(row.code)}">${row.qty ? '更新' : '录入'}</button></div>`;
-    }
-    const value = finite(row.market_value) ? money(row.market_value) + ' 元' : '待估值';
-    return `<div>${esc(row.name)}<small>${esc(row.code)} · ${number(row.count)} 份 · ${value}</small>${positionActions(row.code,strategyId,row.count>0)}</div>`;
-  }).join('');
-  return `<details class="allocation-products"><summary>${products.length} 个产品</summary>${items}</details>`;
+function allocationProductRow(row, strategyId, id, open) {
+  const fund = row.kind === 'fund';
+  const held = fund ? !!row.qty : row.count > 0;
+  const name = fund ? `场外基金 ${row.code}` : row.name;
+  const shares = fund ? row.qty?.toLocaleString('zh-CN', {maximumFractionDigits:6}) : number(row.count);
+  const nav = row.nav?.toLocaleString('zh-CN', {maximumFractionDigits:8});
+  const note = fund ? (held ? '' : '未录入份额与净值') : row.code;
+  const mark = fund ? (held ? `${nav}<small>净值日 ${esc(row.date)}</small>` : '—') : quotePrice(row);
+  const value = held ? (finite(row.market_value) ? money(row.market_value) : '待估值') : '—';
+  const action = fund
+    ? `<button type="button" class="text-button" data-edit-fund="${esc(row.code)}">${held ? '更新' : '录入'}</button>`
+    : positionActions(row.code, strategyId, held);
+  const mobile = held ? `<small class="allocation-product-mobile">${shares} 份${fund ? ` · 净值 ${nav}<br>${esc(row.date)}` : ''}</small>` : '';
+  return `<tr id="${esc(id)}" class="allocation-product-row"${open ? '' : ' hidden'}>
+    <td>${esc(name)}${note ? `<small>${esc(note)}</small>` : ''}${mobile}</td>
+    <td>${shares ?? '—'}</td><td>${fund || held ? mark : '—'}</td><td>${value}</td>
+    <td></td><td><span class="allocation-product-mobile">${held ? `${value}${finite(row.market_value) ? ' 元' : ''}` : '—'}</span></td><td>${action}</td>
+  </tr>`;
 }
 
 function strategyPositionTable(strategy) {
@@ -841,17 +860,19 @@ function strategyPositionTable(strategy) {
       difference = `<strong class="allocation-gap">${gap>0 ? '超配' : '低配'} ${money(Math.abs(gap))} 元</strong><small>${(deviation*100).toFixed(2)} 个百分点${level==='strong' ? ' · 偏离较大' : ''}</small>`;
     }
     const reference = item ? `<small>${item.price_issue ? esc(item.price_issue) : `参考${item.side==='sell' ? '减持' : '增持'}约 ${number(item.qty)} 份`}</small>${item.cash_note ? `<small class="cash-note">${esc(item.cash_note)}</small>` : ''}` : '';
-    let actions, details = '';
+    let actions = '', details = '', productRows = '';
     if (code === 'CASH') {
       actions = '<button type="button" class="text-button" data-open-cash>分配现金</button>';
     } else if (showProducts) {
-      actions = '<small>展开产品明细</small>';
-      details = allocationProductDetails(products, strategy.id);
+      const open = expandedAllocationGroups.has(code);
+      const ids = products.map((_, index) => `allocation-product-${code}-${index}`);
+      details = `<button type="button" class="allocation-toggle" data-allocation-toggle="${esc(code)}" aria-expanded="${open}" aria-controls="${esc(ids.join(' '))}">${products.length} 个产品</button>`;
+      productRows = products.map((product, index) => allocationProductRow(product, strategy.id, ids[index], open)).join('');
     } else {
       actions = positionActions(code, strategy.id, position.count > 0, item ? {...item,index} : null);
       details = `<small>${esc(position.code)}</small>`;
     }
-    return `<tr data-allocation-code="${esc(code)}"${level ? ` class="allocation-${level}"` : ''}><td>${esc(name)}${group.outside ? '<small>目标外持仓</small>' : ''}${details}</td><td>${position?number(position.count):'—'}</td><td>${position?.count ? quotePrice(position) : price(null)}</td><td>${money(actual)}<small>配置内 ${pct(assets>0 && finite(actual)?actual/assets:null)}</small></td><td>${money(target)}<small>目标权重 ${pct(weight)}</small></td><td>${difference}<span class="allocation-mobile-values">现 ${money(actual)}<br>目标 ${money(target)}</span>${reference}</td><td>${actions}</td></tr>`;
+    return `<tr data-allocation-code="${esc(code)}"${level ? ` class="allocation-${level}"` : ''}><td>${esc(name)}${group.outside ? '<small>目标外持仓</small>' : ''}${details}</td><td>${position?number(position.count):'—'}</td><td>${position?.count ? quotePrice(position) : price(null)}</td><td>${money(actual)}<small>配置内 ${pct(assets>0 && finite(actual)?actual/assets:null)}</small></td><td>${money(target)}<small>目标权重 ${pct(weight)}</small></td><td>${difference}<span class="allocation-mobile-values">现 ${money(actual)}<br>目标 ${money(target)}</span>${reference}</td><td>${actions}</td></tr>${productRows}`;
   }).join('');
   const external = strategy.external_fund_value>0 ? `<p class="subtle">配置目标资产 ${money(budget)} 元，由券商目标资产加场外基金市值 ${money(strategy.external_fund_value)} 元组成。场外按各产品录入的净值日期估值。</p>` : '';
   return `${external}${priceIssue && !wallet.quote_refresh?.estimated ? `<p class="warning">参考份额暂缺：${esc(priceIssue)}。</p>` : ''}<div class="table-wrap"><table class="allocation-table core-allocation-table"><thead><tr><th>配置项</th><th>份额</th><th>价格 / 元</th><th>当前金额 / 元</th><th>目标金额 / 元</th><th>配比偏离</th><th>记账</th></tr></thead><tbody>${rows}</tbody></table></div><details class="calculation-note"><summary>配比说明</summary><p>${basisNote}${allocationToleranceNote}。${thresholdNote} 多产品配置按合计市值判断偏离，组内产品由你选择。</p></details>`;
