@@ -253,10 +253,12 @@ class Handler(BaseHTTPRequestHandler):
                 or self.headers.get("Content-Type") != "application/json"):
             self.respond(b'{}', "application/json", status=403)
             return
-        from src.etf_account import FILENAME, dismiss, record_event, set_budgets, edit_event, event_context, cash_rebalance
+        from src.etf_account import (
+            FILENAME, cash_rebalance, dismiss, edit_event, event_context, record_event, save_fund_position, set_budgets,
+        )
         handlers = {"/api/etf/event": record_event, "/api/etf/dismiss": dismiss,
                     "/api/etf/budgets": set_budgets, "/api/etf/event/edit": edit_event,
-                    "/api/etf/event/context": event_context,
+                    "/api/etf/event/context": event_context, "/api/etf/fund": save_fund_position,
                     "/api/etf/cash/rebalance": lambda path, payload: cash_rebalance(path, payload, live_quotes=QUOTES.read(path))}
         from src.portfolio_config import update
         handlers["/api/etf/config"] = update

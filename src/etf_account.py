@@ -1,11 +1,13 @@
 """投资账户台账：期初快照、人工流水、收盘估值和调仓建议。"""
 
 from datetime import date
+from decimal import Decimal, ROUND_HALF_UP
 import hashlib
 import json
 import logging
 import math
 from pathlib import Path
+import re
 
 from data_provider import canonical_stock_code
 from data_provider.codes import is_a_stock_code, is_etf_code
@@ -241,7 +243,8 @@ def snapshot(state, asof, prices=None):
 def suggestions(state, view):
     from src.etf.rebalancer import ETFRebalancer
 
-    engine = ETFRebalancer(baseline(state))
+    grouped_codes = {row["code"] for row in state["_config"]["core"] if portfolio_config.grouped(row)}
+    engine = ETFRebalancer(asset for asset in baseline(state) if asset.code not in grouped_codes)
     plan = engine.build_plan(state["targets"], view["positions"], view["equity"], prices=view["prices"])
     records = sorted(state["records"], key=lambda r: r["date"])
     valid = [r for r in records if _positive(r.get("nav")) and not r["issues"]
@@ -296,6 +299,75 @@ def baseline(state):
     return portfolio_config.allocations(state["_config"])
 
 
+def _fund_revision(state):
+    return portfolio_config.revision(state.get("fund_positions", {}))
+
+
+def save_fund_position(path, payload):
+    """保存场外持仓快照。现金、场内流水和历史收益继续按券商账户计算。"""
+    with _locked(path):
+        state = load(path)
+        if payload.get("revision") != _fund_revision(state):
+            raise ValueError("场外持仓已更新，请刷新后再编辑")
+        code = payload.get("code")
+        if not isinstance(code, str) or not re.fullmatch(r"[0-9]{6}", code):
+            raise ValueError("请输入六位场外基金代码")
+        qty = payload.get("qty")
+        if type(qty) not in (int, float) or not 0 <= qty <= 1e12 or round(qty, 6) != qty:
+            raise ValueError("基金份额须为非负数，最多六位小数")
+        funds = state.setdefault("fund_positions", {})
+        if qty == 0:
+            funds.pop(code, None)
+        else:
+            nav = _money(payload.get("nav"))
+            if nav > 1e8 or round(nav, 8) != nav:
+                raise ValueError("单位净值最多八位小数")
+            nav_date = payload.get("date")
+            if not isinstance(nav_date, str):
+                raise ValueError("请选择净值日期")
+            _day(nav_date)
+            value = (Decimal(str(qty)) * Decimal(str(nav))).quantize(Decimal(".01"), rounding=ROUND_HALF_UP)
+            funds[code] = {"code": code, "qty": qty, "nav": nav, "date": nav_date, "market_value": float(value)}
+        _save(path, state)
+
+
+def _allocation_groups(config, strategy, funds):
+    ungrouped_listed = {row["code"]: row for row in strategy["positions"]}
+    ungrouped_funds = dict(funds)
+    groups = []
+    for asset in config["core"]:
+        code = asset["code"]
+        if code == "CASH":
+            groups.append({"id": code, "name": "现金", "weight": asset["weight"],
+                           "market_value": strategy["cash"], "products": []})
+            continue
+        listed_codes = [] if portfolio_config.fund_only(asset) else [code, *asset.get("etf_codes", [])]
+        products = []
+        for member in listed_codes:
+            position = ungrouped_listed.pop(member, None)
+            if not position:
+                position = {"code": member, "name": security_name(member), "count": 0, "market_value": 0}
+            products.append({**position, "kind": "listed"})
+        for member in asset.get("fund_codes", []):
+            position = ungrouped_funds.pop(member, None)
+            products.append({**(position or {"code": member, "market_value": 0}), "kind": "fund"})
+        first_product = products[0]
+        values = [row["market_value"] for row in products]
+        groups.append({
+            "id": code,
+            "name": asset.get("label") or first_product.get("name") or f"场外基金 {first_product['code']}",
+            "weight": asset["weight"],
+            "market_value": None if None in values else round(sum(values), 2),
+            "products": products,
+        })
+    groups.extend({"id": row["code"], "name": row["name"], "weight": 0, "market_value": row["market_value"],
+                   "products": [{**row, "kind": "listed"}], "outside": True} for row in ungrouped_listed.values())
+    groups.extend({"id": f"outside-fund:{code}", "name": f"场外基金 {code}", "weight": 0,
+                   "market_value": row["market_value"], "products": [{**row, "kind": "fund"}], "outside": True}
+                  for code, row in ungrouped_funds.items())
+    return groups
+
+
 def _strategy_facts(state, view, key):
     """按策略标识提供账户事实，不计算建议；供展示、发布和成交处理共用。"""
     name = portfolio_config.STRATEGY_NAMES[key]
@@ -345,8 +417,9 @@ def strategy_views(state, view, *, today=None):
                 dismissed=state["dismissed"])
             row["signal_date"] = state.get("quality_signal", {}).get("date")
         if key == "core" and row["status"] == "已分配" and row["budget"] > 0:
+            external = sum(fund["market_value"] for fund in state.get("fund_positions", {}).values())
             row["suggestions"] = suggestions(state, {**view, "positions": row["positions"],
-                                                    "equity": row["budget"], "cash": row["cash"]})
+                                                    "equity": row["budget"] + external, "cash": row["cash"]})
         result.append(row)
     return result
 
@@ -774,8 +847,16 @@ def account_data(path, *, live_quotes=None):
         for key in ("positions", "budget", "invested", "pnl", "assets", "actual_pct",
                     "deviation", "remaining_budget", "buying_power", "cash"):
             strategy[key] = facts[key]
+        if strategy["id"] == "core":
+            funds = state.get("fund_positions", {})
+            external = round(sum(fund["market_value"] for fund in funds.values()), 2)
+            strategy["allocation_groups"] = _allocation_groups(state["_config"], strategy, funds)
+            strategy["external_fund_value"] = external
+            for key in ("budget", "assets"):
+                strategy[f"allocation_{key}"] = round(strategy[key] + external, 2) if strategy[key] is not None else None
     return {"id": "etf", "name": "投资账户", "can_record": True, **view,
             "holdings_by_kind": holdings_by_kind, "net_contributed": net_contributed,
+            "fund_revision": _fund_revision(state),
             "performance": latest, "trades": [{**{k: v for k, v in e.items() if k != "request"},
                          **({"name": security_name(e["code"])} if e.get("code") else {})}
                        for e in reversed(state["events"])],
@@ -805,6 +886,8 @@ def strategy_snapshot(path=None):
             logger.warning("投资账户读取失败，跳过持仓对照", exc_info=True)
             return config, None
     try:
+        if state.get("fund_positions") or any(portfolio_config.grouped(row) for row in config["core"]):
+            return config, None
         view = snapshot(state, _today().isoformat())
         core = _strategy_facts(state, view, "core")
         if core["status"] != "已分配":

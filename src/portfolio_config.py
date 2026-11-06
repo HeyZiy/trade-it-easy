@@ -14,6 +14,15 @@ STRATEGY_NAMES = {"core": "多资产配置", "rotation": "跨资产动量", "qua
 FILENAME = "etf_config.json"
 DEFAULT_PATH = Path("data") / FILENAME
 EXAMPLE = Path(__file__).resolve().parents[1] / "config" / "etf_config.example.json"
+FUND_PREFIX = "FUND:"
+
+
+def fund_only(row):
+    return row["code"].startswith(FUND_PREFIX)
+
+
+def grouped(row):
+    return fund_only(row) or bool(row.get("etf_codes") or row.get("fund_codes"))
 
 
 def path_for(account):
@@ -40,15 +49,32 @@ def validate(config):
     rows = config["core"]
     if not isinstance(rows, list) or not 1 <= len(rows) <= 50:
         raise ValueError("多资产配置须有1至50项资产")
-    codes = set()
-    fields = {"code", "weight", "asset_type", "tracked_index", "valuation_kind", "dividend_style", "volatility_rank"}
+    used_listed, used_funds = set(), set()
+    required_fields = {"code", "weight", "asset_type", "tracked_index", "valuation_kind", "dividend_style", "volatility_rank"}
+    allowed_fields = required_fields | {"label", "etf_codes", "fund_codes"}
     for row in rows:
-        if not isinstance(row, dict) or set(row) != fields:
+        if not isinstance(row, dict) or not required_fields <= row.keys() <= allowed_fields:
             raise ValueError("资产配置字段不完整或包含未知字段")
         code = row["code"]
-        if not isinstance(code, str) or not (code == "CASH" or re.fullmatch(r"[0-9]{6}", code)) or code in codes:
-            raise ValueError("资产代码须为6位数字或CASH，且不能重复")
-        codes.add(code)
+        if not isinstance(code, str) or not (code == "CASH" or re.fullmatch(r"(?:FUND:)?[0-9]{6}", code)):
+            raise ValueError("请输入六位产品代码")
+        label = row.get("label", "")
+        if not isinstance(label, str) or len(label) > 40 or ("label" in row and not label.strip()):
+            raise ValueError("配置名称须为1至40个字符")
+        listed, funds = row.get("etf_codes", []), row.get("fund_codes", [])
+        for members in (listed, funds):
+            if not isinstance(members, list) or len(members) > 20 or any(
+                    not isinstance(c, str) or not re.fullmatch(r"[0-9]{6}", c) for c in members):
+                raise ValueError("每组最多填写20个同类成员，产品代码须为六位数字")
+        if code == "CASH" and (listed or funds or label):
+            raise ValueError("现金不能绑定产品")
+        if fund_only(row) and (not funds or code != FUND_PREFIX + funds[0] or listed
+                              or row["valuation_kind"] != "none" or row["dividend_style"]):
+            raise ValueError("仅场外配置须按基金代码建组，并使用手工净值")
+        for members, used in (([code, *listed], used_listed), (funds, used_funds)):
+            if len(set(members)) != len(members) or used.intersection(members):
+                raise ValueError("同一产品只能归入一个配置，且组内不能重复")
+            used.update(members)
         if not valid_weight(row["weight"]):
             raise ValueError("资产权重须在0至100%之间")
         if row["asset_type"] not in {"equity", "bond", "gold", "cash"}:
@@ -69,7 +95,7 @@ def validate(config):
             raise ValueError("减仓顺序须为0至100的整数")
         if code == "CASH" and (row["valuation_kind"] != "none" or row["dividend_style"]):
             raise ValueError("现金不设置证券估值")
-    if "CASH" not in codes or not math.isclose(sum(r["weight"] for r in rows), 1, rel_tol=0, abs_tol=1e-8):
+    if "CASH" not in used_listed or not math.isclose(sum(r["weight"] for r in rows), 1, rel_tol=0, abs_tol=1e-8):
         raise ValueError("多资产配置内部权重须合计100%，并包含一项CASH")
     return deepcopy(config)
 
@@ -167,7 +193,7 @@ def allocations(config):
         code=r["code"], asset_type=r["asset_type"], neutral_weight=r["weight"],
         volatility_rank=r["volatility_rank"], tracked_index=r["tracked_index"],
         valuation_kind=r["valuation_kind"], dividend_style=r["dividend_style"],
-    ) for r in config["core"]]
+    ) for r in config["core"] if not fund_only(r)]
 
 
 def data(account):

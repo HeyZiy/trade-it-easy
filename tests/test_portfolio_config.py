@@ -100,6 +100,66 @@ def test_metadata_changes_take_effect_without_restart(account):
     assert config.allocations(config.load(config.path_for(account)))[0].tracked_index=='000922'
 
 
+def test_grouped_targets_and_manual_funds_keep_broker_values_separate(account):
+    initial = wallet.account_data(account)
+    active = config.data(account)
+    draft = active["config"]
+    draft["core"][0].update(label="医药配置", etf_codes=["510300"], fund_codes=["512010"])
+    config.update(account, {"revision": active["revision"], "config": draft})
+    draft = config.load(config.path_for(account))
+    bad = deepcopy(draft)
+    bad["core"].insert(1, {**draft["core"][0], "code": "510300", "weight": 0})
+    with pytest.raises(ValueError, match="只能归入一个"):
+        config.validate(bad)
+
+    wallet.record_event(account, {"request_id": "alternative-etf", "revision": wallet.account_data(account)["revision"],
+                                  "date": "2025-01-06", "side": "buy", "code": "510300",
+                                  "qty": 100, "price": 2, "fee": 0, "strategy": "core"})
+    wallet.collect_close(account, "2025-01-06", lambda *_: {"512010": 2, "510300": 2})
+    broker = wallet.account_data(account)
+    payload = {"code": "512010", "qty": 12.345, "nav": 2, "date": "2025-01-06",
+               "revision": broker["fund_revision"]}
+    wallet.save_fund_position(account, payload)
+    with pytest.raises(ValueError, match="场外持仓已更新"):
+        wallet.save_fund_position(account, payload)
+
+    combined = wallet.account_data(account)
+    for key in ("cash", "equity", "pnl", "positions", "history", "trades", "revision"):
+        assert combined[key] == broker[key]
+    assert combined["equity"] == initial["equity"]
+    core = combined["strategies"][0]
+    assert core["allocation_budget"] == 984.69
+    group = next(row for row in core["allocation_groups"] if row["id"] == "512010")
+    assert group["name"] == "医药配置"
+    assert group["market_value"] == 424.69
+    assert [(row["kind"], row["code"]) for row in group["products"]] == [
+        ("listed", "512010"), ("listed", "510300"), ("fund", "512010")]
+    assert not core["suggestions"]
+    assert wallet.strategy_snapshot(account)[1] is None
+
+    wallet.save_fund_position(account, {**payload, "revision": combined["fund_revision"], "qty": 0})
+    assert wallet.account_data(account)["strategies"][0]["external_fund_value"] == 0
+
+
+def test_fund_only_target_remains_in_config_after_position_is_removed(account):
+    active = config.data(account)
+    draft = active["config"]
+    draft["core"][0].update(code="FUND:012345", label="场外配置", fund_codes=["012345"],
+                            valuation_kind="none", tracked_index=None, dividend_style=False)
+    config.update(account, {"revision": active["revision"], "config": draft})
+    assert [row.code for row in config.allocations(draft)] == ["CASH"]
+    view = wallet.account_data(account)
+    payload = {"code": "012345", "qty": 100.5, "nav": 1.2, "date": "2025-01-06",
+               "revision": view["fund_revision"]}
+    wallet.save_fund_position(account, payload)
+    core = wallet.account_data(account)["strategies"][0]
+    assert core["allocation_groups"][0]["market_value"] == 120.6
+    wallet.save_fund_position(account, {**payload, "revision": wallet.account_data(account)["fund_revision"], "qty": 0})
+    group = wallet.account_data(account)["strategies"][0]["allocation_groups"][0]
+    assert group["id"] == "FUND:012345" and group["market_value"] == 0
+    assert group["weight"] == .5
+
+
 def test_legacy_migration_is_exact_and_never_overwrites_new_config(tmp_path):
     path=tmp_path/'etf_account.json'
     legacy={'initial':{'date':'2025-01-03','cash':1000,'equity':1200,

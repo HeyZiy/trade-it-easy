@@ -99,11 +99,12 @@ class WeekContext:
     baseline: List[AssetAllocation]  # 本批次配置，计算、观察和渲染共同使用
     trends: dict = field(default_factory=dict)  # 标的自身唐奇安20/10观察快照
     valuations: list = field(default_factory=list)  # 持仓表与估值明细共用
+    grouped_targets: bool = False
 
 
 def _build_week_context() -> WeekContext:
     """先固定账户和配置，再装配行情；计算与渲染均不重新读取配置。"""
-    from src.portfolio_config import allocations
+    from src.portfolio_config import allocations, grouped
 
     config, snapshot = _raw_snapshot()
     baseline = allocations(config)
@@ -118,7 +119,8 @@ def _build_week_context() -> WeekContext:
     return WeekContext(market_pe=market_pe, y10=y10, erp_pct=erp_pct,
                        alloc=_compute_allocation(snapshot, baseline), baseline=baseline,
                        trends=_fetch_trend_observations(baseline),
-                       valuations=_raw_valuation_rows(equity_etfs, y10))
+                       valuations=_raw_valuation_rows(equity_etfs, y10),
+                       grouped_targets=any(grouped(row) for row in config["core"]))
 
 
 def _fetch_trend_observations(baseline) -> dict:
@@ -388,11 +390,14 @@ def run() -> str:
         "",
     ]
 
-    if alloc is not None:
-        sections.append(_recommendation_section(alloc))
+    if ctx.grouped_targets:
+        sections.append("## 本次建议\n\n配置包含多产品或场外基金，合并配比请查看交易看板。")
     else:
-        sections.append("## 本次建议\n\n持仓数据不可用，暂不生成建议。")
-    sections.extend([_holding_overview(ctx), _market_overview(ctx)])
+        recommendation = (_recommendation_section(alloc) if alloc is not None
+                          else "## 本次建议\n\n持仓数据不可用，暂不生成建议。")
+        sections.append(recommendation)
+        sections.append(_holding_overview(ctx))
+    sections.append(_market_overview(ctx))
 
     sections.extend([
         "---",
