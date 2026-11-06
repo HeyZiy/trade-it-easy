@@ -40,6 +40,24 @@ def test_initial_snapshot_and_no_overwrite(account):
     assert account.read_bytes() == before
 
 
+def test_reconciliation_uses_account_holdings_and_external_cash_flows(account):
+    record_event(account, event(account, 'deposit', amount=1000))
+    record_event(account, event(account, 'buy', code='600519', qty=100, price=3, fee=2))
+    record_event(account, event(account, 'buy', code='161725', qty=100, price=2, fee=1))
+    record_event(account, event(account, 'withdraw', amount=100))
+    record_event(account, event(account, 'dividend', amount=10))
+    pending = account_data(account)
+    assert pending['net_contributed'] == 3900
+    assert pending['holdings_by_kind'] == {'etf': 2000, 'stock': None, 'other': None}
+    assert pending['equity'] is None
+
+    collect_close(account, '2025-01-06', lambda *_: {'588000': 2.5, '600519': 3.5, '161725': 2.2})
+    complete = account_data(account)
+    assert complete['holdings_by_kind'] == {'etf': 2500, 'stock': 350, 'other': 220}
+    assert complete['equity'] == sum(complete['holdings_by_kind'].values()) + complete['cash']
+    assert complete['net_contributed'] == complete['equity'] - complete['pnl'] == 3900
+
+
 def test_collection_gaps_missing_prices_and_never_backfills_before_initial(account):
     collect_close(account, '2025-01-03', lambda *_: pytest.fail('不得倒填期初前行情'))
     collect_close(account, '2025-01-06', lambda codes, day: {codes[0]: 3})
