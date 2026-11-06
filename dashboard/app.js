@@ -12,14 +12,26 @@ const reportDate = value => /^\d{8}$/.test(value) ? `${value.slice(0,4)}-${value
 const timestamp = day => Date.parse(`${day}T00:00:00Z`);
 const SIDES = {buy:'买入', sell:'卖出', dividend:'分红', deposit:'入金', withdraw:'出金', assign:'持仓划转', cash_assign:'现金分配', cash_transfer:'现金划转'};
 const STRATEGY_NAMES = {core:'多资产配置', rotation:'跨资产动量', quality:'质量动量', unassigned:'未分配'};
+const HOLDING_NAMES = {etf:'ETF', stock:'股票', other:'其他持仓'};
 const REPORT_PREFIX = {core:'etf_weekly_', satellite:'industry_momentum_', rotation:'etf_rotation_', quality:'quality_pool_'};
+const ALLOCATION_TOLERANCE = 0.01;
+const allocationToleranceNote = `${ALLOCATION_TOLERANCE*100} 个百分点内视为配平`;
+const isAllocationBalanced = deviation => Math.abs(deviation) <= ALLOCATION_TOLERANCE + Number.EPSILON;
 let data, selected = 0, chartRange = 'all', chartObserver;
 let selectedReport, reportRequest, configRequest;
 let showAllRecords = false;
+let holdingKind = '';
 const reportCache = new Map();
 let quoteRequestPending = false, quotePollTimer, quotePolling = false, quoteError = '';
 const quoteTime = value => new Date(value).toLocaleString('zh-CN', {timeZone:'Asia/Shanghai',hour12:false});
 const quotePrice = row => `${price(row.close)}${!finite(row.close) ? '<small class="price-pending">待估值</small>' : row.quote_missing && !data.accounts[0]?.quote_refresh?.running ? '<small class="price-pending">保留上一组估值</small>' : ''}${row.quote_fetched_at ? `<small>获取于 ${esc(quoteTime(row.quote_fetched_at))}</small>` : ''}`;
+
+function valuationLabel(valuation) {
+  if (valuation.mode === 'live') {
+    return `行情估算 · ${valuation.fetched_at ? `获取于 ${quoteTime(valuation.fetched_at)}` : valuation.date}`;
+  }
+  return `${valuation.mode === 'initial' ? '期初估值' : '收盘估值'} · ${valuation.date}`;
+}
 
 function updateQuoteControls() {
   const account = data.accounts[0];
@@ -32,12 +44,8 @@ function updateQuoteControls() {
   button.setAttribute('aria-busy',String(!!running));
   button.textContent = running ? '刷新中…' : '刷新行情';
   const valuation=account.valuation;
-  let note = `${valuation?.mode==='initial'?'统一期初估值':'统一收盘估值'} · ${account.valuation_date || '—'}`;
+  let note = valuation ? valuationLabel(valuation) : '';
   let message = '';
-  if (state?.applicable && state.estimated) {
-    note = '统一行情估算';
-    if (state.fetched_at) note += ` · 获取于 ${quoteTime(state.fetched_at)}（北京时间）`;
-  }
   if (running) note = `正在刷新行情…${state?.estimated ? ' · 暂显示上次估值' : ''}`;
   else if (state && !state.applicable) message = '估值已变化，请刷新行情。';
   else if (state?.applicable && state.missing?.length) {
@@ -46,7 +54,8 @@ function updateQuoteControls() {
   } else if (state?.error) message = '行情暂时无法更新，请稍后重试。';
   if (quoteError) message = quoteError;
   if(valuation?.missing?.length) message += `${message?' ':''}${valuation.missing.join('、')}缺少同日价格，总资产与相关盈亏待估值；可刷新行情。`;
-  document.querySelector('#quote-status').textContent = note;
+  const status = document.querySelector('#quote-status');
+  status.textContent = selected === 0 && !running ? '' : note;
   const feedback = document.querySelector('#quote-message');
   feedback.textContent = message; feedback.hidden = !message;
 }
@@ -222,22 +231,35 @@ function profitNote() {
   return '<details class="calculation-note"><summary>盈亏怎么算</summary><p>累计盈亏从账户期初估值开始计算，包含已实现盈亏、持仓涨跌、分红与手续费，入出金及内部现金划转不计盈利。持仓划转前的盈亏留在原策略，之后归接收策略。期初估值并非历史买入成本。</p><p>全部持仓统一使用同一估值日的收盘价，或同一轮完整获取的行情。成交价不补入展示估值；缺少同日价格时，相关市值和盈亏显示待估值。现金及持仓数量使用最新账目。下方收盘收益率只使用有效收盘记录，独立模拟收益与实际账户分开计算。</p></details>';
 }
 
+function reconciliation(account) {
+  const value = amount => finite(amount) ? money(amount) : '待估值';
+  const groups = Object.entries(account.holdings_by_kind).map(([kind, amount]) =>
+    `<button type="button" data-holding-filter="${kind}" aria-controls="account-holdings"><span>${HOLDING_NAMES[kind]}${kind === 'other' ? '' : '市值'}</span><b>${value(amount)}</b></button>`).join('');
+  const cash = Object.entries(STRATEGY_NAMES).map(([id, name]) =>
+    `<div><dt>${name}</dt><dd>${money(account.cash_by_strategy[id])}</dd></div>`).join('');
+  return `<section class="reconciliation" aria-label="账户对账">
+    <div class="reconciliation-top"><div><span>总资产 / 元</span><strong>${value(account.equity)}</strong><small>${esc(valuationLabel(account.valuation))}</small></div><div class="reconciliation-capital"><span>累计投入 / 元</span><b>${money(account.net_contributed)}</b><small>期初资产 + 净入金</small><span>累计盈亏 / 元</span><b>${account.pnl > 0 ? '+' : ''}${value(account.pnl)}</b></div></div>
+    <div class="reconciliation-breakdown" role="group" aria-label="资产明细（元）">${groups}<button type="button" id="account-cash-toggle" aria-controls="account-cash-detail" aria-expanded="false"><span>现金</span><b>${money(account.cash)}</b></button></div>
+    <dl id="account-cash-detail" class="reconciliation-cash" aria-label="各策略现金（元）" hidden>${cash}</dl>
+  </section>`;
+}
+
 function positionActions(code, strategy, held=true, suggestion=null) {
   const button = side => `<button type="button" class="text-button" ${suggestion?.side===side ? `data-fill="${suggestion.index}"` : `data-position-side="${side}" data-code="${esc(code)}" data-strategy="${esc(strategy)}"`}>${side==='buy' ? '买入' : '卖出'}</button>`;
   return `<div class="position-actions">${button('buy')}${held ? button('sell') : ''}</div>`;
 }
 
 function accountDetails(account) {
-  const stats = [[money(account.equity),'总资产 / 元'],[money(account.invested),'持仓市值 / 元'],[money(account.cash),'现金 / 元'],[`${account.pnl>0?'+':''}${money(account.pnl)}`,'累计盈亏 / 元']];
+  const filters = Object.keys(account.holdings_by_kind).map(kind => `<option value="${kind}">${HOLDING_NAMES[kind]}</option>`).join('');
   const rows = account.positions.map(row => {
     const owners = account.strategy_positions.filter(item=>item.code===row.code && item.count>0);
-    return `<tr><td>${esc(row.name)}<small>${esc(row.code)}</small></td><td>${number(row.count)}</td><td>${quotePrice(row)}</td><td>${money(row.market_value)}</td><td>${ratio(row.market_value,account.equity)}</td><td>${positionActions(row.code, owners.length===1 ? owners[0].strategy : '')}</td></tr>`;
+    return `<tr data-holding-kind="${row.kind}"><td>${esc(row.name)}<small>${esc(row.code)}<span class="holding-mobile-count"> · ${number(row.count)} 份</span></small></td><td>${number(row.count)}</td><td>${quotePrice(row)}</td><td>${finite(row.market_value) ? money(row.market_value) : '待估值'}</td><td>${ratio(row.market_value,account.equity)}</td><td>${positionActions(row.code, owners.length===1 ? owners[0].strategy : '')}</td></tr>`;
   }).join('');
-  return `<div class="stats">${stats.map(([value,label]) => `<div class="stat"><span>${label}</span><b>${value}</b></div>`).join('')}</div>
+  return `${reconciliation(account)}<nav class="account-shortcuts" aria-label="账户快捷入口"><button type="button" class="secondary-button" data-holding-filter="" aria-controls="account-holdings">查看持仓</button><button type="button" class="secondary-button" id="account-records-link" aria-controls="account-records">查看流水</button></nav>
     ${profitNote()}<div class="account-entry-bar">${entryActions()}</div>
     ${allocationCharts(account)}${chartSection(account)}
-    <section class="section"><div class="section-heading"><h2>账户持仓</h2></div><div class="table-wrap"><table><thead><tr><th>标的</th><th>份额</th><th>价格 / 元</th><th>市值 / 元</th><th>资产占比</th><th>记账</th></tr></thead><tbody>${rows || '<tr><td colspan="6" class="empty">暂无持仓</td></tr>'}</tbody></table></div></section>
-    <section class="section"><div class="section-heading"><h2>近期流水</h2><span class="subtle">${showAllRecords?'全部历史':'最近 20 笔'}</span></div>${recordTable(account.trades)}</section>`;
+    <section id="account-holdings" class="section" aria-labelledby="account-holdings-title" tabindex="-1"><div class="section-heading"><h2 id="account-holdings-title">账户持仓</h2><select id="holding-filter" aria-label="持仓类别"><option value="">全部持仓</option>${filters}</select></div><div class="table-wrap"><table class="account-holdings-table"><thead><tr><th scope="col">标的</th><th scope="col">份额</th><th scope="col">价格 / 元</th><th scope="col">市值 / 元</th><th scope="col">资产占比</th><th scope="col">记账</th></tr></thead><tbody>${rows}<tr id="holdings-empty" hidden><td colspan="6" class="empty">暂无持仓</td></tr></tbody></table></div></section>
+    <section id="account-records" class="section" aria-labelledby="account-records-title" tabindex="-1"><div class="section-heading"><h2 id="account-records-title">近期流水</h2><span class="subtle">${showAllRecords?'全部历史':'最近 20 笔'}</span></div>${recordTable(account.trades)}</section>`;
 }
 
 function recordTable(rows) {
@@ -426,6 +448,7 @@ async function reloadAccount({deferWhileRefreshing=false} = {}) {
 function bindAccountActions(view) {
   const account = data.accounts[0];
   if (!account?.can_record || (view.id!=='etf' && view.account_id!=='etf')) return;
+  if (view.id === 'etf') bindReconciliation(account);
   const strategy = view.account_id==='etf' ? view.id : 'unassigned';
   document.querySelector('#manual-entry').onclick = () => openEntry(account, null, strategy);
   document.querySelector('#position-transfer').onclick = () => openEntry(account, {side:'assign'}, strategy);
@@ -463,6 +486,33 @@ function bindAccountActions(view) {
       button.disabled = false;
     }
   });
+}
+
+function bindReconciliation(account) {
+  const filter = document.querySelector('#holding-filter');
+  const rows = [...document.querySelectorAll('[data-holding-kind]')];
+  function showHoldings(kind) {
+    holdingKind = Object.hasOwn(account.holdings_by_kind, kind) ? kind : '';
+    filter.value = holdingKind;
+    for (const row of rows) row.hidden = !!holdingKind && row.dataset.holdingKind !== holdingKind;
+    document.querySelector('#holdings-empty').hidden = rows.some(row => !row.hidden);
+  }
+  function jumpTo(id) {
+    const section = document.getElementById(id);
+    section.focus({preventScroll:true});
+    section.scrollIntoView();
+  }
+  showHoldings(holdingKind);
+  filter.onchange = () => showHoldings(filter.value);
+  for (const button of document.querySelectorAll('[data-holding-filter]')) {
+    button.onclick = () => { showHoldings(button.dataset.holdingFilter); jumpTo('account-holdings'); };
+  }
+  document.querySelector('#account-records-link').onclick = () => jumpTo('account-records');
+  const cash = document.querySelector('#account-cash-detail');
+  document.querySelector('#account-cash-toggle').onclick = event => {
+    cash.hidden = !cash.hidden;
+    event.currentTarget.setAttribute('aria-expanded', String(!cash.hidden));
+  };
 }
 
 function openEntry(account, suggestion, strategy='unassigned', options={}) {
@@ -682,12 +732,11 @@ function allocationCharts(account) {
   const bars = allocationRows(account).map((row,index)=>{
     const actual = Math.max(0,Math.min(100,row.actual_pct*100));
     const target = finite(row.target) ? row.target*100 : null;
-    const delta = finite(row.target) ? (row.actual_pct-row.target)*100 : null;
-    let deviation='—';
-    if (delta!==null) deviation=Math.abs(delta)<.005?'已对齐':`${delta>0?'超配':'低配'} ${Math.abs(delta).toFixed(2)} 个百分点`;
+    const delta = finite(row.target) && finite(row.actual_pct) ? row.actual_pct-row.target : null;
+    const deviation = delta===null ? '—' : isAllocationBalanced(delta) ? '已配平' : `${delta>0?'超配':'低配'} ${(Math.abs(delta)*100).toFixed(2)} 个百分点`;
     return `<div class="allocation-row"><div class="allocation-row-top"><strong>${esc(row.name)}</strong><b>${price(row.assets)} <small>元</small></b></div><div class="allocation-row-labels"><span>实际 ${actual.toFixed(1)}%</span><span>${target===null?'目标未设置':`目标 ${target.toFixed(1)}%`}</span></div><div class="allocation-track" role="img" aria-label="${esc(row.name)}实际${actual.toFixed(1)}%，${target===null?'目标未设置':`目标${target.toFixed(1)}%`}"><div class="allocation-fill allocation-${row.id}" style="width:${actual}%"></div>${target===null?'':`<i class="allocation-target" style="left:${target}%"></i>`}</div><div class="allocation-row-foot"><span>持仓 ${number(row.invested)} · 现金 ${number(row.cash)}</span><span>${deviation}</span></div></div>`;
   }).join('');
-  return `<div class="allocation-grid"><section class="section asset-panel"><div class="section-heading"><h2>资产构成</h2></div><div class="asset-layout"><svg class="asset-donut" viewBox="0 0 210 210" role="img" aria-label="账户持仓与现金占比"><circle cx="105" cy="105" r="78" fill="none" stroke="#edf1eb" stroke-width="24"/>${rings}<text id="donut-label" x="105" y="91" text-anchor="middle" class="donut-label">总资产</text><text id="donut-value" x="105" y="117" text-anchor="middle" class="donut-value">${number(account.equity)}</text><text id="donut-share" x="105" y="137" text-anchor="middle" class="donut-label">元</text></svg><div class="asset-legend">${slices.map((slice,index)=>`<button type="button" class="asset-legend-item" data-asset-index="${index}"><i style="background:${slice.color}"></i><span>${slice.name}<small>${price(slice.value)} 元</small></span><b>${ratio(slice.value,account.equity)}</b></button>`).join('')}</div></div></section><section class="section strategy-panel"><div class="section-heading"><h2>策略配比</h2><div class="allocation-actions"><button type="button" id="budget-settings" class="text-button">编辑配置</button><button type="button" id="cash-settings" class="text-button">分配现金</button></div></div><div class="allocation-legend"><i></i> 实际 <i class="target-key"></i> 目标 <span>含各策略现金</span></div>${bars}</section></div>`;
+  return `<div class="allocation-grid"><section class="section asset-panel"><div class="section-heading"><h2>资产构成</h2></div><div class="asset-layout"><svg class="asset-donut" viewBox="0 0 210 210" role="img" aria-label="账户持仓与现金占比"><circle cx="105" cy="105" r="78" fill="none" stroke="#edf1eb" stroke-width="24"/>${rings}<text id="donut-label" x="105" y="91" text-anchor="middle" class="donut-label">总资产</text><text id="donut-value" x="105" y="117" text-anchor="middle" class="donut-value">${number(account.equity)}</text><text id="donut-share" x="105" y="137" text-anchor="middle" class="donut-label">元</text></svg><div class="asset-legend">${slices.map((slice,index)=>`<button type="button" class="asset-legend-item" data-asset-index="${index}"><i style="background:${slice.color}"></i><span>${slice.name}<small>${price(slice.value)} 元</small></span><b>${ratio(slice.value,account.equity)}</b></button>`).join('')}</div></div></section><section class="section strategy-panel"><div class="section-heading"><h2>策略配比</h2><div class="allocation-actions"><button type="button" id="budget-settings" class="text-button">编辑配置</button><button type="button" id="cash-settings" class="text-button">分配现金</button></div></div><div class="allocation-legend"><i></i> 实际 <i class="target-key"></i> 目标 <span>含各策略现金 · ${allocationToleranceNote}</span></div>${bars}</section></div>`;
 }
 
 function bindOverviewCharts(account) {
@@ -724,17 +773,19 @@ function strategyPositionTable(strategy) {
     const actual=code==='CASH'?strategy.cash:position ? position.market_value : 0;
     const weight=strategy.target_weights[code] ?? 0;
     const target=finite(strategy.budget)&&finite(weight)?strategy.budget*weight:null;
-    const gap = strategy.budget>0 && finite(target) ? (Math.round(actual*100)-Math.round(target*100))/100 : null;
+    const gap = strategy.budget>0 && finite(target) && finite(actual) ? (Math.round(actual*100)-Math.round(target*100))/100 : null;
     const deviation = finite(gap) ? Math.abs(gap)/strategy.budget : null;
     const level = finite(deviation) && thresholds ? deviation>thresholds.single ? 'strong' : deviation>=thresholds.trade ? 'attention' : '' : '';
     const index = suggestions.findIndex(item=>item.code===code);
     const item = wallet.quote_refresh?.estimated ? null : suggestions[index];
-    const difference = !finite(gap) ? `<span class="subtle">${finite(strategy.budget_pct)?'待估值':'待设置目标'}</span>` : `<strong class="allocation-gap">${gap===0 ? '已对齐' : `${gap>0 ? '超配' : '低配'} ${money(Math.abs(gap))} 元`}</strong><small>${(deviation*100).toFixed(2)} 个百分点${level==='strong' ? ' · 偏离较大' : ''}</small>`;
+    const difference = !finite(gap) ? `<span class="subtle">${finite(strategy.budget_pct)?'待估值':'待设置目标'}</span>`
+      : isAllocationBalanced(deviation) ? '<span class="subtle">已配平</span>'
+      : `<strong class="allocation-gap">${gap>0 ? '超配' : '低配'} ${money(Math.abs(gap))} 元</strong><small>${(deviation*100).toFixed(2)} 个百分点${level==='strong' ? ' · 偏离较大' : ''}</small>`;
     const reference = item ? `<small>${item.price_issue ? esc(item.price_issue) : `参考${item.side==='sell' ? '减持' : '增持'}约 ${number(item.qty)} 份`}</small>${item.cash_note ? `<small class="cash-note">${esc(item.cash_note)}</small>` : ''}` : '';
     const actions = code==='CASH' ? '<button type="button" class="text-button" data-open-cash>分配现金</button>' : positionActions(code,strategy.id,(position?.count || 0)>0,item ? {...item,index} : null);
     return `<tr data-allocation-code="${esc(code)}"${level ? ` class="allocation-${level}"` : ''}><td>${esc(name)}${code==='CASH'?'':`<small>${esc(code)}${code in strategy.target_weights ? '' : ' · 目标外持仓'}</small>`}</td><td>${code==='CASH'?'—':number(position?.count || 0)}</td><td>${position ? quotePrice(position) : price(null)}</td><td>${money(actual)}<small>策略内 ${pct(strategy.assets>0?actual/strategy.assets:null)}</small></td><td>${money(target)}<small>目标权重 ${pct(weight)}</small></td><td>${difference}<span class="allocation-mobile-values">现 ${money(actual)}<br>目标 ${money(target)}</span>${reference}</td><td>${actions}</td></tr>`;
   }).join('');
-  return `${priceIssue && !wallet.quote_refresh?.estimated ? `<p class="warning">参考份额暂缺：${esc(priceIssue)}。</p>` : ''}<div class="table-wrap"><table class="allocation-table core-allocation-table"><thead><tr><th>资产</th><th>份额</th><th>价格 / 元</th><th>当前金额 / 元</th><th>目标金额 / 元</th><th>超配 / 低配</th><th>记账</th></tr></thead><tbody>${rows}</tbody></table></div><details class="calculation-note"><summary>配比说明</summary><p>${basisNote}${thresholdNote}</p></details>`;
+  return `${priceIssue && !wallet.quote_refresh?.estimated ? `<p class="warning">参考份额暂缺：${esc(priceIssue)}。</p>` : ''}<div class="table-wrap"><table class="allocation-table core-allocation-table"><thead><tr><th>资产</th><th>份额</th><th>价格 / 元</th><th>当前金额 / 元</th><th>目标金额 / 元</th><th>配比偏离</th><th>记账</th></tr></thead><tbody>${rows}</tbody></table></div><details class="calculation-note"><summary>配比说明</summary><p>${basisNote}${allocationToleranceNote}。${thresholdNote}</p></details>`;
 }
 
 function openCashAllocation(account, options={}) {

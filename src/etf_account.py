@@ -8,6 +8,7 @@ import math
 from pathlib import Path
 
 from data_provider import canonical_stock_code
+from data_provider.codes import is_a_stock_code, is_etf_code
 from data_provider.security_names import security_name
 
 FILENAME = "etf_account.json"
@@ -693,6 +694,15 @@ def collect_close(path, asof, close_prices, *, dry_run=False):
         return state
 
 
+def _holding_kind(code):
+    if is_a_stock_code(code):
+        return "stock"
+    # 行情路由还把 16、18 码族归入基金接口，对账时将它们单列。
+    if is_etf_code(code) and not code.startswith(("16", "18")):
+        return "etf"
+    return "other"
+
+
 def account_data(path, *, live_quotes=None):
     state = load(path)
     today = _today().isoformat()
@@ -750,12 +760,22 @@ def account_data(path, *, live_quotes=None):
                 view["strategy_pnl"][row["strategy"]] = None
     if missing:
         view.update(invested=None, equity=None, pnl=None)
+    grouped_values = {"etf": [], "stock": [], "other": []}
+    for row in view["positions"]:
+        row["kind"] = _holding_kind(row["code"])
+        grouped_values[row["kind"]].append(row["market_value"])
+    holdings_by_kind = {kind: round(math.fsum(values), 2) if None not in values else None
+                        for kind, values in grouped_values.items() if kind != "other" or values}
+    net_contributed = round(state["initial"]["equity"] + math.fsum(
+        event["amount"] if event["side"] == "deposit" else -event["amount"]
+        for event in state["events"] if event["date"] <= today and event["side"] in {"deposit", "withdraw"}), 2)
     for strategy in strategies:
         facts = _strategy_facts(state, view, strategy["id"])
         for key in ("positions", "budget", "invested", "pnl", "assets", "actual_pct",
                     "deviation", "remaining_budget", "buying_power", "cash"):
             strategy[key] = facts[key]
     return {"id": "etf", "name": "投资账户", "can_record": True, **view,
+            "holdings_by_kind": holdings_by_kind, "net_contributed": net_contributed,
             "performance": latest, "trades": [{**{k: v for k, v in e.items() if k != "request"},
                          **({"name": security_name(e["code"])} if e.get("code") else {})}
                        for e in reversed(state["events"])],
