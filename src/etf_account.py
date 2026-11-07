@@ -408,6 +408,16 @@ def _fund_event(payload, view, day):
     if side == "fund_redeem" and qty > view["fund_positions"].get(code, {}).get("qty", 0):
         raise ValueError("赎回份额超过已确认持仓")
     result = {"code": code, "qty": qty, "amount": amount, "strategy": "core"}
+    if side == "fund_buy" and "subscription_fee" in payload:
+        fee = payload["subscription_fee"]
+        if not isinstance(fee, dict) or set(fee) != {"kind", "value"}:
+            raise ValueError("申购费用设置无效")
+        kind, value = fee["kind"], fee["value"]
+        if kind not in ("none", "rate", "fixed") or type(value) not in (int, float) or not math.isfinite(value) or value < 0:
+            raise ValueError("申购费用设置无效")
+        if (kind == "none" and value != 0) or (kind == "fixed" and value >= amount):
+            raise ValueError("申购费用与实际扣款不匹配")
+        result["subscription_fee"] = {"kind": kind, "value": value}
     if side == "fund_buy" and (payload.get("nav") is not None or payload.get("nav_date")):
         nav, nav_date = _money(payload.get("nav")), _day(payload.get("nav_date", ""))
         if nav_date > day or nav > 1e8 or round(nav, 8) != nav:
@@ -423,7 +433,7 @@ def lookup_fund_nav(_path, payload):
     code, day = _fund_code(payload.get("code")), _day(payload.get("date", ""))
     mark = latest_fund_nav(code, day)
     if mark is None or mark[0] != day:
-        raise ValueError("该日单位净值暂不可用，可按确认单手动填写")
+        raise ValueError("该买入日的单位净值暂不可用，请确认日期或稍后重试")
     return {"date": day, "nav": mark[1]}
 
 
@@ -1042,8 +1052,11 @@ def account_data(path):
     core["allocation_groups"] = _allocation_groups(state["_config"], core, funds, view["prices"])
     core["allocation_budget"] = core["budget"]
     core["allocation_assets"] = core["assets"]
+    fund_subscription_fees = {event["code"]: event["subscription_fee"] for event in state["events"]
+                              if event["side"] == "fund_buy" and "subscription_fee" in event}
     return {"id": "etf", "name": "投资账户", "can_record": True, **view,
             "holdings_by_kind": holdings_by_kind, "net_contributed": net_contributed,
+            "fund_subscription_fees": fund_subscription_fees,
             "performance": latest, "trades": [{**{k: v for k, v in e.items() if k != "request"},
                          **({"name": f"场外基金 {e['code']}" if e["side"] in FUND_TRADES
                              else security_name(e["code"])} if e.get("code") else {})}

@@ -79,23 +79,24 @@
         <div class="section-heading"><h2 id="fund-title">场外基金记账</h2><button id="fund-cancel" type="button" class="text-button">关闭</button></div>
         <p class="subtle">使用多资产配置现金。请按交易确认单和实际资金变动记账。</p>
         <fieldset id="fund-fields" class="entry-fields">
+          <p id="fund-quick-summary" class="subtle" hidden></p>
           <div class="entry-grid">
-            <label>基金代码<input name="code" inputmode="numeric" pattern="[0-9]{6}" maxlength="6" required></label>
-            <label>记账日期<input name="date" type="date" required></label>
+            <label id="fund-code-field">基金代码<input name="code" inputmode="numeric" pattern="[0-9]{6}" maxlength="6" required></label>
+            <label id="fund-record-day-field">记账日期<input name="date" type="date" required></label>
             <label><span id="fund-amount-label">实际扣款 / 元</span><input name="amount" type="number" min="0.01" step="0.01" required></label>
-            <label><span id="fund-qty-label">份额</span><input name="qty" type="number" min="0.000001" max="1000000000" step="0.000001" required></label>
+            <label id="fund-qty-field"><span id="fund-qty-label">份额</span><input name="qty" type="number" min="0.000001" max="1000000000" step="0.000001" required></label>
           </div>
-          <div id="fund-buy-tools">
+          <details id="fund-buy-tools">
+            <summary>买入日与费用</summary>
             <div class="entry-grid">
               <label>申购费<select name="fee_kind"><option value="">选择费型</option><option value="none">免申购费</option><option value="rate">按比例</option><option value="fixed">固定金额</option></select></label>
               <label id="fund-fee-field" hidden><span id="fund-fee-label">实际费率 / %</span><input name="fee" type="number" min="0" step="any"></label>
-              <label>申购净值日期<input name="nav_date" type="date"></label>
-              <label>单位净值 / 元<input name="nav" type="number" min="0.00000001" max="100000000" step="0.00000001"></label>
+              <label><span id="fund-nav-day-label">买入日</span><input name="nav_date" type="date"></label>
+              <label id="fund-nav-field">单位净值 / 元<input name="nav" type="number" min="0.00000001" max="100000000" step="0.00000001"></label>
             </div>
             <button type="button" class="text-button" id="fund-fetch-nav">查该日净值</button>
             <button type="button" class="text-button" id="fund-recalc-qty" hidden>按净值重算份额</button>
-            <p class="subtle">扣款、费型和净值齐全后自动计算份额，可按确认单修正。</p>
-          </div>
+          </details>
           <p id="fund-preview" class="entry-preview"></p>
         </fieldset>
         <p id="fund-error" class="warning" role="alert" hidden></p>

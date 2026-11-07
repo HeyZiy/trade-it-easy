@@ -319,6 +319,20 @@ def test_confirmed_fund_trades_use_core_cash_and_are_replayed_on_edit(account, m
     assert account_data(account)["cash"] == 901
 
 
+def test_fund_subscription_remembers_last_confirmed_fee_per_code(account):
+    first = {"kind": "rate", "value": .15}
+    second = {"kind": "fixed", "value": 2.5}
+    for code, fee in (("000051", first), ("000123", {"kind": "none", "value": 0}), ("000051", second)):
+        trade = record_event(account, event(account, "fund_buy", code=code, qty=5, amount=10,
+                                             subscription_fee=fee))
+        assert trade["subscription_fee"] == fee
+    view = account_data(account)
+    assert view["fund_subscription_fees"] == {"000051": second, "000123": {"kind": "none", "value": 0}}
+    with pytest.raises(ValueError, match="费用"):
+        record_event(account, event(account, "fund_buy", code="000051", qty=1, amount=2,
+                                    subscription_fee=second))
+
+
 def test_old_fund_snapshot_is_excluded_from_account_ledger(account):
     from src import etf_account as wallet
 
