@@ -23,7 +23,6 @@ let data, selected = 0, chartRange = 'all', chartObserver;
 let selectedReport, reportRequest, configRequest;
 let showAllRecords = false;
 let holdingKind = '';
-const expandedAllocationGroups = new Set();
 const reportCache = new Map();
 const requestedFundNames = new Set();
 let quoteRequestPending = false, quotePollTimer, quotePolling = false, quoteError = '';
@@ -540,18 +539,6 @@ function bindAccountActions(view) {
   if (budgetButton) budgetButton.onclick = () => openBudgets(account);
   const coreButton = document.querySelector('#core-settings');
   if (coreButton) coreButton.onclick = () => openConfiguration();
-  for (const button of document.querySelectorAll('[data-allocation-toggle]')) {
-    button.onclick = () => {
-      const code = button.dataset.allocationToggle;
-      const open = !expandedAllocationGroups.has(code);
-      if (open) expandedAllocationGroups.add(code);
-      else expandedAllocationGroups.delete(code);
-      button.setAttribute('aria-expanded', String(open));
-      for (const id of button.getAttribute('aria-controls').split(' ')) {
-        document.getElementById(id).hidden = !open;
-      }
-    };
-  }
   for (const button of document.querySelectorAll('[data-fund-side]')) {
     button.onclick = () => openFundTrade(account, button.dataset.fundSide, button.dataset.code);
   }
@@ -844,7 +831,7 @@ function bindOverviewCharts(account) {
   });
 }
 
-function allocationProductRow(row, strategyId, id, open) {
+function allocationProductRow(row, strategyId) {
   const fund = row.kind === 'fund';
   const held = fund ? !!row.qty : row.count > 0;
   const name = fund ? fundDisplayName(row.code) || '场外基金' : row.name;
@@ -857,7 +844,7 @@ function allocationProductRow(row, strategyId, id, open) {
     ? fundActions(row.code, held)
     : positionActions(row.code, strategyId, held);
   const mobile = held ? `<small class="allocation-product-mobile">${shares} 份${fund ? (nav ? ` · 净值 ${nav}<br>${esc(row.date)}` : ' · 待估值') : ''}</small>` : '';
-  return `<tr id="${esc(id)}" class="allocation-product-row"${open ? '' : ' hidden'}>
+  return `<tr class="allocation-product-row">
     <td>${esc(name)}${note ? `<small>${esc(note)}</small>` : ''}${mobile}</td>
     <td>${shares ?? '—'}</td><td>${fund || held ? mark : '—'}</td><td>${value}</td>
     <td></td><td><span class="allocation-product-mobile">${held ? `${value}${finite(row.market_value) ? ' 元' : ''}` : '—'}</span></td><td>${action}</td>
@@ -881,8 +868,11 @@ function strategyPositionTable(strategy) {
   const rows=strategy.allocation_groups.map(group=>{
     const {id:code, market_value:actual, weight, products} = group;
     const name = fundDisplayName(group.name_fund_code) || group.name;
-    const showProducts = products.length>1 || products.some(row => row.kind==='fund');
-    const position = showProducts ? null : products[0];
+    const position = products.length === 1 ? products[0] : null;
+    const fund = position?.kind === 'fund';
+    const held = fund ? position.qty > 0 : position?.count > 0;
+    const shares = fund ? fundShares(position.qty) : number(position?.count);
+    const mark = held ? (fund ? fundMark(position) : quotePrice(position)) : '—';
     const target=finite(budget)?budget*weight:null;
     const gap = budget>0 && finite(target) && finite(actual) ? (Math.round(actual*100)-Math.round(target*100))/100 : null;
     const deviation = finite(gap) ? Math.abs(gap)/budget : null;
@@ -908,18 +898,21 @@ function strategyPositionTable(strategy) {
     let actions = '', details = '', productRows = '';
     if (code === 'CASH') {
       actions = '<button type="button" class="text-button" data-open-cash>分配现金</button>';
-    } else if (showProducts) {
-      const open = expandedAllocationGroups.has(code);
-      const ids = products.map((_, index) => `allocation-product-${code}-${index}`);
-      details = `<button type="button" class="allocation-toggle" data-allocation-toggle="${esc(code)}" aria-expanded="${open}" aria-controls="${esc(ids.join(' '))}">${products.length} 个产品</button>`;
-      productRows = products.map((product, index) => allocationProductRow(product, strategy.id, ids[index], open)).join('');
+    } else if (position) {
+      actions = fund ? fundActions(position.code, held)
+        : positionActions(position.code, strategy.id, held, item ? {...item,index} : null);
+      const productName = fund ? fundDisplayName(position.code) : position.name;
+      const notes = [productName !== name && productName, position.code,
+        position.pending_amount && `待确认 ${money(position.pending_amount)} 元`].filter(Boolean);
+      details = `<small>${esc(notes.join(' · '))}</small>`;
+      if (held) details += `<div class="allocation-product-mobile"><small>${shares} 份${fund ? ` · ${mark}` : ''}</small></div>`;
     } else {
-      actions = positionActions(code, strategy.id, position.count > 0, item ? {...item,index} : null);
-      details = `<small>${esc(position.code)}</small>`;
+      details = '<small>组内合计</small>';
+      productRows = products.map(product => allocationProductRow(product, strategy.id)).join('');
     }
-    return `<tr data-allocation-code="${esc(code)}"${level ? ` class="allocation-${level}"` : ''}><td>${esc(name)}${group.outside ? '<small>目标外持仓</small>' : ''}${details}</td><td>${position?number(position.count):'—'}</td><td>${position?.count ? quotePrice(position) : price(null)}</td><td>${money(actual)}<small>配置内 ${pct(assets>0 && finite(actual)?actual/assets:null)}</small></td><td>${money(target)}<small>目标权重 ${pct(weight)}</small></td><td>${difference}<span class="allocation-mobile-values">现 ${money(actual)}<br>目标 ${money(target)}</span>${reference}</td><td>${actions}</td></tr>${productRows}`;
+    return `<tr data-allocation-code="${esc(code)}"${level ? ` class="allocation-${level}"` : ''}><td>${esc(name)}${group.outside ? '<small>目标外持仓</small>' : ''}${details}</td><td>${shares}</td><td>${mark}</td><td>${money(actual)}<small>配置内 ${pct(assets>0 && finite(actual)?actual/assets:null)}</small></td><td>${money(target)}<small>目标权重 ${pct(weight)}</small></td><td>${difference}<span class="allocation-mobile-values">现 ${money(actual)}<br>目标 ${money(target)}</span>${reference}</td><td>${actions}</td></tr>${productRows}`;
   }).join('');
-  return `<div class="table-wrap"><table class="allocation-table core-allocation-table"><thead><tr><th>配置项</th><th>份额</th><th>价格 / 元</th><th>当前金额 / 元</th><th>目标金额 / 元</th><th>配比偏离</th><th>记账</th></tr></thead><tbody>${rows}</tbody></table></div><details class="calculation-note"><summary>配比说明</summary><p>${basisNote}${allocationToleranceNote}。${thresholdNote} 多产品配置按合计市值判断偏离，组内产品由你选择。</p></details>`;
+  return `<div class="table-wrap"><table class="allocation-table core-allocation-table"><thead><tr><th>产品与配置</th><th>份额</th><th>价格 / 元</th><th>当前金额 / 元</th><th>目标金额 / 元</th><th>配比偏离</th><th>记账</th></tr></thead><tbody>${rows}</tbody></table></div><details class="calculation-note"><summary>配比说明</summary><p>${basisNote}${allocationToleranceNote}。${thresholdNote} 多产品配置按组内合计金额判断偏离。</p></details>`;
 }
 
 function openFundTrade(account, side, code, edit=null) {
@@ -1244,6 +1237,7 @@ async function openConfiguration() {
   } catch(failure) {if(controller.signal.aborted)return;error.textContent=failure instanceof TypeError ? '配置暂时无法加载，请关闭后重试。' : failure.message;error.hidden=false;return;}
   const percentInput=value=>+(value*100).toFixed(8);
   const memberCodes=value=>value.trim().split(/[\s,，、]+/).filter(Boolean);
+  const validCodes=codes=>codes.every(code=>/^[0-9]{6}$/.test(code));
   let draft;
   function total() {
     const weights=[...document.querySelectorAll('#config-assets [data-field=weight]')];
@@ -1262,21 +1256,19 @@ async function openConfiguration() {
     row.original=structuredClone(asset);
     const options=(values,current)=>values.map(([value,label])=>`<option value="${value}" ${value===current?'selected':''}>${label}</option>`).join('');
     const cash = asset.code==='CASH';
-    const code = asset.code.startsWith('FUND:') ? '' : asset.code;
+    const listed = cash || !asset.code || asset.code.startsWith('FUND:') ? [] : [asset.code, ...(asset.etf_codes || [])];
     row.innerHTML = `
       <td>
         <label ${cash?'hidden':''}>配置名称<input data-field="label" value="${esc(asset.label || '')}" maxlength="40" placeholder="如创业板"></label>
-        <label ${cash?'hidden':''}>主要场内代码</label>
-        <input data-field="code" value="${esc(code)}" type="${cash?'hidden':'text'}" inputmode="numeric" pattern="[0-9]{6}" maxlength="6" aria-label="主要场内代码">
-        <small data-name>${esc(result.names[asset.code] || (asset.code==='CASH'?'现金':asset.code))}</small>
+        <label ${cash?'hidden':''}>场内产品代码<input data-field="listed_codes" value="${esc(listed.join(', '))}" placeholder="多个用逗号隔开"></label>
+        <label ${cash?'hidden':''}>场外基金代码<input data-field="fund_codes" value="${esc((asset.fund_codes || []).join(', '))}" placeholder="多个用逗号隔开"></label>
+        <small data-name></small>
       </td>
       <td><input data-field="weight" type="number" value="${percentInput(asset.weight)}" min="0" max="100" step="any" required aria-label="内部权重"></td>
       <td>
         <details ${cash?'hidden':''}>
-          <summary>绑定产品与设置</summary>
+          <summary>其他设置</summary>
           <div class="config-advanced">
-            <label>其他场内代码<input data-field="etf_codes" value="${esc((asset.etf_codes || []).join(', '))}" placeholder="多个用逗号隔开"></label>
-            <label>场外基金代码<input data-field="fund_codes" value="${esc((asset.fund_codes || []).join(', '))}" placeholder="多个用逗号隔开"></label>
             <label>资产类别<select data-field="asset_type">${options([['equity','权益'],['bond','债券'],['gold','黄金'],['cash','现金']],asset.asset_type)}</select></label>
             <label>估值来源<select data-field="valuation_kind">${options([['none','不展示估值'],['csindex','中证指数'],['overseas','海外']],asset.valuation_kind)}</select></label>
             <label>跟踪指数<input data-field="tracked_index" value="${esc(asset.tracked_index || '')}" pattern="[0-9]{6}" maxlength="6"></label>
@@ -1289,13 +1281,17 @@ async function openConfiguration() {
     `;
     const field=name=>row.querySelector(`[data-field=${name}]`);
     function update() {
-      const code=field('code');
-      const fundOnly=!code.value && memberCodes(field('fund_codes').value).length>0;
-      code.setCustomValidity(!code.value && (!fundOnly || field('etf_codes').value.trim()) ? '请输入主要场内代码，或在绑定产品中填写场外基金代码。' : '');
-      const index=field('tracked_index'),indexed=!fundOnly && field('valuation_kind').value==='csindex';
+      const listedField=field('listed_codes'), fundField=field('fund_codes');
+      const listedCodes=memberCodes(listedField.value), fundCodes=memberCodes(fundField.value);
+      listedField.setCustomValidity(!cash && !listedCodes.length && !fundCodes.length ? '请至少填写一个场内或场外产品代码。'
+        : listedCodes.length>21 || !validCodes(listedCodes) ? '场内产品每组最多21个，代码须为六位数字。' : '');
+      fundField.setCustomValidity(fundCodes.length>20 || !validCodes(fundCodes) ? '场外基金每组最多20只，代码须为六位数字。' : '');
+      const hasListed=listedCodes.length>0;
+      const index=field('tracked_index'),indexed=hasListed && field('valuation_kind').value==='csindex';
       index.disabled=!indexed;index.required=indexed;
-      field('valuation_kind').disabled=field('dividend_style').disabled=fundOnly;
-      row.querySelector('[data-name]').textContent=cash?'现金':result.names[code.value] || (fundOnly?'仅场外基金':'');
+      field('valuation_kind').disabled=field('dividend_style').disabled=!hasListed;
+      const names=[...listedCodes.map(code=>result.names[code]), ...fundCodes.map(fundDisplayName)].filter(Boolean);
+      row.querySelector('[data-name]').textContent=cash?'现金':names.join(' · ');
       total();
     }
     row.oninput=update;row.onchange=update;
@@ -1324,19 +1320,18 @@ async function openConfiguration() {
     }
     const core=[...document.querySelectorAll('#config-assets tr')].map(row=>{
       const get=key=>row.querySelector(`[data-field=${key}]`).value;
-      const primary = get('code');
+      const [firstListed, ...etfs] = memberCodes(get('listed_codes'));
       const label = get('label').trim();
-      const etfs = memberCodes(get('etf_codes'));
       const funds = memberCodes(get('fund_codes'));
-      const valuation = primary ? get('valuation_kind') : 'none';
+      const valuation = firstListed ? get('valuation_kind') : 'none';
       const weight = Number(get('weight'));
       const asset = {
-        code: primary || `FUND:${funds[0]}`,
+        code: row.original.code === 'CASH' ? 'CASH' : firstListed || `FUND:${funds[0]}`,
         weight: weight === percentInput(row.original.weight) ? row.original.weight : weight / 100,
         asset_type: get('asset_type'),
         valuation_kind: valuation,
         tracked_index: valuation === 'csindex' ? get('tracked_index') : null,
-        dividend_style: !!primary && get('dividend_style') === 'true',
+        dividend_style: !!firstListed && get('dividend_style') === 'true',
         volatility_rank: Number(get('volatility_rank')),
       };
       if (label) asset.label = label;

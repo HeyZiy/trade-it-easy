@@ -70,7 +70,7 @@ def validate(config):
             raise ValueError("现金不能绑定产品")
         if fund_only(row) and (not funds or code != FUND_PREFIX + funds[0] or listed
                               or row["valuation_kind"] != "none" or row["dividend_style"]):
-            raise ValueError("仅场外配置须按基金代码建组，并使用手工净值")
+            raise ValueError("仅场外配置须按基金代码建组，估值使用基金公布的单位净值")
         for members, used in (([code, *listed], used_listed), (funds, used_funds)):
             if len(set(members)) != len(members) or used.intersection(members):
                 raise ValueError("同一产品只能归入一个配置，且组内不能重复")

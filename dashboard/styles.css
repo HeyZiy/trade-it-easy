@@ -161,10 +161,6 @@ footer { padding-top: 25px; font-size: 11px; color: #a0ab98; }
 .signal-dismiss { margin-top: 8px; padding: 0; font-size: 11px; }
 .allocation-table .cash-note { color: #946b31; }
 .core-actions { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 6px; }
-.allocation-toggle { display: flex; align-items: center; gap: 6px; margin-top: 4px; padding: 4px 8px; border: 1px solid #d9e7dd; border-radius: 5px; background: #f5f9f5; color: var(--green); font-size: 12px; white-space: nowrap; }
-.allocation-toggle::before { content: ''; width: 5px; height: 5px; border: solid currentColor; border-width: 0 1px 1px 0; transform: rotate(-45deg); }
-.allocation-toggle[aria-expanded="true"] { background: #e9f3eb; }
-.allocation-toggle[aria-expanded="true"]::before { transform: rotate(45deg); }
 .allocation-product-row { background: #f5f9f5; }
 .allocation-table .allocation-product-row > td { padding: 7px 10px; vertical-align: middle; border-bottom-color: #e5ede6; }
 .allocation-product-row > td:first-child { box-shadow: inset 3px 0 #a9c6b4; }
@@ -261,7 +257,8 @@ dialog::backdrop { background: #153e3566; }
 @media (max-width: 680px) { .allocation-grid { grid-template-columns: 1fr; }.asset-layout { flex-direction: row; min-height: 200px; }.asset-donut { width: 145px; }.asset-legend { gap: 13px; }.asset-legend-item { font-size: 11px; gap: 5px; }.asset-legend-item>b { margin-left: 0; }.allocation-actions { gap: 10px; } }
 
 .config-dialog { width: min(1040px, 96vw); max-width: 1040px; }
-.config-table input { width: 112px; }
+.config-table input[data-field="weight"] { width: 82px; }
+.config-table td:first-child input { width: clamp(116px, 32vw, 220px); }
 .config-table td:first-child label { display: block; font-size: 12px; color: var(--muted); }
 .config-table td:first-child input { display: block; margin: 4px 0; }
 .config-dialog input, .config-dialog select { padding: 9px; border: 1px solid #ccd8cf; border-radius: 6px; color: #1d3530; background: white; font: inherit; font-size: 13px; }
@@ -272,7 +269,7 @@ dialog::backdrop { background: #153e3566; }
 .config-dialog details { margin: 12px 0; }
 .config-table details { margin: 0; }
 .config-dialog fieldset:disabled { opacity: .65; }
-.config-table td:first-child:has(input[type="hidden"]) small { color: inherit; font-size: 13px; }
+.config-table td:first-child:not(:has(label:not([hidden]))) small { color: inherit; font-size: 13px; }
 @media (max-width: 680px) {
   .stat:nth-child(odd) { border-left: 0; }
   .chart-section>.section-heading { flex-wrap: wrap; }

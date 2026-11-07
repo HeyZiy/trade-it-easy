@@ -66,8 +66,8 @@
         <div class="entry-grid"><label>多资产配置目标占比 / %<input name="core" type="number" min="0" max="100" step="any" placeholder="暂不设置"></label><label>跨资产动量目标占比 / %<input name="rotation" type="number" min="0" max="100" step="any" placeholder="暂不设置"></label><label>质量动量目标占比 / %<input name="quality" type="number" min="0" max="100" step="any" placeholder="暂不设置"></label></div>
         <p class="subtle">以上占比按投资账户总资产计算，合计不超过100%。</p>
         <div class="section-heading"><h3>多资产配置内部配比</h3><button id="config-add" type="button" class="text-button">＋ 添加配置项</button></div>
-        <p class="subtle">按指数或用途命名。一个配置项可绑定多个产品，合计市值用于对比目标。仅配置场外基金时，留空主要场内代码。</p>
-        <div class="table-wrap"><table class="config-table"><thead><tr><th>配置名称与主要场内代码</th><th>权重 / %</th><th>产品与设置</th><th></th></tr></thead><tbody id="config-assets"></tbody></table></div>
+        <p class="subtle">每项可填场内产品、场外基金，或两类都填。组内合计金额用于对比目标。</p>
+        <div class="table-wrap"><table class="config-table"><thead><tr><th>配置名称与产品</th><th>权重 / %</th><th>设置</th><th></th></tr></thead><tbody id="config-assets"></tbody></table></div>
         <p id="config-total" class="entry-preview"></p>
         <details><summary>历史配置</summary><label>选择版本<select id="config-history"></select></label><button id="config-load-history" type="button" class="text-button">使用此版本</button><p class="subtle">保存后生效。</p></details>
         </fieldset>
