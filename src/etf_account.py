@@ -11,7 +11,7 @@ from pathlib import Path
 import re
 from uuid import uuid4
 
-from data_provider import canonical_stock_code
+from data_provider import canonical_stock_code, fund_names
 from data_provider.codes import is_a_stock_code, is_etf_code
 from data_provider.security_names import security_name
 from src.trading_calendar import latest_trading_day_on_or_before
@@ -473,6 +473,13 @@ def _fund_event(payload, view, day):
     return result
 
 
+def lookup_fund_names(_path, payload):
+    codes = payload.get("codes")
+    if not isinstance(codes, list) or not 1 <= len(codes) <= 100:
+        raise ValueError("请提供一至一百个基金代码")
+    return {"names": fund_names.lookup({_fund_code(code) for code in codes})}
+
+
 def lookup_fund_nav(_path, payload):
     """按申购适用日期查询单位净值。"""
     from data_provider.fund_nav import latest_fund_nav
@@ -568,12 +575,12 @@ def refresh_fund_navs(path, through):
     return result
 
 
-def _allocation_groups(config, strategy, funds, prices, pending):
+def _allocation_groups(config, strategy, funds, prices, pending, names):
     ungrouped_listed = {row["code"]: row for row in strategy["positions"]}
     ungrouped_funds = dict(funds)
     for order in pending.values():
         code = order["code"]
-        row = ungrouped_funds.get(code, {"code": code, "market_value": 0})
+        row = ungrouped_funds.get(code, {"code": code, "name": names.get(code), "market_value": 0})
         ungrouped_funds[code] = {**row, "pending_amount": round(row.get("pending_amount", 0) + order["amount"], 2)}
     groups = []
     for asset in config["core"]:
@@ -591,13 +598,14 @@ def _allocation_groups(config, strategy, funds, prices, pending):
             products.append({**position, "kind": "listed"})
         for member in asset.get("fund_codes", []):
             position = ungrouped_funds.pop(member, None)
-            products.append({**(position or {"code": member, "market_value": 0}), "kind": "fund"})
+            products.append({**(position or {"code": member, "name": names.get(member), "market_value": 0}), "kind": "fund"})
         first_product = products[0]
         values = [row["market_value"] + row.get("pending_amount", 0)
                   if row["market_value"] is not None else None for row in products]
         groups.append({
             "id": code,
             "name": asset.get("label") or first_product.get("name") or f"场外基金 {first_product['code']}",
+            "name_fund_code": first_product["code"] if not asset.get("label") and first_product["kind"] == "fund" else None,
             "weight": asset["weight"],
             "market_value": None if None in values else round(sum(values), 2),
             "products": products,
@@ -605,7 +613,8 @@ def _allocation_groups(config, strategy, funds, prices, pending):
         })
     groups.extend({"id": row["code"], "name": row["name"], "weight": 0, "market_value": row["market_value"],
                    "products": [{**row, "kind": "listed"}], "outside": True} for row in ungrouped_listed.values())
-    groups.extend({"id": f"outside-fund:{code}", "name": f"场外基金 {code}", "weight": 0,
+    groups.extend({"id": f"outside-fund:{code}", "name": row.get("name") or f"场外基金 {code}",
+                   "name_fund_code": code, "weight": 0,
                    "market_value": (row["market_value"] + row.get("pending_amount", 0)
                                     if row["market_value"] is not None else None),
                    "products": [{**row, "kind": "fund"}], "outside": True}
@@ -1163,8 +1172,14 @@ def account_data(path):
         event["amount"] if event["side"] == "deposit" else -event["amount"]
         for event in state["events"] if event["date"] <= today and event["side"] in {"deposit", "withdraw"}), 2)
     core = next(strategy for strategy in strategies if strategy["id"] == "core")
+    fund_codes = {event["code"] for event in state["events"] if event["side"] in FUND_TRADES}
+    fund_codes.update(code for asset in state["_config"]["core"] for code in asset.get("fund_codes", []))
+    names = fund_names.names_for(fund_codes)
+    for row in [*funds.values(), *view["fund_pending"].values()]:
+        if row["code"] in names:
+            row["name"] = names[row["code"]]
     core["allocation_groups"] = _allocation_groups(state["_config"], core, funds, view["prices"],
-                                                   view["fund_pending"])
+                                                   view["fund_pending"], names)
     core["pending_fund_value"] = view["pending_fund_value"]
     core["allocation_budget"] = core["budget"]
     core["allocation_assets"] = core["assets"]
@@ -1173,8 +1188,9 @@ def account_data(path):
     return {"id": "etf", "name": "投资账户", "can_record": True, **view,
             "holdings_by_kind": holdings_by_kind, "net_contributed": net_contributed,
             "fund_subscription_fees": fund_subscription_fees,
+            "fund_names": {code: names.get(code) for code in sorted(fund_codes)},
             "performance": latest, "trades": [{**{k: v for k, v in e.items() if k != "request"},
-                         **({"name": f"场外基金 {e['code']}" if e["side"] in FUND_TRADES
+                         **({"name": names.get(e["code"], f"场外基金 {e['code']}") if e["side"] in FUND_TRADES
                              else security_name(e["code"])} if e.get("code") else {})}
                        for e in reversed(state["events"])],
             "start_date": state["initial"]["date"], "initial_equity": state["initial"]["equity"],

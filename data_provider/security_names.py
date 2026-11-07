@@ -18,9 +18,9 @@ def _read(path, modified, size):
         return dict(connection.execute("SELECT code,name FROM securities"))
 
 
-def names():
+def names(*, path=None):
     """只读缓存；未创建或暂不可用时由调用方显示代码。"""
-    path = CACHE_PATH.resolve()
+    path = (path or CACHE_PATH).resolve()
     try:
         stat = path.stat()
         return dict(_read(path, stat.st_mtime_ns, stat.st_size))
@@ -36,14 +36,14 @@ def security_name(code):
     return "现金" if code == "CASH" else names().get(code, code)
 
 
-def names_for(codes):
+def names_for(codes, *, path=None):
     """批量读取已知简称，保留请求中的代码写法，省略未知简称。"""
-    known = names()
+    known = names(path=path)
     normalized = {code: normalize_stock_code(code) for code in codes}
     return {code: known[plain] for code, plain in normalized.items() if plain in known}
 
 
-def remember(values):
+def remember(values, *, path=None):
     """保存已取到的简称；失败不影响原数据和旧缓存。"""
     rows = []
     for code, name in values.items():
@@ -55,9 +55,10 @@ def remember(values):
             rows.append((code, name))
     if not rows:
         return
+    path = path or CACHE_PATH
     try:
-        CACHE_PATH.parent.mkdir(parents=True, exist_ok=True)
-        with sqlite3.connect(CACHE_PATH, timeout=2) as connection:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with sqlite3.connect(path, timeout=2) as connection:
             connection.execute("CREATE TABLE IF NOT EXISTS securities (code TEXT PRIMARY KEY, name TEXT NOT NULL)")
             connection.executemany("INSERT INTO securities VALUES (?,?) ON CONFLICT(code) DO UPDATE SET name=excluded.name", rows)
         _read.cache_clear()

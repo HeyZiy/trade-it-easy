@@ -70,3 +70,52 @@ def test_strategy_names_follow_cache_changes_without_reimport():
     assert allocation.name=='513500'
     names.remember({'513500':'标普500ETF'})
     assert allocation.name=='标普500ETF'
+
+
+def test_fund_directory_is_separate_from_listed_names_and_preserves_ledger(tmp_path, monkeypatch):
+    import pytest
+    from data_provider import fund_names
+
+    names.remember({"000001": "平安银行"})
+    response = SimpleNamespace(
+        text='var r = [["000001","HXCZHH","华夏成长混合"],["096001","DC","大成标普500等权重指数(QDII)A人民币"]];',
+        raise_for_status=lambda: None,
+    )
+    calls = []
+    def fetch(url, *, timeout):
+        calls.append(url)
+        assert timeout == (3, 5)
+        return response
+    monkeypatch.setattr(fund_names.requests, "get", fetch)
+    monkeypatch.setattr(fund_names, "_last_attempt", float("-inf"))
+
+    path = tmp_path / "etf_account.json"
+    wallet.initialize(path, asof="2025-01-03", cash=1000,
+                      positions=[dict(code="000001", count=100, price=1, strategy="core")],
+                      budgets={"core": 1}, cash_allocations={"core": 1000})
+    def record(**fields):
+        wallet.record_event(path, {"revision": wallet.revision(wallet.load(path)),
+                                   "date": "2025-01-06", **fields})
+    record(request_id="existing-fund", side="fund_buy", code="000001", qty=10, amount=10)
+    record(request_id="pending-fund", side="fund_pending", code="096001", amount=50, nav_date="2025-01-06",
+           subscription_fee={"kind": "none", "value": 0})
+    before = path.read_bytes()
+    account = wallet.account_data(path)
+    assert account["fund_names"] == {"000001": None, "096001": None}
+    assert not calls
+    with pytest.raises(ValueError, match="六位场外基金代码"):
+        wallet.lookup_fund_names(path, {"codes": ["000001", "sh000001"]})
+    result = wallet.lookup_fund_names(path, {"codes": ["000001", "096001", "000000"]})
+    assert result == {"names": {"000001": "华夏成长混合", "096001": "大成标普500等权重指数(QDII)A人民币"}}
+    assert wallet.lookup_fund_names(path, {"codes": ["000000"]}) == {"names": {}}
+    assert calls == [fund_names.DIRECTORY_URL]
+
+    updated = wallet.account_data(path)
+    assert updated["positions"][0]["name"] == "平安银行"
+    assert updated["fund_positions"]["000001"]["name"] == "华夏成长混合"
+    assert updated["fund_pending"]["pending-fund"]["name"] == updated["trades"][0]["name"] == result["names"]["096001"]
+    core = next(row for row in updated["strategies"] if row["id"] == "core")
+    assert next(group for group in core["allocation_groups"] if group["id"] == "outside-fund:000001")["name"] == "华夏成长混合"
+    for key in ("cash", "equity", "revision", "history"):
+        assert updated[key] == account[key]
+    assert path.read_bytes() == before
