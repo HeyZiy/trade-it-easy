@@ -10,10 +10,10 @@ const ratio = (part, whole) => finite(part) && finite(whole) && whole > 0 ? `${(
 const accountName = account => account?.name || '账户';
 const reportDate = value => /^\d{8}$/.test(value) ? `${value.slice(0,4)}-${value.slice(4,6)}-${value.slice(6)}` : value;
 const timestamp = day => Date.parse(`${day}T00:00:00Z`);
-const SIDES = {buy:'买入', sell:'卖出', dividend:'分红', deposit:'入金', withdraw:'出金', assign:'持仓划转', cash_assign:'现金分配', cash_transfer:'现金划转', fund_buy:'场外申购', fund_redeem:'场外赎回'};
+const SIDES = {buy:'买入', sell:'卖出', dividend:'分红', deposit:'入金', withdraw:'出金', assign:'持仓划转', cash_assign:'现金分配', cash_transfer:'现金划转', fund_buy:'场外申购', fund_redeem:'场外赎回', fund_pending:'场外申购', fund_confirm:'场外申购确认'};
 const STRATEGY_NAMES = {core:'多资产配置', rotation:'跨资产动量', quality:'质量动量', unassigned:'未分配'};
 const HOLDING_NAMES = {etf:'ETF', stock:'股票', other:'其他持仓', fund:'场外基金'};
-const isFundTrade = side => ['fund_buy','fund_redeem'].includes(side);
+const isFundTrade = side => ['fund_buy','fund_redeem','fund_pending','fund_confirm'].includes(side);
 const fundShares = value => finite(value) ? value.toLocaleString('zh-CN', {maximumFractionDigits:6}) : '—';
 const REPORT_PREFIX = {core:'etf_weekly_', satellite:'industry_momentum_', rotation:'etf_rotation_', quality:'quality_pool_'};
 const ALLOCATION_TOLERANCE = 0.01;
@@ -49,6 +49,7 @@ function updateQuoteControls() {
   if (funds?.running && !quoteRequestPending && !state.running) note = '正在更新场外基金净值…';
   if (funds?.updated || funds?.unchanged || funds?.failed) {
     const parts = [];
+    if (funds.confirmed?.length) parts.push(`已确认 ${funds.confirmed.length} 笔申购`);
     if (funds.updated?.length) parts.push(`已更新 ${funds.updated.length} 只`);
     if (funds.unchanged?.length) parts.push(`${funds.unchanged.length} 只保留原日期`);
     if (funds.failed?.length) parts.push(`${funds.failed.join('、')} 取数失败，保留原净值`);
@@ -252,11 +253,12 @@ function reconciliation(account) {
   const value = amount => finite(amount) ? money(amount) : '待估值';
   const groups = Object.entries(account.holdings_by_kind).map(([kind, amount]) =>
     `<button type="button" data-holding-filter="${kind}" aria-controls="account-holdings"><span>${HOLDING_NAMES[kind]}${kind === 'other' ? '' : '市值'}</span><b>${value(amount)}</b></button>`).join('');
+  const pending = account.pending_fund_value > 0 ? `<a href="#fund-pending"><span>申购在途</span><b>${money(account.pending_fund_value)}</b></a>` : '';
   const cash = Object.entries(STRATEGY_NAMES).map(([id, name]) =>
     `<div><dt>${name}</dt><dd>${money(account.cash_by_strategy[id])}</dd></div>`).join('');
   return `<section class="reconciliation" aria-label="账户对账">
     <div class="reconciliation-top"><div><span>总资产 / 元</span><strong>${value(account.equity)}</strong><small>${esc(valuationLabel(account.valuation))}</small></div><div class="reconciliation-capital"><span>累计投入 / 元</span><b>${money(account.net_contributed)}</b><small>期初资产 + 净入金</small><span>累计盈亏 / 元</span><b>${account.pnl > 0 ? '+' : ''}${value(account.pnl)}</b></div></div>
-    <div class="reconciliation-breakdown" role="group" aria-label="资产明细（元）">${groups}<button type="button" id="account-cash-toggle" aria-controls="account-cash-detail" aria-expanded="false"><span>现金</span><b>${money(account.cash)}</b></button></div>
+    <div class="reconciliation-breakdown" role="group" aria-label="资产明细（元）">${groups}${pending}<button type="button" id="account-cash-toggle" aria-controls="account-cash-detail" aria-expanded="false"><span>现金</span><b>${money(account.cash)}</b></button></div>
     <dl id="account-cash-detail" class="reconciliation-cash" aria-label="各策略现金（元）" hidden>${cash}</dl>
   </section>`;
 }
@@ -284,9 +286,16 @@ function accountDetails(account) {
   const fundRows = Object.values(account.fund_positions || {}).map(row => `<tr data-holding-kind="fund"><td>场外基金<small>${esc(row.code)}<span class="holding-mobile-count"> · ${fundShares(row.qty)} 份</span></small></td><td>${fundShares(row.qty)}</td><td>${fundMark(row)}</td><td>${finite(row.market_value) ? money(row.market_value) : '待估值'}</td><td>${ratio(row.market_value,account.equity)}</td><td>${fundActions(row.code,true)}</td></tr>`).join('');
   return `${reconciliation(account)}<nav class="account-shortcuts" aria-label="账户快捷入口"><button type="button" class="secondary-button" data-holding-filter="" aria-controls="account-holdings">查看持仓</button><button type="button" class="secondary-button" id="account-records-link" aria-controls="account-records">查看流水</button></nav>
     ${profitNote()}<div class="account-entry-bar">${entryActions()}</div>
-    ${allocationCharts(account)}${chartSection(account)}
+    ${pendingFundSection(account)}${allocationCharts(account)}${chartSection(account)}
     <section id="account-holdings" class="section" aria-labelledby="account-holdings-title" tabindex="-1"><div class="section-heading"><h2 id="account-holdings-title">账户持仓</h2><select id="holding-filter" aria-label="持仓类别"><option value="">全部持仓</option>${filters}</select></div><div class="table-wrap"><table class="account-holdings-table"><thead><tr><th scope="col">标的</th><th scope="col">份额</th><th scope="col">价格 / 元</th><th scope="col">市值 / 元</th><th scope="col">资产占比</th><th scope="col">记账</th></tr></thead><tbody>${rows}${fundRows}<tr id="holdings-empty" hidden><td colspan="6" class="empty">暂无持仓</td></tr></tbody></table></div></section>
     <section id="account-records" class="section" aria-labelledby="account-records-title" tabindex="-1"><div class="section-heading"><h2 id="account-records-title">近期流水</h2><span class="subtle">${showAllRecords?'全部历史':'最近 20 笔'}</span></div>${recordTable(account.trades)}</section>`;
+}
+
+function pendingFundSection(account) {
+  const pending = Object.values(account.fund_pending || {});
+  if (!pending.length) return '';
+  const rows = pending.map(order => `<tr><td>${esc(order.code)}</td><td>${esc(order.nav_date)}</td><td>${money(order.amount)}</td><td>待确认 <button type="button" class="text-button" data-edit-event="${esc(order.id)}">修改</button></td></tr>`).join('');
+  return `<section id="fund-pending" class="section"><div class="section-heading"><h2>待确认申购</h2><span class="subtle">在途 ${money(account.pending_fund_value)} 元</span></div><div class="table-wrap"><table><thead><tr><th>基金代码</th><th>买入日</th><th>实际扣款 / 元</th><th>状态</th></tr></thead><tbody>${rows}</tbody></table></div></section>`;
 }
 
 function recordTable(rows) {
@@ -300,13 +309,17 @@ function recordTable(rows) {
     if (row.side === 'cash_assign') {
       detail = Object.entries(row.cash_allocations).map(([key,amount]) => `${STRATEGY_NAMES[key]} ${price(amount)} 元`).join(' · ');
     }
-    return `<tr><td>${esc(row.date)}</td><td>${esc(SIDES[row.side])}<small>${esc(detail)}</small><button type="button" class="text-button" data-edit-event="${esc(row.id)}">修改</button></td><td>${isFundTrade(row.side) ? fundShares(row.qty) : number(row.qty)}</td><td>${price(row.price ?? row.amount)}</td><td>${price(row.fee)}</td></tr>`;
+    const pending = row.side === 'fund_pending';
+    const waiting = !!data.accounts[0].fund_pending?.[row.id];
+    const label = pending ? (waiting ? '场外申购 · 待确认' : '场外申购扣款') : SIDES[row.side];
+    const edit = !pending || waiting ? `<button type="button" class="text-button" data-edit-event="${esc(row.id)}">修改</button>` : '';
+    return `<tr><td>${esc(row.date)}</td><td>${esc(label)}<small>${esc(detail)}</small>${edit}</td><td>${isFundTrade(row.side) ? fundShares(row.qty) : number(row.qty)}</td><td>${price(row.price ?? row.amount)}</td><td>${price(row.fee)}</td></tr>`;
   }).join('');
   return `${rows.length>20 ? `<button type="button" id="all-records" class="text-button">${showAllRecords?'收起':'查看全部'} ${rows.length} 笔流水</button>` : ''}<div class="table-wrap"><table><thead><tr><th>日期</th><th>类型 / 明细</th><th>份额</th><th>价格或金额 / 元</th><th>手续费 / 元</th></tr></thead><tbody>${body}</tbody></table></div>`;
 }
 
 function fundedStrategyPage(strategy) {
-  const stats = [[finite(strategy.budget) ? money(strategy.budget) : finite(strategy.budget_pct)?'待估值':'待设置','目标资产 / 元'],[money(strategy.invested),'持仓市值 / 元'],[`${strategy.pnl>0?'+':''}${money(strategy.pnl)}`,'累计盈亏 / 元'],[money(strategy.cash),'策略现金 / 元']];
+  const stats = [[finite(strategy.budget) ? money(strategy.budget) : finite(strategy.budget_pct)?'待估值':'待设置','目标资产 / 元'],[money(strategy.invested),strategy.pending_fund_value ? '持仓与在途 / 元' : '持仓市值 / 元'],[`${strategy.pnl>0?'+':''}${money(strategy.pnl)}`,'累计盈亏 / 元'],[money(strategy.cash),'策略现金 / 元']];
   const observation = strategy.observation;
   const observationSection = observation ? `${chartSection(observation, '独立模拟，不计入投资账户')}<section class="section"><div class="section-heading"><h2>模拟持仓</h2></div>${positionTable(observation.positions)}</section>` : '';
   const trades = [...(strategy.trades || [])].reverse();
@@ -314,7 +327,7 @@ function fundedStrategyPage(strategy) {
   const status = strategy.status && strategy.status!=='已分配' ? `<p class="subtle">${esc(strategy.status)}</p>` : '';
   const coreActions = strategy.id==='core' && canRecord
     ? '<div class="core-actions"><button type="button" data-fund-side="fund_buy" data-code="" class="text-button">场外申购</button><button type="button" id="core-settings" class="text-button">编辑配置</button></div>' : '';
-  return `<div class="stats">${stats.map(([value,label])=>`<div class="stat"><span>${label}</span><b>${esc(value)}</b></div>`).join('')}</div>${profitNote()}${canRecord ? `<div class="account-entry-bar">${entryActions()}</div>` : ''}<section class="section"><div class="section-heading"><h2>${strategy.id==='core' ? '持仓与目标配比' : '持仓与调仓建议'}</h2>${coreActions}</div>${status}${strategyPositionTable(strategy)}</section><section class="section"><div class="section-heading"><h2>策略流水</h2><span class="subtle">最近 20 笔</span></div>${recordTable(trades)}</section>${observationSection}`;
+  return `<div class="stats">${stats.map(([value,label])=>`<div class="stat"><span>${label}</span><b>${esc(value)}</b></div>`).join('')}</div>${profitNote()}${canRecord ? `<div class="account-entry-bar">${entryActions()}</div>` : ''}<section class="section"><div class="section-heading"><h2>${strategy.id==='core' ? '持仓与目标配比' : '持仓与调仓建议'}</h2>${coreActions}</div>${status}${strategyPositionTable(strategy)}</section>${strategy.id==='core' ? pendingFundSection(data.accounts[0]) : ''}<section class="section"><div class="section-heading"><h2>策略流水</h2><span class="subtle">最近 20 笔</span></div>${recordTable(trades)}</section>${observationSection}`;
 }
 
 function rotationPositionTable(strategy) {
@@ -754,8 +767,10 @@ function allocationRows(account) {
 }
 
 function assetSlices(account) {
+  const pending = account.pending_fund_value || 0;
   return [
-    {name:'多资产配置持仓',value:data.strategies[0].invested,color:'#22735b'},
+    {name:'多资产配置持仓',value:data.strategies[0].invested - pending,color:'#22735b'},
+    ...(pending ? [{name:'申购在途',value:pending,color:'#c4a16b'}] : []),
     {name:'跨资产动量持仓',value:data.strategies[1].invested,color:'#7393a2'},
     {name:'质量动量持仓',value:data.strategies.find(row=>row.id==='quality')?.invested || 0,color:'#997fa4'},
     {name:'未分配持仓',value:account.strategy_positions.filter(row=>row.strategy==='unassigned').reduce((sum,row)=>sum+row.market_value,0),color:'#b1884c'},
@@ -777,7 +792,7 @@ function allocationCharts(account) {
     const target = finite(row.target) ? row.target*100 : null;
     const delta = finite(row.target) && finite(row.actual_pct) ? row.actual_pct-row.target : null;
     const deviation = delta===null ? '—' : isAllocationBalanced(delta) ? '已配平' : `${delta>0?'超配':'低配'} ${(Math.abs(delta)*100).toFixed(2)} 个百分点`;
-    return `<div class="allocation-row"><div class="allocation-row-top"><strong>${esc(row.name)}</strong><b>${price(row.assets)} <small>元</small></b></div><div class="allocation-row-labels"><span>实际 ${actual.toFixed(1)}%</span><span>${target===null?'目标未设置':`目标 ${target.toFixed(1)}%`}</span></div><div class="allocation-track" role="img" aria-label="${esc(row.name)}实际${actual.toFixed(1)}%，${target===null?'目标未设置':`目标${target.toFixed(1)}%`}"><div class="allocation-fill allocation-${row.id}" style="width:${actual}%"></div>${target===null?'':`<i class="allocation-target" style="left:${target}%"></i>`}</div><div class="allocation-row-foot"><span>持仓 ${number(row.invested)} · 现金 ${number(row.cash)}</span><span>${deviation}</span></div></div>`;
+    return `<div class="allocation-row"><div class="allocation-row-top"><strong>${esc(row.name)}</strong><b>${price(row.assets)} <small>元</small></b></div><div class="allocation-row-labels"><span>实际 ${actual.toFixed(1)}%</span><span>${target===null?'目标未设置':`目标 ${target.toFixed(1)}%`}</span></div><div class="allocation-track" role="img" aria-label="${esc(row.name)}实际${actual.toFixed(1)}%，${target===null?'目标未设置':`目标${target.toFixed(1)}%`}"><div class="allocation-fill allocation-${row.id}" style="width:${actual}%"></div>${target===null?'':`<i class="allocation-target" style="left:${target}%"></i>`}</div><div class="allocation-row-foot"><span>${row.pending_fund_value ? '持仓与在途' : '持仓'} ${number(row.invested)} · 现金 ${number(row.cash)}</span><span>${deviation}</span></div></div>`;
   }).join('');
   return `<div class="allocation-grid"><section class="section asset-panel"><div class="section-heading"><h2>资产构成</h2></div><div class="asset-layout"><svg class="asset-donut" viewBox="0 0 210 210" role="img" aria-label="账户持仓与现金占比"><circle cx="105" cy="105" r="78" fill="none" stroke="#edf1eb" stroke-width="24"/>${rings}<text id="donut-label" x="105" y="91" text-anchor="middle" class="donut-label">总资产</text><text id="donut-value" x="105" y="117" text-anchor="middle" class="donut-value">${number(account.equity)}</text><text id="donut-share" x="105" y="137" text-anchor="middle" class="donut-label">元</text></svg><div class="asset-legend">${slices.map((slice,index)=>`<button type="button" class="asset-legend-item" data-asset-index="${index}"><i style="background:${slice.color}"></i><span>${slice.name}<small>${price(slice.value)} 元</small></span><b>${ratio(slice.value,account.equity)}</b></button>`).join('')}</div></div></section><section class="section strategy-panel"><div class="section-heading"><h2>策略配比</h2><div class="allocation-actions"><button type="button" id="budget-settings" class="text-button">编辑配置</button><button type="button" id="cash-settings" class="text-button">分配现金</button></div></div><div class="allocation-legend"><i></i> 实际 <i class="target-key"></i> 目标 <span>含各策略现金 · ${allocationToleranceNote}</span></div>${bars}</section></div>`;
 }
@@ -806,7 +821,7 @@ function allocationProductRow(row, strategyId, id, open) {
   const name = fund ? `场外基金 ${row.code}` : row.name;
   const shares = fund ? fundShares(row.qty) : number(row.count);
   const nav = row.nav?.toLocaleString('zh-CN', {maximumFractionDigits:8});
-  const note = fund ? (held ? '' : '暂无确认持仓') : row.code;
+  const note = fund ? (row.pending_amount ? `待确认 ${money(row.pending_amount)} 元` : held ? '' : '暂无确认持仓') : row.code;
   const mark = fund ? (held ? fundMark(row) : '—') : quotePrice(row);
   const value = held ? (finite(row.market_value) ? money(row.market_value) : '待估值') : '—';
   const action = fund
@@ -885,13 +900,14 @@ function openFundTrade(account, side, code, edit=null) {
   const error = document.querySelector('#fund-error');
   const preview = document.querySelector('#fund-preview');
   const field = name => form.elements.namedItem(name);
-  const buy = side === 'fund_buy';
-  const quick = buy && !edit;
+  const buy = side !== 'fund_redeem';
+  const pending = side === 'fund_pending' || (side === 'fund_buy' && !edit);
+  const confirming = side === 'fund_confirm';
   const options = document.querySelector('#fund-buy-tools');
   const summary = document.querySelector('#fund-quick-summary');
   const fetchNav = document.querySelector('#fund-fetch-nav');
   const recalcQty = document.querySelector('#fund-recalc-qty');
-  let manualQty = !!edit, fetchedNavKey, calculatedTrade, feeCode;
+  let manualQty = !!edit, fetchedNavKey, feeCode;
   let saving = false, saved = false, requestId = crypto.randomUUID();
   const today = new Intl.DateTimeFormat('en-CA',{timeZone:'Asia/Shanghai',year:'numeric',month:'2-digit',day:'2-digit'}).format(new Date());
   const session = crypto.randomUUID();
@@ -903,29 +919,33 @@ function openFundTrade(account, side, code, edit=null) {
   save.textContent = edit ? '保存修改' : '保存记账';
   error.hidden = true;
   document.querySelector('#fund-title').textContent = edit ? `修改${SIDES[side]}` : SIDES[side];
+  document.querySelector('#fund-help').textContent = pending
+    ? '扣款计入在途资金。每日更新或刷新估值时查到买入日净值，就会自动确认份额。'
+    : confirming ? '按交易确认单更正份额。' : '使用多资产配置现金。请按交易确认单和实际资金变动记账。';
   document.querySelector('#fund-amount-label').textContent = buy ? '实际扣款 / 元' : '实际到账 / 元';
   document.querySelector('#fund-qty-label').textContent = buy ? '份额（自动计算，可修正）' : '确认赎回份额';
   options.hidden = !buy;
-  options.open = buy && !quick;
-  summary.hidden = !quick;
-  document.querySelector('#fund-code-field').hidden = quick && !!code;
-  document.querySelector('#fund-record-day-field').hidden = quick;
-  document.querySelector('#fund-qty-field').hidden = quick;
-  document.querySelector('#fund-nav-field').hidden = quick;
-  document.querySelector('#fund-nav-day-label').textContent = quick ? '买入日' : '申购净值日期';
-  fetchNav.hidden = quick;
-  field('qty').disabled = quick;
-  for (const name of ['fee_kind','fee','nav_date','nav']) field(name).disabled = !buy;
-  field('nav').disabled = !buy || quick;
+  options.open = buy && !!edit && !confirming;
+  summary.hidden = !pending && !confirming;
+  document.querySelector('#fund-code-field').hidden = pending && !!code && !edit;
+  document.querySelector('#fund-record-day-field').hidden = pending && !edit;
+  document.querySelector('#fund-qty-field').hidden = pending;
+  document.querySelector('#fund-nav-field').hidden = pending;
+  document.querySelector('#fund-nav-day-label').textContent = pending ? '买入日' : '申购净值日期';
+  fetchNav.hidden = pending || confirming;
+  field('qty').disabled = pending;
+  for (const name of ['fee_kind','fee','nav_date','nav']) field(name).disabled = !buy || confirming;
+  field('nav').disabled = !buy || pending || confirming;
   field('code').value = code || '';
-  field('code').readOnly = !!code && !edit;
+  field('code').readOnly = confirming || (!!code && !edit);
+  for (const name of ['amount','date']) field(name).readOnly = confirming;
   field('amount').value = edit?.amount ?? '';
   field('qty').value = edit?.qty ?? '';
   field('date').min = account.min_date || account.trades[0]?.date || account.start_date;
   field('date').max = account.max_date || today;
   field('date').value = edit?.date || today;
   field('nav').value = edit?.nav ?? '';
-  field('nav_date').value = quick ? today : edit?.nav_date || '';
+  field('nav_date').value = edit?.nav_date || (pending ? today : '');
   field('nav_date').max = field('date').value;
   if (edit?.subscription_fee) {
     field('fee_kind').value = edit.subscription_fee.kind;
@@ -933,13 +953,14 @@ function openFundTrade(account, side, code, edit=null) {
   }
   function loadFeeForCode() {
     const code = field('code').value;
-    if (!quick || feeCode === code) return;
+    if (!pending || feeCode === code) return;
     feeCode = code;
     const fee = account.fund_subscription_fees?.[code];
     field('fee_kind').value = fee?.kind || '';
     field('fee').value = fee?.value ?? '';
     options.open = !fee && /^\d{6}$/.test(code);
   }
+  if (edit) feeCode = code;
   loadFeeForCode();
   const showError = message => { error.textContent = message; error.hidden = false; };
   const navKey = () => `${field('code').value}:${field('nav_date').value}`;
@@ -963,10 +984,10 @@ function openFundTrade(account, side, code, edit=null) {
     const usesFee = buy && (kind === 'rate' || kind === 'fixed');
     document.querySelector('#fund-fee-field').hidden = !usesFee;
     document.querySelector('#fund-fee-label').textContent = kind === 'rate' ? '实际费率 / %' : '申购费 / 元';
-    field('fee').disabled = !usesFee;
+    field('fee').disabled = !usesFee || confirming;
     field('nav_date').max = field('date').value;
     field('qty').max = buy ? '1000000000' : String(held);
-    if (buy && !quick) {
+    if (buy && !pending && !confirming) {
       const estimate = estimateQty(amount, selectedFee(), Number(field('nav').value));
       if (!manualQty) field('qty').value = estimate || '';
       recalcQty.hidden = !manualQty || !estimate;
@@ -978,8 +999,9 @@ function openFundTrade(account, side, code, edit=null) {
       : fee?.kind === 'rate' ? `费率 ${fee.value}%`
       : fee?.kind === 'fixed' ? `申购费 ${money(fee.value)} 元` : '待设置费用';
     summary.textContent = [code && `基金 ${code}`, `买入日 ${field('nav_date').value || '待选择'}`, feeLabel].filter(Boolean).join(' · ');
+    preview.hidden = confirming;
     preview.textContent = `多资产配置现金 ${money(cash)} 元 · 持有 ${fundShares(held)} 份${amount > 0 ? ` · 记账后现金 ${money(cash + (buy ? -amount : amount))} 元` : ''}`;
-    field('amount').setCustomValidity(buy && amount > cash ? '多资产配置现金不足，请先分配现金。' : '');
+    field('amount').setCustomValidity(buy && !confirming && amount > cash ? '多资产配置现金不足，请先分配现金。' : '');
   }
   form.oninput = event => {
     if (event?.target === field('code')) loadFeeForCode();
@@ -989,7 +1011,6 @@ function openFundTrade(account, side, code, edit=null) {
       field('nav').value = '';
       fetchedNavKey = undefined;
     }
-    calculatedTrade = undefined;
     requestId = crypto.randomUUID();
     error.hidden = true;
     update();
@@ -1024,7 +1045,7 @@ function openFundTrade(account, side, code, edit=null) {
     event.preventDefault();
     if (saving) return;
     if (!saved && !form.reportValidity()) return;
-    if (!saved && quick && (!field('nav_date').value || !selectedFee())) {
+    if (!saved && pending && (!field('nav_date').value || !selectedFee())) {
       options.open = true;
       return showError('请先确认买入日和申购费用。');
     }
@@ -1038,15 +1059,11 @@ function openFundTrade(account, side, code, edit=null) {
         const payload = {request_id:requestId, revision:account.revision, side, code:field('code').value,
           date:field('date').value, qty:Number(field('qty').value), amount:Number(field('amount').value)};
         if (edit) payload.event_id = edit.id;
-        if (quick) {
-          if (!calculatedTrade) {
-            const fee = selectedFee(), buyDay = field('nav_date').value;
-            const {nav} = await accountRequest('/api/etf/fund/nav', {code:payload.code,date:buyDay});
-            const qty = estimateQty(payload.amount, fee, nav);
-            if (!qty) throw Error('扣除申购费后的金额不足以计算份额，请核对扣款和费型。');
-            calculatedTrade = {qty,nav,nav_date:buyDay,subscription_fee:fee};
-          }
-          Object.assign(payload, calculatedTrade);
+        if (pending) {
+          payload.side = 'fund_pending';
+          payload.nav_date = field('nav_date').value;
+          payload.subscription_fee = selectedFee();
+          delete payload.qty;
         } else if (buy) {
           if (field('nav').value) {
             payload.nav = Number(field('nav').value);
@@ -1060,7 +1077,8 @@ function openFundTrade(account, side, code, edit=null) {
       }
       await reloadAccount();
       dialog.close();
-      document.querySelector('#status').textContent = '场外基金记账已保存';
+      document.querySelector('#status').textContent = pending && data.accounts[0].fund_pending?.[edit?.id || requestId]
+        ? '已保存，申购待确认' : '场外基金记账已保存';
     } catch (failure) {
       showError(saved ? '本笔已保存，可点击刷新账户核对。' : failure.message);
     } finally {

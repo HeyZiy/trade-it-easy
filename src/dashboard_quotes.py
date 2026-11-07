@@ -28,7 +28,8 @@ class QuoteRefresh:
         path = Path(path).resolve()
         account = etf_account.load(path)
         price_day = etf_account.valuation_day(today)
-        fund_codes = tuple(sorted(etf_account.snapshot(account, today.isoformat())["fund_positions"]))
+        view = etf_account.snapshot(account, today.isoformat())
+        fund_codes = tuple(sorted(view["fund_positions"].keys() | {row["code"] for row in view["fund_pending"].values()}))
         request = (path, today, price_day, etf_account.revision(account), fund_codes)
         with self._lock:
             if self._state.get("running") or self._state.get("funds", {}).get("running"):

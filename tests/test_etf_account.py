@@ -1,3 +1,4 @@
+from concurrent.futures import ThreadPoolExecutor
 from datetime import date, datetime
 import json
 import threading
@@ -234,6 +235,9 @@ def test_daily_report_refreshes_fund_nav_once_and_preserves_backfill_boundary(ac
     monkeypatch.setattr(entry.ClosingPrices, "close_prices", lambda self, codes, day: {c: 2 for c in codes})
     record_event(account, event(account, "fund_buy", code="000051", qty=100.5,
                                 amount=120.6, nav=1.2, nav_date="2025-01-06"))
+    order = record_event(account, event(account, "fund_pending", date="2025-01-07", code="000051",
+                                        amount=13, nav_date="2025-01-07",
+                                        subscription_fee={"kind": "none", "value": 0}))
     calls = []
 
     def fetch_fund(code, through):
@@ -245,10 +249,14 @@ def test_daily_report_refreshes_fund_nav_once_and_preserves_backfill_boundary(ac
     assert entry.run(now=now, backfill=True, dry_run=True)[1] == 0
     assert not calls
     assert entry.run(now=now, backfill=True)[1] == 0
-    assert calls == [("000051", "2025-01-08")]
-    assert load(account)["fund_navs"]["000051"] == {"2025-01-08": 1.3}
+    assert calls == [("000051", "2025-01-07"), ("000051", "2025-01-08")]
+    state = load(account)
+    assert state["events"][-1]["side"] == "fund_confirm"
+    assert state["events"][-1]["pending_id"] == order["id"]
+    assert state["events"][-1]["qty"] == 10
+    assert state["fund_navs"]["000051"] == {"2025-01-08": 1.3}
     assert entry.run(now=now, backfill=True)[1] == 0
-    assert len(calls) == 1
+    assert len(calls) == 2
 
 
 def test_fund_refresh_uses_latest_shares_and_keeps_same_date_confirmation(account, monkeypatch):
@@ -331,6 +339,59 @@ def test_fund_subscription_remembers_last_confirmed_fee_per_code(account):
     with pytest.raises(ValueError, match="费用"):
         record_event(account, event(account, "fund_buy", code="000051", qty=1, amount=2,
                                     subscription_fee=second))
+
+
+
+def test_pending_subscription_is_an_asset_until_exact_nav_settles_it_once(account, monkeypatch):
+    from src import etf_account as wallet
+
+    buy_day, settle_day = "2025-01-06", "2025-01-07"
+    request = event(account, "fund_pending", code="096001", nav_date=buy_day, amount=100.50,
+                    subscription_fee={"kind": "rate", "value": 0.5})
+    order = record_event(account, request)
+    assert record_event(account, request) == order
+    view = account_data(account)
+    assert view["cash"] == view["cash_by_strategy"]["core"] == 899.50
+    assert view["equity"] == 3000 and view["pnl"] == 0
+    assert view["fund_positions"] == {}
+    assert view["fund_pending"][order["id"]]["amount"] == view["pending_fund_value"] == 100.50
+    assert view["fund_subscription_fees"]["096001"] == request["subscription_fee"]
+    core = next(row for row in view["strategies"] if row["id"] == "core")
+    assert core["assets"] == 3000 and core["invested"] == 2100.50
+    assert next(row for row in core["allocation_groups"] if row["id"] == "outside-fund:096001")["market_value"] == 100.50
+
+    record_event(account, event(account, "deposit", amount=100))
+    assert wallet.snapshot(load(account), settle_day)["units"] == 3100
+    monkeypatch.setattr("data_provider.fund_nav.latest_fund_nav", lambda *_: ("2025-01-05", 1.5))
+    assert wallet.confirm_fund_subscriptions(account, settle_day) == []
+    assert order["id"] in account_data(account)["fund_pending"]
+
+    # Two workers fetched the same NAV. Only the one that finds the pending order still open can settle.
+    barrier = threading.Barrier(2)
+
+    def fetch(code, through):
+        assert (code, through) == ("096001", buy_day)
+        barrier.wait(timeout=5)
+        return buy_day, 2.5
+
+    monkeypatch.setattr("data_provider.fund_nav.latest_fund_nav", fetch)
+    with ThreadPoolExecutor(max_workers=2) as workers:
+        results = list(workers.map(lambda _: wallet.confirm_fund_subscriptions(account, settle_day), range(2)))
+    assert sorted(results) == [[], [order["id"]]]
+
+    view = account_data(account)
+    assert view["fund_pending"] == {} and view["pending_fund_value"] == 0
+    assert view["cash"] == 999.50 and view["equity"] == 3099.50 and view["pnl"] == -.50
+    assert view["fund_positions"]["096001"]["qty"] == 40
+    assert order["id"] in wallet.snapshot(load(account), buy_day)["fund_pending"]
+    confirm, *_ = view["trades"]
+    assert confirm["pending_id"] == order["id"]
+    with pytest.raises(ValueError, match="申购已确认"):
+        wallet.event_context(account, {"event_id": order["id"], "revision": view["revision"]})
+    edit = {**confirm, "event_id": confirm["id"], "revision": view["revision"],
+            "request_id": str(uuid4()), "qty": 39.99}
+    assert wallet.edit_event(account, edit) == wallet.edit_event(account, edit)
+    assert account_data(account)["fund_positions"]["096001"]["qty"] == 39.99
 
 
 def test_old_fund_snapshot_is_excluded_from_account_ledger(account):

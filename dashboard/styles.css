@@ -75,8 +75,8 @@ h2 { font-size: 17px; font-weight: 600; margin: 0; }
 .reconciliation-capital { text-align: right; }
 .reconciliation-capital small { margin: 2px 0 8px; font-size: 11px; }
 .reconciliation-breakdown { display: flex; gap: 8px; margin-top: 14px; }
-.reconciliation-breakdown button { flex: 1; min-width: 0; padding: 9px 6px; border: 1px solid var(--border); border-radius: 7px; background: #f7f9f6; color: var(--green); text-align: center; }
-.reconciliation-breakdown button:hover, .reconciliation-breakdown button[aria-expanded="true"] { background: #eaf4ee; }
+.reconciliation-breakdown :is(button, a) { flex: 1; min-width: 0; padding: 9px 6px; border: 1px solid var(--border); border-radius: 7px; background: #f7f9f6; color: var(--green); text-align: center; }
+.reconciliation-breakdown :is(button, a):hover, .reconciliation-breakdown button[aria-expanded="true"] { background: #eaf4ee; }
 .reconciliation-breakdown b { margin-top: 4px; overflow-wrap: anywhere; }
 .reconciliation-cash { display: grid; grid-template-columns: repeat(auto-fit, minmax(108px,1fr)); gap: 10px; margin: 12px 0 0; }
 .reconciliation-cash dt { color: var(--muted); font-size: 12px; }
@@ -279,7 +279,7 @@ dialog::backdrop { background: #153e3566; }
   .reconciliation { padding: 14px 10px; }
   .reconciliation strong { font-size: clamp(21px, 7vw, 30px); }
   .reconciliation-breakdown { flex-wrap: wrap; }
-  .reconciliation-breakdown button { flex-basis: calc(25% - 8px); }
+  .reconciliation-breakdown :is(button, a) { flex-basis: calc(25% - 8px); }
   .reconciliation-breakdown b { font-size: 12px; }
   .account-holdings-table { min-width: 0; }
   .account-holdings-table :is(th,td) { padding: 9px 5px; }

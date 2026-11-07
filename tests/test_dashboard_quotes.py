@@ -258,7 +258,7 @@ def test_fund_nav_source_selects_latest_valid_unit_nav_at_cutoff(monkeypatch):
 
     def fetch(_, code, *, pz, timeout):
         assert code == "000051"
-        assert pz == 10 and timeout > 0
+        assert pz >= (date.today() - date(2025, 1, 7)).days + 1 and timeout > 0
         return pd.DataFrame({
             "日期": ["2025-01-04", "2025-01-07", "2025-01-08", "2025-01-06", "invalid"],
             "单位净值": [1.2, float("nan"), 1.8, 1.4, 99],
@@ -267,3 +267,21 @@ def test_fund_nav_source_selects_latest_valid_unit_nav_at_cutoff(monkeypatch):
 
     monkeypatch.setattr("data_provider.fetchers.efinance_fetcher._ef_call_with_timeout", fetch)
     assert latest_fund_nav("000051", "2025-01-07") == ("2025-01-06", 1.4)
+
+
+def test_quote_refresh_checks_fund_with_only_a_pending_subscription(account, monkeypatch):
+    day = TODAY.isoformat()
+    order = wallet.record_event(account, dict(
+        request_id=str(uuid4()), revision=wallet.revision(wallet.load(account)),
+        date=day, side="fund_pending", code="096001", amount=50, nav_date=day,
+        subscription_fee={"kind": "none", "value": 0},
+    ))
+    monkeypatch.setattr(ClosingPrices, "close_prices", lambda *_: {})
+    monkeypatch.setattr("data_provider.fund_nav.latest_fund_nav", lambda code, through: (through, 2.5))
+    refresh = QuoteRefresh()
+    refresh.start(account, TODAY)
+    assert wait_finished(refresh, account)["funds"]["confirmed"] == [order["id"]]
+    view = wallet.account_data(account)
+    assert view["fund_pending"] == {}
+    assert view["fund_positions"]["096001"]["qty"] == 20
+    assert view["cash"] == 9950

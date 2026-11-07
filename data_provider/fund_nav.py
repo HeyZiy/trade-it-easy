@@ -10,7 +10,10 @@ def latest_fund_nav(code: str, through: str) -> tuple[str, float] | None:
 
     from data_provider.fetchers.efinance_fetcher import _ef_call_with_timeout
 
-    frame = _ef_call_with_timeout(ef.fund.get_quote_history, code, pz=10, timeout=8)
+    # 同一接口从最新记录往前取，补录旧买入日时扩大历史范围。
+    days_ago = (date.today() - date.fromisoformat(through)).days
+    page_size = min(40000, max(10, days_ago + 1))
+    frame = _ef_call_with_timeout(ef.fund.get_quote_history, code, pz=page_size, timeout=8)
     latest = None
     for raw_day, raw_nav in frame[["日期", "单位净值"]].itertuples(index=False, name=None):
         try:
