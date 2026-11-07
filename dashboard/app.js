@@ -205,6 +205,25 @@ function drawChart(account) {
   const labels = ticks.map(index => `<text class="chart-axis" x="${x(index)}" y="${height-6}" text-anchor="${index===0 && points.length>1 ? 'start' : index===points.length-1 && points.length>1 ? 'end' : 'middle'}">${esc(points[index].date.slice(5))}</text>`).join('');
   stage.innerHTML = `<svg viewBox="0 0 ${width} ${height}" role="img" aria-label="账户累计收益与同期基准对比曲线"><title>账户累计收益与同期基准</title>${grid}<line class="chart-zero" x1="${left}" x2="${right}" y1="${y(0)}" y2="${y(0)}"/><path class="chart-benchmark" d="${pathFor('benchmark_nav')}"/><path class="chart-account" d="${pathFor('nav')}"/>${labels}<g id="chart-marker"></g></svg>`;
   const svg = stage.querySelector('svg');
+  const defs = document.createElementNS('http://www.w3.org/2000/svg', 'defs');
+  const gradientId = 'chart-account-fill';
+  defs.innerHTML = `<linearGradient id="${gradientId}" x1="0" y1="0" x2="0" y2="1">
+    <stop offset="0%" stop-color="#2d7b61" stop-opacity=".18"/>
+    <stop offset="100%" stop-color="#2d7b61" stop-opacity="0"/>
+  </linearGradient>`;
+  svg.prepend(defs);
+  const navPath = pathFor('nav');
+  if (navPath) {
+    const area = document.createElementNS('http://www.w3.org/2000/svg', 'path');
+    area.setAttribute('class', 'chart-account-area');
+    const lastX = [...navPath.matchAll(/([\d.]+),[\d.]+/g)].map(m => Number(m[1]));
+    const zeroY = y(0).toFixed(2);
+    const firstX = lastX.length ? lastX[0].toFixed(2) : left;
+    const endX = lastX.length ? lastX.at(-1).toFixed(2) : left;
+    area.setAttribute('d', `${navPath}L${endX},${zeroY} L${firstX},${zeroY} Z`);
+    area.setAttribute('fill', `url(#${gradientId})`);
+    svg.querySelector('.chart-benchmark').before(area);
+  }
   slider.hidden = points.length < 2;
   slider.min = 0; slider.max = points.length-1; slider.step = 1;
   let latest = points.length-1;
@@ -230,9 +249,10 @@ function drawChart(account) {
     points.forEach((_,index) => { if (Math.abs(x(index)-target)<Math.abs(x(nearest)-target)) nearest=index; });
     focus(nearest);
   }
-  svg.onpointermove = pointer;
-  svg.onpointerdown = pointer;
-  svg.onpointerleave = () => focus(latest);
+  const summary = document.querySelector('.chart-summary');
+  svg.onpointermove = event => { summary?.classList.add('is-scanning'); pointer(event); };
+  svg.onpointerdown = event => { summary?.classList.add('is-scanning'); pointer(event); };
+  svg.onpointerleave = () => { summary?.classList.remove('is-scanning'); focus(latest); };
   slider.oninput = () => focus(Number(slider.value));
   focus(latest);
 }
@@ -358,9 +378,26 @@ function strategyPage(account) {
   return `${warnings(account)}${chartSection(account)}<div class="stats">${stats.map(([v,label]) => `<div class="stat"><span>${label}</span><b>${v}</b></div>`).join('')}</div><section class="section"><div class="section-heading"><h2>账户持仓</h2><span class="subtle">${closeNote}</span></div>${positionTable(account.positions)}</section><section class="section"><div class="section-heading"><h2>近期流水</h2><span class="subtle">最近 20 笔</span></div>${tradeTable(account.trades)}</section>`;
 }
 
+function statusBar(account) {
+  if (!account?.can_record) return '';
+  const value = amount => finite(amount) ? money(amount) : '待估值';
+  const latest = (account.history || []).filter(row => finite(row.nav) && row.nav > 0).at(-1);
+  const gain = latest ? `${signed((latest.nav - 1) * 100)}%` : '—';
+  const pnl = finite(account.pnl) ? `${account.pnl > 0 ? '+' : ''}${value(account.pnl)}` : '—';
+  return `<div class="status-bar-item"><span>总资产</span><b>${value(account.equity)}</b></div>
+    <div class="status-bar-item"><span>累计盈亏</span><b class="${account.pnl > 0 ? 'is-gain' : account.pnl < 0 ? 'is-loss' : ''}">${pnl}</b></div>
+    <div class="status-bar-item"><span>累计收益率</span><b>${gain}</b></div>
+    <div class="status-bar-item"><span>现金</span><b>${value(account.cash)}</b></div>`;
+}
+
 function render() {
   chartObserver?.disconnect();
   updateQuoteControls();
+  const statusAccount = data.accounts[0];
+  const bar = document.querySelector('#status-bar');
+  const barHtml = statusBar(statusAccount);
+  bar.innerHTML = barHtml;
+  bar.hidden = !barHtml;
   const tabs = [{id:'etf',name:'账户总览'},...data.strategies,...data.observations];
   document.querySelector('#tabs').innerHTML = tabs.map((tab,index) => `${index===0 ? '<span class="nav-label">投资账户</span>' : index===data.strategies.length+1 ? '<span class="nav-label">策略观察</span>' : ''}<button type="button" role="tab" id="tab-${esc(tab.id)}" class="${index===selected ? 'active' : ''}" aria-selected="${index===selected}" aria-controls="account" tabindex="${index===selected ? 0 : -1}" data-index="${index}">${esc(accountName(tab))}</button>`).join('');
   function activateTab(index) {
