@@ -18,6 +18,8 @@ from research.tools.etf_data.data import DEFAULT_CACHE, PRICE_FIELDS, SCHEMA_VER
 
 BAR_FIELDS = (*PRICE_FIELDS, "volume", "amount", *(f"hfq_{f}" for f in PRICE_FIELDS))
 SOURCE = "eastmoney_raw_hfq"
+AD_SOURCE = "amazingdata_raw_hfq"
+TRUSTED_HFQ_SOURCES = {SOURCE, AD_SOURCE}
 
 
 def atomic_csv(df, path, *, index=False):
@@ -60,7 +62,7 @@ def cache_is_fresh(path, expected_last):
         return False
     try:
         meta = json.loads(meta_path.read_text(encoding="utf-8"))
-        if meta.get("schema_version") != SCHEMA_VERSION or meta.get("source") != SOURCE:
+        if meta.get("schema_version") != SCHEMA_VERSION or meta.get("source") not in TRUSTED_HFQ_SOURCES:
             return False
         df = pd.read_csv(path, usecols=["date", "hfq_close"])
         cutoff = pd.Timestamp(expected_last).strftime("%Y-%m-%d")
@@ -102,7 +104,7 @@ def build_cache(cache, cutoff=None, failures=None):
         raw = pd.read_csv(path)
         meta_path = path.with_suffix(".json")
         meta = json.loads(meta_path.read_text(encoding="utf-8")) if meta_path.exists() else {}
-        verified = meta.get("source") == SOURCE and meta.get("schema_version") == SCHEMA_VERSION
+        verified = meta.get("source") in TRUSTED_HFQ_SOURCES and meta.get("schema_version") == SCHEMA_VERSION
         if not verified:
             raw = raw.drop(columns=[c for c in raw if c.startswith("hfq_")], errors="ignore")
         df = normalize_bars(raw)

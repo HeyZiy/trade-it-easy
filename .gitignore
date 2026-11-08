@@ -82,6 +82,9 @@ CLAUDE.md
 *.pkl
 *.json
 
+# 研究数据集需入库的元信息（数据体仍忽略）
+!research/data/**/manifest.json
+
 # 研究绘图产物，可由 plot_curves.py 重新生成
 plots/
 

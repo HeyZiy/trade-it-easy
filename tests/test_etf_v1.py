@@ -11,6 +11,11 @@ import pytest
 
 SCRIPT = Path(__file__).resolve().parents[1] / 'research/studies/etf/v1.py'
 
+pytestmark = pytest.mark.skip(
+    reason='本文件测的是已删除的 etf/v1.py 的 run_rotation / momentum_details 接口；'
+           '当前 etf 基线的实现是 etf/momentum_v1.py，'
+           'etf/momentum_v2.py 的分支与基线等价用例见 tests/test_etf_momentum_v2.py')
+
 
 class World:
     def __init__(self, script=SCRIPT):

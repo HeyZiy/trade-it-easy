@@ -1,0 +1,23 @@
+{
+  "schema_version": 2,
+  "built_at": "2026-11-08T15:01:39.197797+08:00",
+  "data_as_of": "2026-09-30",
+  "benchmark": "000300",
+  "codes": 1653,
+  "price_basis": "供应商后复权按研究截止日归一化；成交价为原始价",
+  "adjusted_codes": 1637,
+  "unadjusted_codes": 16,
+  "missing_last_day_codes": 1,
+  "failures": {
+    "159047": "ValueError: AD 无行情",
+    "159089": "ValueError: AD 无行情",
+    "561070": "ValueError: AD 无行情",
+    "562400": "ValueError: AD 无行情",
+    "562420": "ValueError: AD 无行情"
+  },
+  "notes": [
+    "历史名单仅含当前或本地曾缓存品种，仍有幸存者偏差",
+    "上市日期为首根行情代理；名称为名单快照，不保证历史名称",
+    "零成交、缺行情、无复权分别标记，未推断真实停牌或权益事件"
+  ]
+}
