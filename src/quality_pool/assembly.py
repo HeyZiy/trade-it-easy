@@ -62,8 +62,11 @@ def build_snapshot(exec_date: str, selected: List[str], *, account_facts=None) -
     import datetime as dt
 
     trades = load_trades(config.POOL_LEDGER_PATH) if account_facts is None else []
-    codes = sorted(({t.code for t in trades} if account_facts is None else
-                    {p["code"] for p in account_facts["positions"]}) | set(selected))
+    # 只对实际持仓与本轮候选取价；台账里已清仓的历史代码不再消耗行情/状态调用。
+    open_codes = ({p["code"] for p in derive(trades, as_of=exec_date).positions}
+                  if account_facts is None else
+                  {p["code"] for p in account_facts["positions"]})
+    codes = sorted(open_codes | set(selected))
     prices = feeds.fetch_realtime_prices(codes)
 
     if account_facts is None:

@@ -94,6 +94,27 @@ def test_snapshot_missing_status_row_fail_closed(env):
     assert snap.st["600001"] is False  # 在表中的码不受缺行影响
 
 
+def test_snapshot_quotes_open_positions_only(env):
+    """台账里已清仓的历史代码不再进入行情/状态取数。"""
+    import src.quality_pool.feeds as feeds
+    _seed_holding()
+    execute_batch([BatchOrder(code="600001", name="股600001", side="sell",
+                              qty=5000, price=10.5, reason="out_of_pool")],
+                  account=pool_config.ACCOUNT, trade_date="2026-10-02",
+                  path=pool_config.POOL_LEDGER_PATH)
+    asked = {}
+
+    def _quotes(codes):
+        asked["codes"] = list(codes)
+        return {c: 12.0 for c in codes}
+
+    env.setattr(feeds, "fetch_realtime_prices", _quotes)
+    snap = assembly.build_snapshot("2026-10-03", ["600002"])
+    assert asked["codes"] == ["600002"]
+    assert snap.counts == {}
+    assert snap.st == {"600002": True}  # 该码在状态表里被标为 ST
+
+
 def test_execution_records_exit_and_updates_state(env):
     """通过执行 interface 验证真实记账与跨日队列，不测试内部映射。"""
     assembly.run_execution("2026-10-02")
