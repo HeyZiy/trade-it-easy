@@ -445,6 +445,45 @@ def test_write_api_requires_auth_and_custom_header(account, monkeypatch):
         server.server_close()
         thread.join()
 
+@pytest.mark.parametrize("weight,current_value,absolute_review,relative_review,trade_eligible", [
+    (.05, 6249, False, False, False),
+    (.05, 6250, False, True, False),
+    (.05, 3750, False, True, False),
+    (.05, 7000, False, True, True),
+    (.02, 2500, False, True, False),
+    (.60, 64000, False, False, True),
+    (.60, 65000, True, False, True),
+    (0, 2000, False, False, True),
+])
+def test_allocation_gap_drives_review_and_share_reference(
+        tmp_path, weight, current_value, absolute_review, relative_review, trade_eligible):
+    path = tmp_path / 'etf_account.json'
+    budget = 100_000
+    cash = budget - current_value
+    code = '588000'
+    initialize(path, asof='2025-01-04', cash=cash,
+               positions=[dict(code=code, count=current_value, price=1, strategy='core')],
+               targets={code: weight}, budgets={'core': 1}, cash_allocations={'core': cash})
+    collect_close(path, '2025-01-06', lambda *_: {code: 1})
+
+    core = account_data(path)['strategies'][0]
+    row = next(group for group in core['allocation_groups'] if group['id'] == code)
+    assert row['target_value'] == budget * weight
+    assert row['gap_amount'] == current_value - row['target_value']
+    assert row['absolute_deviation'] == abs(row['gap_amount']) / budget
+    assert row['absolute_review'] is absolute_review
+    assert row['relative_review'] is relative_review
+    assert row['trade_eligible'] is trade_eligible
+    assert (row['relative_deviation'] is None) == (weight == 0)
+    if trade_eligible:
+        item, = core['suggestions']
+        assert item['code'] == code
+        assert item['target_value'] == row['target_value']
+        assert item['gap_amount'] == abs(row['gap_amount'])
+    else:
+        assert core['suggestions'] == []
+
+
 def test_gap_amount_is_separate_from_rounded_trade_value(account):
     record_event(account, event(account, 'deposit', amount=10))
     item = account_data(account)['strategies'][0]['suggestions'][0]

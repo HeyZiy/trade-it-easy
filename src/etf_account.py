@@ -356,14 +356,16 @@ def snapshot(state, asof, prices=None):
     return replay.view(asof, prices)
 
 
-def suggestions(state, view, price_day):
+def suggestions(state, view, price_day, deviations):
     from src.etf.rebalancer import ETFRebalancer
 
     grouped_codes = {row["code"] for row in state["_config"]["core"] if portfolio_config.grouped(row)}
     engine = ETFRebalancer(asset for asset in baseline(state) if asset.code not in grouped_codes)
-    plan = engine.build_plan(state["targets"], view["positions"], view["equity"], prices=view["prices"])
+    orders, _ = engine.orders_for_deviations(
+        state["targets"], view["positions"], view["equity"], deviations, prices=view["prices"])
     rev, result = revision(state), []
-    for order in plan.orders:
+    for order in orders:
+        deviation = deviations[order.code]
         price = view["prices"][order.code]
         identity = hashlib.sha256(
             f"{rev}:{price_day}:{order.code}:{order.action}:{order.qty}:{price}".encode()
@@ -373,10 +375,9 @@ def suggestions(state, view, price_day):
         result.append({"id": identity, "code": order.code, "name": order.name,
                        "side": order.action, "qty": order.qty, "price": price,
                        "amount": round(order.qty * price, 2),
-                       "gap_amount": round(order.amount, 2),
+                       "gap_amount": order.amount,
                        "current_pct": order.current_pct, "target_pct": order.target_pct,
-                       "current_value": round(order.current_pct * view["equity"], 2),
-                       "target_value": round(order.target_pct * view["equity"], 2),
+                       "current_value": deviation.current_value, "target_value": deviation.target_value,
                        "price_date": price_day, "price_issue": None, "reason": order.reason})
     cash = view["cash"]
     sale_proceeds = sum(r["amount"] or 0 for r in result if r["side"] == "sell")
@@ -641,8 +642,9 @@ def _strategy_facts(state, view, key):
               else "已分配" if holdings or pending or cash > 0 else "暂无持仓")
     thresholds = None
     if key == "core":
-        from src.etf.config import MIN_TRADE_DEVIATION, REBALANCE_SINGLE_THRESHOLD
-        thresholds = {"trade": MIN_TRADE_DEVIATION, "single": REBALANCE_SINGLE_THRESHOLD}
+        from src.etf.config import MIN_TRADE_DEVIATION, REBALANCE_RELATIVE_THRESHOLD, REBALANCE_SINGLE_THRESHOLD
+        thresholds = {"trade": MIN_TRADE_DEVIATION, "single": REBALANCE_SINGLE_THRESHOLD,
+                      "relative": REBALANCE_RELATIVE_THRESHOLD}
     return {"id": key, "name": name, "account_id": "etf", "positions": positions,
             "budget_pct": weight, "budget": budget, "invested": invested,
             "pnl": view["strategy_pnl"][key] if invested is not None else None,
@@ -657,7 +659,7 @@ def _strategy_facts(state, view, key):
             "deviation": round(assets - budget, 2) if budget is not None and assets is not None else None, "status": status}
 
 
-def strategy_views(state, view, *, today):
+def strategy_views(state, view, *, today, names=None):
     """汇总策略事实与建议；策略标识决定归属，展示顺序不参与规则判定。"""
     # 独立信号沿用其发布与成交时的账户事实；配置份额使用统一收盘估值。
     signal_view = snapshot(state, today.isoformat()) if any(
@@ -678,10 +680,24 @@ def strategy_views(state, view, *, today):
                 state.get("quality_signal"), _strategy_facts(state, signal_view, key), today,
                 dismissed=state["dismissed"])
             row["signal_date"] = state.get("quality_signal", {}).get("date")
-        if key == "core" and row["status"] == "已分配" and row["budget"] > 0:
-            row["suggestions"] = suggestions(state, {**view, "positions": row["positions"],
-                                                    "equity": row["budget"], "cash": row["cash"]},
-                                             view["valuation"]["date"])
+        if key == "core":
+            from src.etf.rebalancer import allocation_deviation
+
+            groups = _allocation_groups(state["_config"], row, view["fund_positions"], view["prices"],
+                                        view["fund_pending"], names or {})
+            deviations = {}
+            for group in groups:
+                deviation = allocation_deviation(group["market_value"], group["weight"], row["budget"])
+                deviations[group["id"]] = deviation
+                group.update(target_value=deviation.target_value, gap_amount=deviation.gap,
+                             absolute_deviation=deviation.absolute, relative_deviation=deviation.relative,
+                             absolute_review=deviation.absolute_review, relative_review=deviation.relative_review,
+                             trade_eligible=deviation.trade_eligible)
+            row["allocation_groups"] = groups
+            if row["status"] == "已分配" and row["budget"] > 0:
+                row["suggestions"] = suggestions(state, {**view, "positions": row["positions"],
+                                                        "equity": row["budget"], "cash": row["cash"]},
+                                                 view["valuation"]["date"], deviations)
         result.append(row)
     return result
 
@@ -1158,7 +1174,6 @@ def account_data(path):
     warnings = list(records[-1]["issues"]) if records else []
     if records and (not latest or latest["date"] != records[-1]["date"]):
         warnings.append("最新成绩待重新估值，曲线保留最近有效数据。")
-    strategies = strategy_views(state, view, today=day)
     grouped_values = {"etf": [], "stock": [], "other": []}
     for row in view["positions"]:
         row["kind"] = _holding_kind(row["code"])
@@ -1171,15 +1186,14 @@ def account_data(path):
     net_contributed = round(state["initial"]["equity"] + math.fsum(
         event["amount"] if event["side"] == "deposit" else -event["amount"]
         for event in state["events"] if event["date"] <= today and event["side"] in {"deposit", "withdraw"}), 2)
-    core = next(strategy for strategy in strategies if strategy["id"] == "core")
     fund_codes = {event["code"] for event in state["events"] if event["side"] in FUND_TRADES}
     fund_codes.update(code for asset in state["_config"]["core"] for code in asset.get("fund_codes", []))
     names = fund_names.names_for(fund_codes)
     for row in [*funds.values(), *view["fund_pending"].values()]:
         if row["code"] in names:
             row["name"] = names[row["code"]]
-    core["allocation_groups"] = _allocation_groups(state["_config"], core, funds, view["prices"],
-                                                   view["fund_pending"], names)
+    strategies = strategy_views(state, view, today=day, names=names)
+    core = next(strategy for strategy in strategies if strategy["id"] == "core")
     core["pending_fund_value"] = view["pending_fund_value"]
     core["allocation_budget"] = core["budget"]
     core["allocation_assets"] = core["assets"]

@@ -63,12 +63,10 @@ def example_baseline():
 # 任何以市场状态为条件的仓位动作都不成立。
 
 # 再平衡阈值——两层口径：
-#   触发层（should_rebalance）：单类偏离 > 5% 或总偏离 > 15% → 只作**报告分级**；
-#   执行层（compare → orders）：单笔按 MIN_TRADE_DEVIATION 过滤碎股偏差；
-#   **执行门 = 有指令即执行**（消费方读 orders 非空）——触发层当前不拦执行。
-# 未决事项：是否把执行门改为触发层的 should。改了会让调仓显著变稀
-# （单类 2%~5% 的批次不再执行），属策略语义变更，需先定再动。
-REBALANCE_SINGLE_THRESHOLD = 0.05     # 单类偏离触发阈值（报告分级）
+#   复核线：单类偏离达到 5 个百分点或目标权重的 25%，或总偏离超过 15 个百分点。
+#   份额参考：单笔绝对偏离达到 MIN_TRADE_DEVIATION 时尝试换算整手。
+REBALANCE_SINGLE_THRESHOLD = 0.05     # 单类绝对偏离复核线
+REBALANCE_RELATIVE_THRESHOLD = 0.25   # 单类相对偏离复核线
 REBALANCE_TOTAL_THRESHOLD = 0.15      # 所有偏离绝对值之和 > 15% 强制触发（报告分级）
 MIN_TRADE_DEVIATION = 0.02            # 碎股偏差过滤：< 2% 不出指令
 

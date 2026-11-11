@@ -895,7 +895,7 @@ function strategyPositionTable(strategy) {
   const pct=value=>finite(value)?`${(value*100).toFixed(2)}%`:'—';
   const thresholds = strategy.rebalance_thresholds;
   const suggestions = strategy.suggestions || [];
-  const thresholdNote = thresholds ? `偏离达到 ${(thresholds.trade*100).toFixed(0)} 个百分点提示，超过 ${(thresholds.single*100).toFixed(0)} 个百分点重点提醒。` : '偏离提醒阈值暂不可用。';
+  const thresholdNote = thresholds ? `偏离幅度达到 ${(thresholds.single*100).toFixed(0)} 个百分点或该项目标权重的 ${(thresholds.relative*100).toFixed(0)}% 时重点高亮。绝对偏离达到 ${(thresholds.trade*100).toFixed(0)} 个百分点且可换算整手时，提供参考份额。` : '偏离提醒阈值暂不可用。';
   let basisNote = '请先在“编辑配置”中设置策略目标占比。';
   if (budget > 0) {
     basisNote = '目标金额 = 配置目标资产 × 配置项权重。配比偏离按配置目标资产计算。';
@@ -903,35 +903,33 @@ function strategyPositionTable(strategy) {
     basisNote = '账户估值待补齐后计算目标金额。';
   }
   const rows=strategy.allocation_groups.map(group=>{
-    const {id:code, market_value:actual, weight, products} = group;
+    const {id:code, market_value:actual, weight, products,
+      target_value:target, gap_amount:gap, absolute_deviation:deviation,
+      relative_deviation:relative, absolute_review:absReview, relative_review:relReview,
+      trade_eligible:tradeEligible} = group;
     const name = fundDisplayName(group.name_fund_code) || group.name;
     const position = products.length === 1 ? products[0] : null;
     const fund = position?.kind === 'fund';
     const held = fund ? position.qty > 0 : position?.count > 0;
     const shares = fund ? fundShares(position.qty) : number(position?.count);
     const mark = held ? (fund ? fundMark(position) : quotePrice(position)) : '—';
-    const target=finite(budget)?budget*weight:null;
-    const gap = budget>0 && finite(target) && finite(actual) ? (Math.round(actual*100)-Math.round(target*100))/100 : null;
-    const deviation = finite(gap) ? Math.abs(gap)/budget : null;
-    let level = '';
-    if (finite(deviation) && thresholds) {
-      if (deviation > thresholds.single) level = 'strong';
-      else if (deviation >= thresholds.trade) level = 'attention';
-    }
+    const review = absReview || relReview;
+    const level = review ? 'strong' : tradeEligible ? 'attention' : '';
     const index = suggestions.findIndex(item=>item.code===code);
     const item = suggestions[index];
     let difference;
     if (!finite(gap)) {
       const status = finite(strategy.budget_pct) ? '待估值' : '待设置目标';
       difference = `<span class="subtle">${status}</span>`;
-    } else if (isAllocationBalanced(deviation)) {
+    } else if (!review && isAllocationBalanced(deviation)) {
       difference = '<span class="subtle">已配平</span>';
     } else {
-      difference = `<strong class="allocation-gap">${gap>0 ? '超配' : '低配'} ${money(Math.abs(gap))} 元</strong><small>${(deviation*100).toFixed(2)} 个百分点${level==='strong' ? ' · 偏离较大' : ''}</small>`;
+      const deviationText = finite(relative) ? `相对偏离 ${pct(relative)}` : `偏离 ${(deviation*100).toFixed(2)} 个百分点`;
+      difference = `<strong class="allocation-gap">${gap>0 ? '超配' : '低配'} ${money(Math.abs(gap))} 元</strong><small>${deviationText}</small>`;
     }
     const reference = item
       ? `<small>参考${item.side==='sell' ? '减持' : '增持'}约 ${number(item.qty)} 份</small>${item.cash_note ? `<small class="cash-note">${esc(item.cash_note)}</small>` : ''}`
-      : level && group.reference_price_missing ? '<small class="price-pending">参考份额待估值</small>' : '';
+      : tradeEligible && group.reference_price_missing ? '<small class="price-pending">参考份额待估值</small>' : '';
     let actions = '', details = '', productRows = '';
     if (code === 'CASH') {
       actions = '<button type="button" class="text-button" data-open-cash>分配现金</button>';
@@ -949,7 +947,7 @@ function strategyPositionTable(strategy) {
     }
     return `<tr data-allocation-code="${esc(code)}"${level ? ` class="allocation-${level}"` : ''}><td>${esc(name)}${group.outside ? '<small>目标外持仓</small>' : ''}${details}</td><td>${shares}</td><td>${mark}</td><td>${money(actual)}<small>配置内 ${pct(assets>0 && finite(actual)?actual/assets:null)}</small></td><td>${money(target)}<small>目标权重 ${pct(weight)}</small></td><td>${difference}<span class="allocation-mobile-values">现 ${money(actual)}<br>目标 ${money(target)}</span>${reference}</td><td>${actions}</td></tr>${productRows}`;
   }).join('');
-  return `<div class="table-wrap"><table class="allocation-table core-allocation-table"><thead><tr><th>产品与配置</th><th>份额</th><th>价格 / 元</th><th>当前金额 / 元</th><th>目标金额 / 元</th><th>配比偏离</th><th>记账</th></tr></thead><tbody>${rows}</tbody></table></div><details class="calculation-note"><summary>配比说明</summary><p>${basisNote}${allocationToleranceNote}。${thresholdNote} 多产品配置按组内合计金额判断偏离。</p></details>`;
+  return `<div class="table-wrap"><table class="allocation-table core-allocation-table"><thead><tr><th>产品与配置</th><th>份额</th><th>价格 / 元</th><th>当前金额 / 元</th><th>目标金额 / 元</th><th>配比偏离</th><th>记账</th></tr></thead><tbody>${rows}</tbody></table></div><details class="calculation-note"><summary>配比说明</summary><p>${basisNote}未达到重点高亮阈值时，${allocationToleranceNote}。${thresholdNote} 多产品配置按组内合计金额判断偏离。</p></details>`;
 }
 
 function openFundTrade(account, side, code, edit=null) {

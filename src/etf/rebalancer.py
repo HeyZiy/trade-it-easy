@@ -22,15 +22,53 @@ ETF 再平衡引擎
 
 import logging
 from dataclasses import dataclass
+from math import isclose
 from typing import Dict, List, Optional, Tuple
 
 from src.etf.config import (
-    MIN_TRADE_DEVIATION, REBALANCE_SINGLE_THRESHOLD,
+    MIN_TRADE_DEVIATION, REBALANCE_RELATIVE_THRESHOLD, REBALANCE_SINGLE_THRESHOLD,
     REBALANCE_TOTAL_THRESHOLD,
 )
 from src.mx.executor import floor_lot, round_lot
 
 logger = logging.getLogger(__name__)
+
+
+@dataclass(frozen=True)
+class AllocationDeviation:
+    current_value: float | None
+    target_value: float | None
+    gap: float | None
+    absolute: float | None
+    relative: float | None
+
+    @property
+    def relative_review(self) -> bool:
+        return self.relative is not None and (
+            self.relative >= REBALANCE_RELATIVE_THRESHOLD
+            or isclose(self.relative, REBALANCE_RELATIVE_THRESHOLD, rel_tol=1e-12)
+        )
+
+    @property
+    def absolute_review(self) -> bool:
+        return self.absolute is not None and self.absolute >= REBALANCE_SINGLE_THRESHOLD
+
+    @property
+    def trade_eligible(self) -> bool:
+        return self.absolute is not None and self.absolute >= MIN_TRADE_DEVIATION
+
+
+def allocation_deviation(current_value: float | None, weight: float,
+                         budget: float | None) -> AllocationDeviation:
+    target_value = round(budget * weight, 2) if budget is not None else None
+    if current_value is None or budget is None or budget <= 0:
+        return AllocationDeviation(current_value, target_value, None, None, None)
+
+    current_value = round(float(current_value), 2)
+    gap = round(current_value - target_value, 2)
+    absolute = abs(gap) / budget
+    relative = absolute / weight if weight > 0 else None
+    return AllocationDeviation(current_value, target_value, gap, absolute, relative)
 
 
 @dataclass
@@ -55,7 +93,7 @@ class RebalancePlan:
     """核心仓再平衡纯值产物（可独立校验，不含 client/rebalancer 等活对象）。
 
     - `orders`：本次批次指令（执行门＝有指令即执行）。
-    - `should`：**触发层**结论（单类 >5% 或 总 >15%），只作报告分级，不拦执行。
+    - `should`：偏离是否达到复核线，供报告分级。
     - `reason`：**执行层**结论，与实际动作逐字一致（不取触发层文案）。
     - `odd_lots`：应卖但持仓不足一手的残腿 [{code, name, count}]，供报告列手动待办。
     """
@@ -84,22 +122,6 @@ class ETFRebalancer:
 
     # ── 比较持仓 ──
 
-    def _build_current_map(self, positions: List[dict], capital: float) -> Dict[str, dict]:
-        """将持仓列表转为 {code: {market_value, current_pct}}（占比按给定资金口径）"""
-        result = {}
-        for p in positions:
-            code = p.get("code", "")
-            mv = float(p.get("market_value", 0) or 0)
-            pct = mv / capital if capital > 0 else 0.0
-            result[code] = {
-                "market_value": mv,
-                "current_pct": pct,
-                "count": p.get("count", 0),
-                "current_price": p.get("current_price", 0),
-                "name": p.get("name", ""),
-            }
-        return result
-
     def split_rotation_positions(self, positions: List[dict]) -> Tuple[List[dict], float, List[dict]]:
         """拆分核心持仓与卫星（非核心）持仓。
 
@@ -125,69 +147,65 @@ class ETFRebalancer:
                 total_assets: float,
                 prices: Optional[Dict[str, float]] = None,
                 ) -> Tuple[List[RebalanceOrder], float, List[dict]]:
-        """比较目标 vs 实际，生成调仓指令（旧钱唯一动作：阈值再平衡）
+        """返回调仓指令、总偏离和不足一手的卖出残腿。"""
+        orders, total_deviation, odd_lots, _ = self._evaluate(target, positions, total_assets, prices)
+        return orders, total_deviation, odd_lots
 
-        资金口径：核心资金 = 总资产（资金占比即总占比）。卫星仓与其他账户持仓
-        不在基准代码集内，不产生偏离；其资金被"现金（以及其他账户）"桶吸收。
+    def _evaluate(self, target, positions, total_assets, prices):
+        values = {row.get("code"): row.get("market_value") for row in positions}
+        deviations = {
+            asset.code: allocation_deviation(values.get(asset.code, 0), target.get(asset.code, 0.0), total_assets)
+            for asset in self.baseline if asset.code != "CASH"
+        }
+        total_deviation = sum(row.absolute for row in deviations.values() if row.absolute is not None)
+        orders, odd_lots = self.orders_for_deviations(target, positions, total_assets, deviations, prices)
+        return orders, total_deviation, odd_lots, deviations
 
-        prices 为未持仓/缺价标的的行情补价（调用方取齐后注入，本模块不取数）。
-        本方法只撒网：单笔按 MIN_TRADE_DEVIATION 过滤碎股偏差；触发阈值
-        （单类 5% / 总 15%）在 should_rebalance 决定整批是否执行。
-
-        **与市场状态完全无关**：组合层面 trending_down 无前瞻信息，
-        核心仓只抄基准、不抄择时（strategy/etf_allocation.md 第二节）。
-
-        Returns:
-            (orders, total_deviation, odd_lots)
-            调仓指令列表 + 总偏离度 + 应卖但持仓不足一手的残腿清单
-        """
-        current = self._build_current_map(positions, total_assets)
+    def orders_for_deviations(self, target: Dict[str, float], positions: List[dict],
+                              total_assets: float, deviations: Dict[str, AllocationDeviation],
+                              prices: Optional[Dict[str, float]] = None,
+                              ) -> Tuple[List[RebalanceOrder], List[dict]]:
+        """用已计算的金额差生成整手指令。"""
+        current = {row.get("code"): row for row in positions}
         prices = prices or {}
         orders: List[RebalanceOrder] = []
         odd_lots: List[dict] = []
-        total_deviation = 0.0
 
         for asset in self.baseline:
             code = asset.code
-            if code == "CASH":
+            deviation = deviations.get(code)
+            if code == "CASH" or deviation is None or not deviation.trade_eligible:
                 continue
             target_pct = target.get(code, 0.0)
             cur = current.get(code) or {}
-            cur_pct = cur.get("current_pct", 0.0)
-            deviation = target_pct - cur_pct
-            total_deviation += abs(deviation)
-
-            if abs(deviation) < MIN_TRADE_DEVIATION:
-                continue
-
-            # 先收敛到分，避免 799.9999999999998 元被整手取整少算一手。
-            amount = round(deviation * total_assets, 2)
+            cur_pct = deviation.current_value / total_assets
+            amount = abs(deviation.gap)
             cur_price = cur.get("current_price", 0) or 0
             if cur_price <= 0:
                 cur_price = prices.get(code, 0) or 0
 
-            if deviation > 0:
+            if deviation.gap < 0:
                 # 需要加仓（买侧口径：向下取整后强凑≥100，单点在 executor.round_lot）
-                quantity = round_lot(abs(amount) / cur_price) if cur_price > 0 else 0
+                quantity = round_lot(amount / cur_price) if cur_price > 0 else 0
                 if quantity >= 100:
                     orders.append(RebalanceOrder(
                         code=code, name=asset.name, action="buy",
-                        amount=abs(amount), quantity=quantity,
+                        amount=amount, quantity=quantity,
                         current_pct=cur_pct, target_pct=target_pct,
-                        reason=f"低于目标{deviation*100:.1f}%"
+                        reason=f"低于目标{deviation.absolute * 100:.1f}个百分点"
                     ))
             else:
                 # 需要减仓（卖侧口径：钳制到实际持仓后向下取整，单点在 executor.floor_lot；
                 # 不足一手的残腿不出卖单）
                 cur_count = int(cur.get("count", 0) or 0)
-                need = int(abs(amount) / cur_price) if cur_price > 0 else 0
+                need = int(amount / cur_price) if cur_price > 0 else 0
                 quantity = floor_lot(min(need, cur_count))
                 if quantity >= 100:
                     orders.append(RebalanceOrder(
                         code=code, name=asset.name, action="sell",
-                        amount=abs(amount), quantity=quantity,
+                        amount=amount, quantity=quantity,
                         current_pct=cur_pct, target_pct=target_pct,
-                        reason=f"高于目标{abs(deviation)*100:.1f}%"
+                        reason=f"高于目标{deviation.absolute * 100:.1f}个百分点"
                     ))
                 elif 0 < cur_count < 100:
                     odd_lots.append({"code": code, "name": asset.name, "count": cur_count})
@@ -198,62 +216,41 @@ class ETFRebalancer:
         buys = sorted([o for o in orders if o.action == "buy"], key=lambda o: vol_map.get(o.code, 99))
         orders = sells + buys
 
-        return orders, total_deviation, odd_lots
+        return orders, odd_lots
 
     # ── 判断是否触发再平衡（触发层；决策口径见 build_plan 与 config 阈值注释）──
 
-    def should_rebalance(self, orders: List[RebalanceOrder],
+    def should_rebalance(self, deviations: Dict[str, AllocationDeviation],
                          total_deviation: float) -> Tuple[bool, str]:
-        """触发层结论：**只看偏离量级**，与"能否出单"分开。
-
-        - 总偏离 > 15% → True；最大单类偏离 > 5% → True；否则 False。
-        - 无指令（< 2% 碎股噪声，或标的缺价）不改变量级判断：总偏离够大仍报 True，
-          理由里写明"无单可出"，避免"总偏离 71% 却 should=False"这类自相矛盾。
-        - 本结论只作报告分级，不拦执行（执行门＝有指令即执行，见 build_plan）。
-        文案一律带数。
-        """
-        threshold = REBALANCE_SINGLE_THRESHOLD
-        max_single = max((abs(o.target_pct - o.current_pct) for o in orders), default=0.0)
+        """根据全部配置标的的偏离判断是否达到复核线。"""
+        max_single = max((row.absolute or 0 for row in deviations.values()), default=0.0)
 
         if total_deviation > REBALANCE_TOTAL_THRESHOLD:
             return True, (f"总偏离 {total_deviation:.1%} > {REBALANCE_TOTAL_THRESHOLD:.0%}"
                           f"（最大单类 {max_single:.1%}）")
-        if max_single > threshold:
-            return True, f"最大单类偏离 {max_single:.1%} > {threshold:.0%}"
-        if not orders:
-            return False, (f"无单可出（无单笔偏离 ≥{MIN_TRADE_DEVIATION:.0%} 或标的缺价；"
-                           f"总偏离 {total_deviation:.1%}）")
-        return False, (f"最大单类 {max_single:.1%} ≤ {threshold:.0%} "
-                       f"且总偏离 {total_deviation:.1%} ≤ {REBALANCE_TOTAL_THRESHOLD:.0%}")
+        if any(row.absolute_review for row in deviations.values()):
+            return True, f"最大单类偏离 {max_single:.1%} ≥ {REBALANCE_SINGLE_THRESHOLD:.0%}"
+        max_relative = max((row.relative for row in deviations.values() if row.relative_review), default=None)
+        if max_relative is not None:
+            return True, f"最大单类相对偏离 {max_relative:.1%} 达到 {REBALANCE_RELATIVE_THRESHOLD:.0%} 复核线"
+        return False, f"最大单类 {max_single:.1%}，总偏离 {total_deviation:.1%}，均未达到复核线"
 
     def _execution_reason(self, orders: List[RebalanceOrder], total_deviation: float,
                           should: bool, trigger_reason: str) -> str:
-        """报告结论 = **执行层事实**，与实际动作逐字一致；触发层结论作为分级信息附后。
-
-        执行门口径单点在 build_plan：有指令即执行（单笔 ≥ MIN_TRADE_DEVIATION 才出指令）。
-        """
+        """汇总份额指令和偏离复核结论。"""
         if not orders:
             base = (f"无指令（无单笔偏离 ≥{MIN_TRADE_DEVIATION:.0%}，或标的缺价；"
                     f"总偏离 {total_deviation:.1%}）")
             return base if not should else f"{base}；触发层：{trigger_reason}"
-        return (f"{len(orders)} 笔指令（执行门＝有指令即执行，单笔 ≥{MIN_TRADE_DEVIATION:.0%} 才出指令）；"
-                f"触发层：{trigger_reason}")
+        return f"{len(orders)} 笔指令；触发层：{trigger_reason}"
 
     def build_plan(self, target: Dict[str, float], positions: List[dict],
                    total_assets: float,
                    prices: Optional[Dict[str, float]] = None) -> RebalancePlan:
-        """compare + 触发层 + 执行层结论 一次装配为纯值 RebalancePlan。
-
-        口径：
-        - **执行门 = 有指令即执行**（消费方 src/etf/allocation 读 `orders` 非空）；
-        - `should`/触发层结论只作报告分级，不拦执行；
-        - `reason` 描述**执行层事实**，与实际动作逐字一致。
-        待决（未决）：是否把执行门改为 `should`（即 5%/15% 真的拦执行）——
-        那会让调仓显著变稀（单类 2%~5% 的批次不再执行），属策略语义变更，见 config 阈值注释。
-        """
-        orders, total_deviation, odd_lots = self.compare(
+        """一次计算偏离，生成复核结论和份额指令。"""
+        orders, total_deviation, odd_lots, deviations = self._evaluate(
             target, positions, total_assets, prices)
-        should, trigger_reason = self.should_rebalance(orders, total_deviation)
+        should, trigger_reason = self.should_rebalance(deviations, total_deviation)
         reason = self._execution_reason(orders, total_deviation, should, trigger_reason)
         return RebalancePlan(orders=orders, total_deviation=total_deviation,
                              should=should, reason=reason, odd_lots=odd_lots)

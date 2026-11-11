@@ -133,8 +133,8 @@ def test_reason_matches_execution_decision():
     """文案与执行一致：有指令时 reason 不得说"无指令/无需"，
     单类 2%~5% 的批次照样执行（执行门＝有指令即执行），reason 如实写触发层未达线。
     """
-    # 红利 10% vs 目标 7% → 单类偏离 3%（> 2% 出指令，≤ 5% 触发层不达线）
-    plan = R.build_plan(TARGET, _at_target(**{"515180": TARGET["515180"] + .03}), 50_000)
+    # 目标约 19.2%，偏离 3 个百分点足以给份额参考，但未达到任一复核线。
+    plan = R.build_plan(TARGET, _at_target(**{"513500": TARGET["513500"] + .03}), 50_000)
     assert plan.orders, plan.reason
     assert plan.should is False, plan.reason
     assert "无指令" not in plan.reason and "无需" not in plan.reason, plan.reason
@@ -145,7 +145,7 @@ def test_reason_matches_execution_decision():
 def test_trigger_layer_does_not_block_execution():
     """契约：触发层只分级、不拦执行——plan.should 为 False 时 orders 仍非空，
     消费方按 orders 执行（改执行门到 should 属策略语义变更，需先裁决）。"""
-    plan = R.build_plan(TARGET, _at_target(**{"515180": TARGET["515180"] + .03}), 50_000)
+    plan = R.build_plan(TARGET, _at_target(**{"513500": TARGET["513500"] + .03}), 50_000)
     assert plan.should is False and len(plan.orders) > 0
 
 
@@ -154,6 +154,15 @@ def test_trigger_fires_on_magnitude_not_on_executability():
     no_prices = R.build_plan(TARGET, [], 100_000)
     assert no_prices.orders == [] and no_prices.should is True, no_prices.reason
     assert "无指令" in no_prices.reason and "触发层" in no_prices.reason, no_prices.reason
+
+
+def test_relative_review_below_trade_minimum():
+    asset = _config.AssetAllocation("518880", _config.AssetType.GOLD, .05, 1)
+    engine = ETFRebalancer([asset])
+    positions = [_pos(asset.code, "黄金ETF", 6250, 1)]
+    plan = engine.build_plan(engine.calculate_target(), positions, 100_000)
+    assert plan.should is True and plan.orders == []
+    assert "相对偏离 25.0%" in plan.reason
 
 
 def test_no_orders_reason_is_about_the_order_filter_not_absence_of_deviation():
