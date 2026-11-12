@@ -11,7 +11,8 @@ import pytest
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from test_platform_quality_pool_v2 import world  # noqa: E402,F401
 from test_platform_quality_momentum_turnover_probe import probe, run  # noqa: E402
-from research.studies.quality_momentum.internal.growth_basis import growth_features, freeze_growth
+from research.studies.quality_momentum.internal.growth_basis import (
+    growth_features, freeze_growth, growth_period_statistics, variant_pass)
 from research.studies.quality_momentum.internal.build_growth_basis import TARGET, render
 from research.studies.quality_momentum.internal.analyze_exports import analyze_exports
 
@@ -67,6 +68,51 @@ def test_growth_file_is_standalone_and_current():
                    for n in ast.walk(ast.parse(source)))
 
 
+def scan_frame():
+    return pd.DataFrame(dict(
+        roe_ttm_pct=[13., 16., 13., 19., np.nan],
+        np_yoy_pct=[11., 11., 21., 31., 31.],
+        pe_ttm=[20., 19., 20., 10., 10.],
+        pb=[3., 4., 2., 1., 1.],
+        vol60=[30., 30., 34., 20., 20.]), index=list('abcde'))
+
+
+@pytest.mark.parametrize('overrides,expected', [
+    (dict(growth=None), [True, True, True, True, False]),
+    ({}, [True, True, True, True, False]),
+    (dict(growth=20.), [False, False, True, True, False]),
+    (dict(roe=15.), [False, True, False, True, False]),
+    (dict(pe=20.), [False, True, False, True, False]),
+    (dict(pb=3.), [False, False, True, True, False]),
+    (dict(vol=25.), [False, False, False, True, False]),
+    (dict(growth=20., roe=15., pe=20., pb=3., vol=25.), [False, False, False, True, False]),
+])
+def test_scan_variants_tighten_thresholds_strictly(overrides, expected):
+    assert variant_pass(scan_frame(), overrides).tolist() == expected
+    assert not variant_pass(pd.DataFrame(index=['x']), {}).iloc[0]
+
+
+def test_statistics_emit_scan_groups_and_minus_v5_differences():
+    frame = scan_frame().iloc[[0, 3]][['roe_ttm_pct', 'np_yoy_pct', 'pe_ttm', 'pb', 'vol60']].copy()
+    frame['common'] = [True, False]
+    for arm in ('baseline', 'ttm_total', 'ttm_parent', 'ttm_adjusted'):
+        frame['pass_' + arm] = True
+    for h in (20, 40, 60):
+        frame['r%d' % h] = [.01 * h / 20, .03 * h / 20]
+    snapshot = dict(signal_day=pd.Timestamp('2024-01-02'), asof=pd.Timestamp('2024-01-01'), error='')
+    for h in (20, 40, 60):
+        snapshot['status_%d' % h] = 'mature'
+    rows = pd.DataFrame(growth_period_statistics(snapshot, frame))
+    available = rows[rows.scope.eq('available_inputs') & rows.horizon.eq(20)].set_index('group')
+    assert available.loc['no_growth', 'n'] == 2
+    assert available.loc['v5', 'n'] == 2
+    assert available.loc['strict', 'n'] == 1
+    assert available.loc['strict_minus_v5', 'return_available'] == pytest.approx(.03 - .02)
+    assert 'v5_minus_v5' not in available.index
+    common = rows[rows.scope.eq('common_inputs') & rows.horizon.eq(20)].set_index('group')
+    assert common.loc['v5', 'n'] == 1 and common.loc['strict', 'n'] == 0
+
+
 def test_growth_expanded_pool_callbacks_and_raw_export_audit(world, tmp_path):
     stub, _, codes, cal = probe(world)
     stub.date_tables['indicator'].loc[0, 'inc_net_profit_year_on_year'] = 0.
@@ -115,6 +161,10 @@ def test_growth_expanded_pool_callbacks_and_raw_export_audit(world, tmp_path):
     prefix = tmp_path / module.OUTPUT_PREFIX
     result = analyze_exports(prefix, tmp_path / 'analysis')
     assert result['summary'].group.eq('ttm_adjusted_minus_baseline').any()
+    assert result['summary'].group.eq('no_growth_minus_v5').any()
+    periods = pd.read_csv(StringIO(stub.exports[module.OUTPUT_PREFIX + '_periods.csv']))
+    first_periods = periods[periods.signal_day.eq(str(cal[270].date())) & periods.horizon.eq(20)]
+    assert {'no_growth', 'v5', 'roe_15', 'strict'} <= set(first_periods.group)
     quarters_path = tmp_path / (module.OUTPUT_PREFIX + '_quarters.csv')
     quarters = pd.read_csv(quarters_path)
     quarters.loc[0, 'value'] *= 2

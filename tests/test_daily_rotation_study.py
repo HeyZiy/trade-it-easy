@@ -1,10 +1,4 @@
-"""用双账户假平台验证调仓周期对照实验的关键调度语义。
-
-覆盖三点：daily1周中退出次日补位而base20持到节点；base20非节点日只补判数据
-未知旧仓、确认失败进入待退出；受阻退出在数据恢复后的取消路径——daily1次日
-重算即取消，base20须等节点日重算（与v5现行语义一致）。引擎记账细节已由
-rank-control实验平台结果核对，不在此重复。
-"""
+"""用假平台验证每日检查、成交补位与留存仓等权的独立调度。"""
 import importlib.util
 import math
 import sys
@@ -52,7 +46,7 @@ class Position(SimpleNamespace):
     pass
 
 
-def world(monkeypatch, np_yoy_rules=(), roe_rules=(), paused_days=None):
+def world(monkeypatch, np_yoy_rules=(), roe_rules=(), paused_days=None, arms=('base20', 'daily20')):
     """规则按(起始日历下标, code, 值)先匹配先用；roe值None表示因子缺失(unknown)。
     np_yoy单位为百分比(20=20%)，roe为ratio(0.15=15%，脚本内×100)。"""
     api = ModuleType('jqdata')
@@ -160,10 +154,11 @@ def world(monkeypatch, np_yoy_rules=(), roe_rules=(), paused_days=None):
     spec = importlib.util.spec_from_file_location('daily_rotation_under_test', SCRIPT)
     strategy = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(strategy)
+    if arms is not None:
+        strategy.ARMS = arms
     strategy.set_option = strategy.set_benchmark = strategy.set_slippage = lambda *a, **k: None
     strategy.set_order_cost = strategy.run_daily = strategy.set_subportfolios = lambda *a, **k: None
     strategy.log = SimpleNamespace(info=lambda *a: None, set_level=lambda *a: None)
-    strategy.record = lambda **k: None
     strategy.write_file = lambda name, text, append=False: files.__setitem__(
         name, (files.get(name, '') if append else '') + text)
     strategy.order_target = order_target
@@ -172,8 +167,8 @@ def world(monkeypatch, np_yoy_rules=(), roe_rules=(), paused_days=None):
     strategy.get_orders = lambda: day_orders
 
     context = SimpleNamespace(
-        portfolio=SimpleNamespace(starting_cash=2000000.0),
-        subportfolios=[Sub(1000000.0), Sub(1000000.0)],
+        portfolio=SimpleNamespace(starting_cash=1000000.0 * len(strategy.ARMS)),
+        subportfolios=[Sub(1000000.0) for _ in strategy.ARMS],
         current_dt=pd.Timestamp('2025-06-02'),
         run_params=SimpleNamespace(frequency='day', start_date='', end_date=''))
     strategy.initialize(context)
@@ -195,26 +190,27 @@ def run_day(world, local_day):
 
 
 def held(world, arm):
-    sub = world.context.subportfolios[0 if arm == 'base20' else 1]
+    account = next(state for state in world.accounts if state.mode == arm)
+    sub = world.context.subportfolios[account.index]
     return {c for c, p in sub.long_positions.items() if p.total_amount > 0}
 
 
 def test_daily_refills_midcycle_base20_waits_for_node(monkeypatch):
-    # 头号持仓自day5的T-1起单季净利同比5%：daily1当日卖出并补入600001，base20持到day21节点。
+    # 头号持仓自day5的T-1起单季净利同比5%：daily20当日卖出并补入600001，base20持到day21节点。
     w = world(monkeypatch, np_yoy_rules=[(RUN_START + 3, NP_YOY_CODE, 5.0)])
     for day in range(1, 6):
         run_day(w, day)
-    assert held(w, 'daily1') == set(CODES[1:7])
+    assert held(w, 'daily20') == set(CODES[1:7])
     assert held(w, 'base20') == set(CODES[2:8])
     for day in range(6, 22):
         run_day(w, day)
-    assert held(w, 'daily1') == set(CODES[1:7])
+    assert held(w, 'daily20') == set(CODES[1:7])
     assert held(w, 'base20') == set(CODES[1:7])   # day21节点两臂收敛
 
 
-def test_transient_failure_invisible_to_base20_caught_by_daily1(monkeypatch):
+def test_transient_failure_invisible_to_base20_caught_by_daily20(monkeypatch):
     # 600005的ROE因子：T-1在day5-6缺失(unknown)、day7-10为5%(failed)、day11起恢复15%。
-    # daily1在day7确认失败卖出并按新前6名补入600001；base20的补判只覆盖节点日已
+    # daily20在day7确认失败卖出并按新前6名补入600001；base20的补判只覆盖节点日已
     # unknown的仓，该瞬时失败对其不可见，day21节点asof已恢复→全程不退出。
     roe_rules = [(RUN_START + 9, ROE_CODE, 0.15),
                  (RUN_START + 5, ROE_CODE, 0.05),
@@ -222,25 +218,25 @@ def test_transient_failure_invisible_to_base20_caught_by_daily1(monkeypatch):
     w = world(monkeypatch, roe_rules=roe_rules)
     for day in range(1, 5):
         run_day(w, day)
-    assert held(w, 'base20') == held(w, 'daily1') == set(CODES[2:8])
+    assert held(w, 'base20') == held(w, 'daily20') == set(CODES[2:8])
     run_day(w, 5)
-    # unknown日：daily1冻结该仓不卖（deferred），两臂持仓不变。
-    assert held(w, 'daily1') == set(CODES[2:8])
+    # unknown日：daily20冻结该仓不卖（deferred），两臂持仓不变。
+    assert held(w, 'daily20') == set(CODES[2:8])
     assert ROE_CODE not in w.accounts[1].exit_pending
     run_day(w, 7)
-    # daily1：确认失败→当日卖出并按新前6名（600005已出池）补入600001。
-    assert held(w, 'daily1') == set(CODES[1:5]) | {CODES[6], CODES[7]}
+    # daily20：确认失败→当日卖出并按新前6名（600005已出池）补入600001。
+    assert held(w, 'daily20') == set(CODES[1:5]) | {CODES[6], CODES[7]}
     assert held(w, 'base20') == set(CODES[2:8])
     for day in range(8, 22):
         run_day(w, day)
     # base20直到day21节点也未见该失败（asof已恢复），两臂不再收敛。
     assert held(w, 'base20') == set(CODES[2:8])
-    assert held(w, 'daily1') == set(CODES[1:5]) | {CODES[6], CODES[7]}
+    assert held(w, 'daily20') == set(CODES[1:5]) | {CODES[6], CODES[7]}
 
 
-def test_confirmed_exit_while_paused_base20_sells_daily1_recovers(monkeypatch):
+def test_confirmed_exit_while_paused_base20_sells_daily20_recovers(monkeypatch):
     # 600005在day21节点确认ROE失败（两臂设待退出），day21-30停牌挡卖；
-    # asof在day23-24转unknown、day25起恢复15%。daily1次日重算恢复通过即取消退出；
+    # asof在day23-24转unknown、day25起恢复15%。daily20次日重算恢复通过即取消退出；
     # base20的确认退出不回头，day31首个未停牌开盘卖出，且无计划不回补。
     roe_rules = [(RUN_START + 23, ROE_CODE, 0.15),
                  (RUN_START + 21, ROE_CODE, None),
@@ -250,24 +246,189 @@ def test_confirmed_exit_while_paused_base20_sells_daily1_recovers(monkeypatch):
     for day in range(1, 21):
         run_day(w, day)
     base, daily = w.accounts[0], w.accounts[1]
-    assert held(w, 'base20') == held(w, 'daily1') == set(CODES[2:8])
+    assert held(w, 'base20') == held(w, 'daily20') == set(CODES[2:8])
     run_day(w, 21)
     # 节点日两臂确认失败并设待退出；停牌挡卖，买入也因名额被占受阻。
     assert base.exit_pending.get(ROE_CODE) == 'out_of_pool'
     assert daily.exit_pending.get(ROE_CODE) == 'out_of_pool'
-    assert ROE_CODE in held(w, 'base20') and ROE_CODE in held(w, 'daily1')
+    assert ROE_CODE in held(w, 'base20') and ROE_CODE in held(w, 'daily20')
     for day in range(22, 25):
         run_day(w, day)
     assert base.exit_pending.get(ROE_CODE) == 'out_of_pool'
     assert daily.exit_pending.get(ROE_CODE) == 'out_of_pool'   # unknown保留退出意图
     run_day(w, 25)
-    # daily1重算确认通过→退出取消、继续持有；base20维持退出意图。
+    # daily20重算确认通过→退出取消、继续持有；base20维持退出意图。
     assert ROE_CODE not in daily.exit_pending
     assert base.exit_pending.get(ROE_CODE) == 'out_of_pool'
     for day in range(26, 32):
         run_day(w, day)
-    # base20在day31首个未停牌开盘卖出，无计划不回补，仅5只持仓；daily1持有6只。
+    # base20在day31首个未停牌开盘卖出，无计划不回补，仅5只持仓；daily20持有6只。
     assert ROE_CODE not in held(w, 'base20')
     assert held(w, 'base20') == set(CODES[2:8]) - {ROE_CODE}
-    assert held(w, 'daily1') == set(CODES[2:8])
-    assert ROE_CODE in held(w, 'daily1')
+    assert held(w, 'daily20') == set(CODES[2:8])
+    assert ROE_CODE in held(w, 'daily20')
+
+
+def test_default_only_rebalances_on_the_original_nodes(monkeypatch):
+    w = world(monkeypatch, arms=None, np_yoy_rules=[(RUN_START + 3, NP_YOY_CODE, 5.0)])
+    daily, = w.accounts
+    for day in range(1, 22):
+        run_day(w, day)
+
+    assert daily.mode == 'daily20_entry_vol'
+    rows = daily.order_rows
+    day5 = str(CAL[RUN_START + 4].date())
+    assert [(r['code'], r['reason']) for r in rows if r['date'] == day5] == [
+        (NP_YOY_CODE, 'out_of_pool'), (CODES[1], 'entry')]
+    assert {r['date'] for r in rows if r['reason'] == 'equal_weight'} == {
+        str(CAL[RUN_START + 20].date())}
+    w.strategy.on_strategy_end(w.context)
+    prefix = w.strategy.OUTPUT_PREFIX
+    summary = pd.read_csv(pd.io.common.StringIO(w.files[prefix + '_summary.csv'])).iloc[0]
+    assert summary['entry_orders'] == 7
+    assert summary['exit_orders'] == 1
+    assert summary['rebalance_orders'] > 0
+
+
+def test_daily_hold_refills_only_when_blocked_exit_actually_fills(monkeypatch):
+    w = world(monkeypatch, arms=('daily_hold',),
+              np_yoy_rules=[(RUN_START + 3, NP_YOY_CODE, 5.0)],
+              paused_days={RUN_START + 4: {NP_YOY_CODE}})
+    daily, = w.accounts
+    for day in range(1, 6):
+        run_day(w, day)
+    assert held(w, 'daily_hold') == set(CODES[2:8])
+    assert daily.exit_pending == {NP_YOY_CODE: 'out_of_pool'}
+    assert not w.day_orders
+    run_day(w, 6)
+    assert held(w, 'daily_hold') == set(CODES[1:7])
+    assert {r['reason'] for r in daily.order_rows if r['date'] == str(CAL[RUN_START + 5].date())} == {
+        'out_of_pool', 'entry'}
+    for day in range(7, 22):
+        run_day(w, day)
+    assert all(r['reason'] != 'equal_weight' for r in daily.order_rows)
+
+
+def test_industry_snapshot_failure_does_not_delay_confirmed_exit(monkeypatch):
+    w = world(monkeypatch, arms=None, np_yoy_rules=[(RUN_START + 3, NP_YOY_CODE, 5.0)])
+    original = w.strategy.get_industry
+    w.strategy.get_industry = lambda *a, **kw: {} if w.state['day'] == RUN_START + 4 else original(*a, **kw)
+    for day in range(1, 6):
+        run_day(w, day)
+    assert held(w, 'daily20_entry_vol') == set(CODES[2:7])
+    run_day(w, 6)
+    assert held(w, 'daily20_entry_vol') == set(CODES[1:7])
+
+
+def test_summary_reuses_archived_reference_only_for_matching_dates(monkeypatch):
+    strategy = world(monkeypatch, arms=None).strategy
+    result = dict(account='daily20', first_date='2016-01-04', last_date='2026-09-01',
+                  return_pct=212.0, annual_return_pct=12.0, max_drawdown_pct=23.0)
+    comparisons = strategy.comparison_rows([result], [])
+    assert {(r['reference'], r['metric'], r['reference_value']) for r in comparisons} == {
+        ('v5_archived', 'return_pct', 207.03), ('v5_archived', 'annual_return_pct', 11.43),
+        ('v5_archived', 'max_drawdown_pct', 24.71)}
+    assert strategy.comparison_rows([dict(result, last_date='2025-12-31')], []) == []
+    entry_vol = dict(result, account='daily20_entry_vol')
+    comparisons = strategy.comparison_rows([entry_vol], [])
+    assert {r['reference']: r['reference_value'] for r in comparisons if r['metric'] == 'max_drawdown_pct'} == {
+        'v5_archived': 24.71, 'daily20_archived': 31.26}
+
+
+def test_full_accounts_between_rebalance_days_only_request_held_quotes(monkeypatch):
+    w = world(monkeypatch, arms=('daily20',))
+    history, industry = w.strategy.history, w.strategy.get_industry
+    history_requests, industry_days = [], []
+
+    def observed_history(count, unit, field, security_list, **kwargs):
+        history_requests.append((count, set(security_list)))
+        return history(count, unit, field, security_list, **kwargs)
+
+    def observed_industry(*args, **kwargs):
+        industry_days.append(w.state['day'])
+        return industry(*args, **kwargs)
+
+    w.strategy.history = observed_history
+    w.strategy.get_industry = observed_industry
+    for day in range(1, 22):
+        run_day(w, day)
+
+    assert industry_days == [RUN_START, RUN_START + 20]
+    assert history_requests == [(253, set(CODES))] + [(61, set(CODES[2:]))] * 19 + [(253, set(CODES))]
+
+
+def test_market_scan_failure_preserves_exit_confirmed_by_holding_review(monkeypatch):
+    w = world(monkeypatch, arms=None, np_yoy_rules=[(RUN_START + 3, NP_YOY_CODE, 5.0)])
+    build_pool = w.strategy.build_pool
+
+    def missing_market(context, asof, **kwargs):
+        if w.state['day'] == RUN_START + 4 and kwargs.get('subset') is None:
+            raise w.strategy.PoolDataError('missing market snapshot')
+        return build_pool(context, asof, **kwargs)
+
+    w.strategy.build_pool = missing_market
+    for day in range(1, 6):
+        run_day(w, day)
+    assert held(w, 'daily20_entry_vol') == set(CODES[2:7])
+    assert w.accounts[0].order_rows[-1]['pool_reason'] == 'profit_growth_low'
+    run_day(w, 6)
+    assert held(w, 'daily20_entry_vol') == set(CODES[1:7])
+
+
+def test_first_day_trades_with_legacy_pandas(monkeypatch):
+    w = world(monkeypatch, arms=None)
+    monkeypatch.delattr(pd.DataFrame, 'to_numpy')
+
+    run_day(w, 1)
+
+    assert not w.accounts[0].data_paused
+    assert held(w, 'daily20_entry_vol') == set(CODES[2:8])
+
+
+def test_volatility_only_screens_entries_in_default_mode(monkeypatch):
+    new_mode = 'daily20_entry_vol'
+    w = world(monkeypatch, arms=('daily20', new_mode),
+              np_yoy_rules=[(RUN_START + 20, NP_YOY_CODE, 5.0)])
+    history = w.strategy.history
+
+    def shocked_history(*args, **kwargs):
+        frame = history(*args, **kwargs)
+        if NP_YOY_CODE in frame:
+            frame.loc[frame.index >= CAL[RUN_START], NP_YOY_CODE] *= .65
+        return frame
+
+    w.strategy.history = shocked_history
+    run_day(w, 1)
+    run_day(w, 2)
+    assert NP_YOY_CODE in held(w, new_mode)
+    assert NP_YOY_CODE not in held(w, 'daily20')
+    assert w.accounts[0].holding_rows[-1]['pool_reason'] == 'vol_high'
+    for day in range(3, 22):
+        run_day(w, day)
+
+    daily = w.accounts[1]
+    decision = daily.current_decisions[NP_YOY_CODE]
+    assert decision['vol60'] >= w.strategy.VOL60_MAX
+    assert decision['action'] == 'keep'
+    assert any(row['code'] == NP_YOY_CODE and row['reason'] == 'equal_weight' for row in daily.order_rows)
+    run_day(w, 22)
+    assert NP_YOY_CODE not in held(w, new_mode)
+    assert daily.holding_rows[-1]['pool_reason'] == 'profit_growth_low'
+
+
+def test_new_entries_still_need_volatility_check(monkeypatch):
+    w = world(monkeypatch, arms=None)
+    history = w.strategy.history
+    requests = []
+
+    def shocked_history(count, *args, **kwargs):
+        requests.append(count)
+        frame = history(count, *args, **kwargs)
+        frame.loc[CAL[RUN_START - 1], NP_YOY_CODE] *= .65
+        return frame
+
+    w.strategy.history = shocked_history
+    run_day(w, 1)
+    assert held(w, 'daily20_entry_vol') == set(CODES[1:7])
+    run_day(w, 2)
+    assert requests == [253]

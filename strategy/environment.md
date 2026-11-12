@@ -9,7 +9,8 @@
 > 各策略接入某轴前，须先跑"该轴 × 该策略"归因。
 > **统一环境快照**：环境判定任务 `env_report.py` 每交易日 14:35 产出
 > `data/environment.json`，消费方读快照，不各自取数判定
-> （趋势双任务 / ETF 周报 / 卫星轮动均经 `load_environment` 读类型化视图）。
+> （历史消费方为趋势双任务 / ETF 周报 / 卫星轮动，均经 `load_environment` 读类型化视图）。
+> 上述消费方均已退役或更名：环境快照当前**无活跃消费方**。
 
 ***
 
@@ -21,8 +22,8 @@
 
 **统一快照**：`env_report.py`（每交易日 \~14:35，消费任务前）落盘
 （`src/market_state/environment.py` 唯一 owner：schema + 类型化视图 + 过期判定）；
-只产标签不产 policy。定时任务已启用（`deploy/crontab.server`，14:35）；
-`gate_state` 判定时点统一在 14:35，消费任务（ETF 周一 14:40 / 卖出 14:45 / 卫星 14:50 / 买入分析 15:10）读同一份判定。
+只产标签不产 policy。定时任务已摘除（唯一消费方趋势双任务退役后无消费点；
+未来策略需要市场门控时按 `deploy/crontab.server` 注释以 14:35 加回）。
 
 ***
 
@@ -32,8 +33,7 @@
 
 判定只依赖国证A指（399317）日线的均线结构，优先级 trending\_down > trending\_up > sideways > weak\_up > chaos；
 sideways 判定阈值为收盘偏离 MA20 < 1.5%。标签语义单点在 `market_gate._gate_state_label`；标签一律过去式措辞，不读作行情预测。
-**响应动作（CAN\_OPEN / 收紧档 / 清仓）是各策略的 policy**（趋势回踩已退役；卫星轮动无门控），
-见 [trend\_strategy.md](./trend_strategy.md)「市场环境过滤」。
+**响应动作（CAN\_OPEN / 收紧档 / 清仓）是各策略的 policy**（趋势回踩已退役；行业动量轮动无门控）。
 
 ***
 
@@ -45,8 +45,7 @@ sideways 判定阈值为收盘偏离 MA20 < 1.5%。标签语义单点在 `market
   读到不可用 verdict 后 fail-closed 还是 fail-soft 是各消费方 policy：
   买入分析 fail-closed（不开新仓，与兜底 chaos 等价）、卖出任务 fail-soft（门控仅展示）、
   **ETF 配置再平衡不消费**（不读快照、无执行前置、无保护性默认）、
-  卫星轮动不消费。
+  行业动量轮动不消费。
 
 **消费边界**：环境标签只作"是否开新仓"的一票（趋势链），
 **不得**进入任何组合级仓位动作（`src/etf/rebalancer.py` 与市场状态完全无关）。
-

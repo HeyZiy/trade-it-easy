@@ -1,9 +1,4 @@
-# -*- coding: utf-8 -*-
-# 自动生成：python -m research.studies.quality_momentum.internal.build_cash_support
-# 整文件粘贴聚宽，天频率；2016-01-04至2026-09-01；不下单。
-BUILD_SOURCES_SHA256 = '{"research/studies/quality_momentum/internal/build_cash_support.py": "c2d073f5c54fcf7bdd7d467d5be47b9b8cd850498d433673a13f4d84475beda5", "research/studies/quality_momentum/internal/build_platform.py": "64b1e9f477c4051249337ac3babd27063c03564fd79594925b9105e897f02e5d", "research/studies/quality_momentum/internal/cash_support.py": "494007de2165eb998264b872b7bc7f45031b761f1a31b4e499f2e345592ca7e8", "research/studies/quality_momentum/internal/cash_support_adapter.py": "6679844a660bc0816067e23d4e4d25025d58fc6b1723eb86e18c51e7c9b208b7", "research/studies/quality_momentum/internal/probe_adapter.py": "63b6b104bfb2783c5b77d69fa6d12f118afa3017039e904e2fac28688e617093", "research/studies/quality_momentum/internal/probe_statistics.py": "62d12d46d674410af979071e612e9c15a0e44ea31995b03a3f7ffb11746b4271", "research/studies/quality_momentum/pool_rotation_v5.py": "cb4967826e2ad82cf5d0963e35bc68b05fce39915029b4f0672868316a7221de", "research/tools/factor_analysis/core.py": "a816fe8bf094b01c3b39a0d7a41dab2d77df26dacee92a22fea6159f558b835f", "research/tools/factor_analysis/platform_codegen.py": "2a4f066e9f051ea79a048e79cb92a35a2d258830d092699492544ea9759e4b88"}'
-# -*- coding: utf-8 -*-
-"""质量池现金支撑探针：日频，不下单，2016-01-04至2026-09-01。"""
+"""增长口径对照：天频率，2016-01-04至2026-09-01，不下单。"""
 from jqdata import *
 from jqfactor import get_factor_values
 import builtins as _b
@@ -13,123 +8,83 @@ import time as _time
 import numpy as np
 import pandas as pd
 
-PROBE = 'cash_support'
-OUTPUT_PREFIX = 'quality_momentum_v5_cash_support_probe'
-ROTATE_EVERY, GROUPS, MIN_GROUP_SIZE = 20, 3, 5
-HORIZONS = (20, 40, 60)
-SCOPES = ('pool_raw', 'strong_raw', 'pool_neutral')
+PROBE = 'growth_basis'
+OUTPUT_PREFIX = 'quality_momentum_v5_growth_basis_probe'
+ROTATE_EVERY, HORIZONS = 20, (20, 40, 60)
 MOMENTUM_DAYS, SKIP_RECENT_DAYS = 252, 21
 SCORE_CLOSES, SCORE_SKIP_RECENT = 253, 21
-ROE_MIN, ROE_TTM_MIN, NP_YOY_MIN = 12.0, 12.0, 10.0
+ROE_MIN, ROE_TTM_MIN = 12.0, 12.0
+# 仅在本独立探针中移除增长门槛，其余原构池函数保持不变；原同比仍须已知。
+NP_YOY_MIN = -_python_builtins.float('inf')
 ROE_FACTOR_UNIT = 'ratio'
 PE_MAX, PB_MAX, VOL60_MAX = 30.0, 5.0, 35.0
 VOL_LOOKBACK, VOL_ANNUAL_DAYS = 61, 250.0
-BENCHMARK = '000906.XSHG'
-NAN = _python_builtins.float('nan')
-SOURCE_V5_SHA256 = 'cb4967826e2ad82cf5d0963e35bc68b05fce39915029b4f0672868316a7221de'
+BENCHMARK, NAN = '000906.XSHG', _python_builtins.float('nan')
 
-SAMPLE_COLUMNS = ['signal_day', 'asof', 'code', 'cash_support', 'cash_ttm', 'profit_ttm',
-                  'cash_status', 'cash_report', 'market_cap', 'momentum', 'momentum_rank',
-                  'momentum_top6', 'momentum_strong', 'industry_code', 'vol60',
-                  'roe_ttm_pct', 'np_yoy_pct', 'pe_ttm', 'pb', 'stat_date', 'pub_date',
-                  'group_pool_raw', 'group_strong_raw', 'cash_residual', 'group_pool_neutral',
-                  'entry_open', 'entry_paused']
+SAMPLE_COLUMNS = ['signal_day', 'asof', 'code', 'roe_ttm_pct', 'np_yoy_pct', 'pe_ttm', 'pb',
+                  'stat_date', 'pub_date', 'vol60', 'momentum', 'momentum_rank',
+                  'industry_code', 'market_cap', 'baseline', 'common', 'pass_baseline']
+for _arm in ('ttm_total', 'ttm_parent', 'ttm_adjusted'):
+    SAMPLE_COLUMNS += [_arm, _arm + '_current', _arm + '_prior', _arm + '_report', _arm + '_status', 'pass_' + _arm]
+SAMPLE_COLUMNS += ['entry_open', 'entry_paused']
 for _h in HORIZONS:
     SAMPLE_COLUMNS += ['r%d' % _h, 'status_r%d' % _h, 'exit_date_%d' % _h,
                        'exit_open_%d' % _h, 'exit_paused_%d' % _h]
-SAMPLE_COLUMNS += ['snapshot_error', 'quote_error', 'neutral_error']
+SAMPLE_COLUMNS += ['snapshot_error', 'quote_error']
 
 
 def initialize(context):
     params = _python_builtins.getattr(context, 'run_params', None)
     if params is not None and _python_builtins.getattr(params, 'frequency', 'day') not in ('day', 'daily'):
-        raise _python_builtins.ValueError('请选择天频率；本探针不下单')
+        raise _python_builtins.ValueError('请选择天频率；本实验不下单')
     set_option('use_real_price', True)
     set_option('avoid_future_data', True)
     set_benchmark(BENCHMARK)
-    log.set_level('order', 'error')
     g.day, g.last_signal_day, g.last_close_day = 0, None, None
     g.pending, g.periods, g.started_files = [], [], _python_builtins.set()
-    g.sample_count, g.source_errors, g.industry_errors, g.neutral_errors = 0, 0, 0, 0
-    g.wall_started = _time.time()
-    g.settings = _python_builtins.dict(probe=PROBE, source_v5_sha256=SOURCE_V5_SHA256, no_orders=True,
-                     start_date=_python_builtins.str(_python_builtins.getattr(params, 'start_date', '')),
-                     end_date=_python_builtins.str(_python_builtins.getattr(params, 'end_date', '')), frequency='day',
-                     formula='sum(4 single-quarter operating cash flow)/sum(4 single-quarter operating profit)',
-                     financial_api='get_history_fundamentals; watch_date=T-1; stat_by_year=False',
-                     denominator='positive TTM profit required; no ratio clipping; inspect near-zero denominators',
-                     vintage='platform historical visibility; restatement vintage not independently restored',
-                     signal_cutoff='T-1', horizons='20;40;60', primary_horizon=60,
-                     primary_scope='pool_raw', primary_contrast='high_minus_low',
-                     controls='rank(cash_support) ~ industry + log(market_cap) + momentum12_2 + vol60',
-                     strong_definition='top momentum tercile; not the actual six holdings',
-                     returns='post-adjusted open(T+h)/open(T)-1; paused endpoints unavailable',
-                     missing='retain frozen membership; strict group and available means reported',
-                     tails='endpoint return <= -15% and >= +15%; not path drawdown',
-                     hac='horizon/20; no compression of missing periods',
-                     annualization='none', pandas_version=pd.__version__, numpy_version=np.__version__)
+    g.sample_count, g.source_errors, g.wall_started = 0, 0, _time.time()
+    g.settings = _python_builtins.dict(probe=PROBE, source_v5_sha256=SOURCE_V5_SHA256,
+        start_date=_python_builtins.str(_python_builtins.getattr(params, 'start_date', '')), end_date=_python_builtins.str(_python_builtins.getattr(params, 'end_date', '')),
+        frequency='day', no_orders=True, signal_cutoff='T-1', horizons='20;40;60', primary_horizon=60,
+        primary_scope='common_inputs', primary_contrast='ttm_adjusted_minus_baseline',
+        parent_pool='v5 with profit-growth threshold removed; other rules unchanged; original profit growth must be known',
+        scan='thresholds recomputed on frozen sample values; only tighter than parent; growth=None is no-growth ablation',
+        scan_variants=';'.join(name for name, _ in SCAN_VARIANTS),
+        scan_defaults='roe>12; growth>10; 0<pe<30; 0<pb<5; vol60<35',
+        scan_contrast='<variant>_minus_v5',
+        threshold_pct=10, ttm='sum of 4 consecutive single quarters, compared to preceding 4; prior must be positive',
+        formula='(current TTM/prior TTM-1)*100; no fallback for adjusted profit',
+        arms='baseline single-quarter total-profit yoy; TTM total; TTM parent; TTM adjusted',
+        adjusted_scope='indicator.adjusted_profit; platform field definition, do not assume equivalence to income.net_profit',
+        common_inputs='all four growth values known; latest reports aligned with baseline indicator',
+        returns='post-adjusted open(T+h)/open(T)-1; paused endpoints unavailable',
+        interpretation='equal-weight pool diagnostics; arms and scan groups are overlapping subsets, not independent portfolios',
+        vintage='platform watch_date visibility; historical revisions not independently restored',
+        pandas_version=pd.__version__, numpy_version=np.__version__)
     _write_settings()
     run_daily(on_probe_signal, time='before_open')
-    log.info('[现金支撑] 日频、不下单；下载原始季度及分组CSV，不看空账户曲线。')
 
 
-def cash_snapshot(codes, asof, signal_day):
-    tables = []
-    for table, field_name, label in ((cash_flow, 'net_operate_cash_flow', 'cash_flow'),
-                                     (income, 'operating_profit', 'income')):
-        field = _python_builtins.getattr(table, field_name)
-        blocks = []
+def growth_snapshot(codes, asof, signal):
+    blocks = []
+    specs = ((income, ('net_profit', 'np_parent_company_owners'), 'income'),
+             (indicator, ('adjusted_profit',), 'indicator'))
+    for table, names, label in specs:
         for start in _python_builtins.range(0, _python_builtins.len(codes), 100):
-            frame = get_history_fundamentals(
-                codes[start:start + 100], [table.statDate, table.pubDate, field],
-                watch_date=asof.date(), count=4, interval='1q', stat_by_year=False)
-            _require_columns(frame, ('code', 'statDate', 'pubDate', field_name), label)
-            if not frame.code.isin(codes[start:start + 100]).all():
-                raise PoolDataError('Unexpected financial code')
-            blocks.append(frame)
-            raw = frame.copy()
-            raw['signal_day'], raw['asof'], raw['table'] = _python_builtins.str(signal_day.date()), _python_builtins.str(asof.date()), label
-            raw['value'] = raw[field_name]
-            _append_csv('quarters', raw[['signal_day', 'asof', 'table', 'code', 'statDate', 'pubDate', 'value']])
-        tables.append(pd.concat(blocks, ignore_index=True))
-    return cash_support_features(tables[0], tables[1], codes, asof)
-
-
-def neutral_cash(frame):
-    output = pd.Series(NAN, index=frame.index, dtype=_python_builtins.float)
-    data = frame[['cash_support', 'market_cap', 'momentum', 'vol60', 'industry_code']].replace(
-        [np.inf, -np.inf], np.nan).dropna()
-    data = data[data.market_cap.gt(0) & data.industry_code.ne('')]
-    if _python_builtins.len(data) < 20:
-        return output
-    numeric = pd.DataFrame(_python_builtins.dict(log_cap=np.log(data.market_cap), momentum=data.momentum, vol60=data.vol60))
-    for key in numeric:
-        std = numeric[key].std(ddof=0)
-        numeric[key] = (numeric[key] - numeric[key].mean()) / std if std > 0 else numeric[key] * 0
-    x = np.column_stack([np.ones(_python_builtins.len(data)), numeric.values,
-                         pd.get_dummies(data.industry_code, drop_first=True).astype(_python_builtins.float).values])
-    if _python_builtins.len(data) <= np.linalg.matrix_rank(x) + 5:
-        return output
-    y = data.cash_support.rank(method='average', pct=True).values
-    residual = y - x @ np.linalg.lstsq(x, y, rcond=None)[0]
-    if np.std(residual) > 1e-12:
-        output.loc[data.index] = residual
-    return output
-
-
-def freeze_cash(frame):
-    frame = frame.copy()
-    frame['group_pool_raw'] = fixed_groups(frame.cash_support)
-    frame['momentum_strong'] = assign_groups(frame.momentum, GROUPS).eq(GROUPS)
-    frame['group_strong_raw'] = fixed_groups(frame.cash_support.where(frame.momentum_strong))
-    frame['neutral_error'] = ''
-    try:
-        frame['cash_residual'] = neutral_cash(frame)
-        frame['group_pool_neutral'] = fixed_groups(frame.cash_residual)
-    except _python_builtins.Exception as exc:
-        frame['cash_residual'], frame['group_pool_neutral'] = NAN, NAN
-        frame['neutral_error'] = _python_builtins.str(exc)
-    return frame
+            chunk = codes[start:start+100]
+            frame = get_history_fundamentals(chunk,
+                [table.statDate, table.pubDate] + [_python_builtins.getattr(table, name) for name in names],
+                watch_date=asof.date(), count=8, interval='1q', stat_by_year=False)
+            _require_columns(frame, ('code', 'statDate', 'pubDate') + names, label)
+            if not frame.code.isin(chunk).all():
+                raise PoolDataError('Unexpected growth financial code')
+            for name in names:
+                raw = frame[['code', 'statDate', 'pubDate']].copy()
+                raw['metric'], raw['value'] = name, frame[name]
+                raw['signal_day'], raw['asof'], raw['table'] = _python_builtins.str(signal.date()), _python_builtins.str(asof.date()), label
+                _append_csv('quarters', raw[['signal_day', 'asof', 'table', 'metric', 'code', 'statDate', 'pubDate', 'value']])
+                blocks.append(raw)
+    return growth_features(pd.concat(blocks, ignore_index=True), codes, asof)
 
 
 def on_probe_signal(context):
@@ -148,7 +103,7 @@ def on_probe_signal(context):
         ranked, scores = rank_pool(pool, closes)
         if pool:
             codes = _python_builtins.sorted(pool)
-            features = cash_snapshot(codes, asof, today)
+            features = growth_snapshot(codes, asof, today)
             cap = get_fundamentals(query(valuation.code, valuation.market_cap).filter(
                 valuation.code.in_(codes)), date=asof)
             _require_columns(cap, ('code', 'market_cap'), 'market cap')
@@ -156,33 +111,29 @@ def on_probe_signal(context):
                 raise PoolDataError('Duplicate market cap')
             features['market_cap'] = pd.to_numeric(cap.set_index('code').market_cap, errors='coerce')
             try:
-                industry = get_industry(codes, date=asof.date()) or {}
+                industries = get_industry(codes, date=asof.date()) or {}
             except _python_builtins.Exception:
-                industry = {}
-                g.industry_errors += 1
+                industries = {}
+            ranks = {c: i+1 for i, c in _python_builtins.enumerate(ranked)}
             rows = []
-            ranks = {c: i + 1 for i, c in _python_builtins.enumerate(ranked)}
             for code in codes:
                 row = _python_builtins.dict(audit[code])
                 row.update(features.loc[code].to_dict())
                 row.update(momentum=scores.get(code, NAN), momentum_rank=ranks.get(code, NAN),
-                           momentum_top6=code in ranked[:6],
-                           industry_code=((industry.get(code) or {}).get('sw_l1') or {}).get('industry_code', ''))
+                           industry_code=((industries.get(code) or {}).get('sw_l1') or {}).get('industry_code', ''))
                 rows.append(row)
-            snapshot['frame'] = freeze_cash(pd.DataFrame(rows).set_index('code', drop=False))
-            if snapshot['frame'].neutral_error.ne('').any():
-                g.neutral_errors += 1
+            snapshot['frame'] = freeze_growth(pd.DataFrame(rows).set_index('code', drop=False))
     except _python_builtins.Exception as exc:
         snapshot['error'] = _python_builtins.str(exc)
         g.source_errors += 1
-        log.info('[现金支撑] 本期缺测：%s' % exc)
+        log.info('[增长口径] 本期缺测：%s' % exc)
     g.pending.append(snapshot)
     g.sample_count += 1
-    log.info('[现金支撑] 第%d期 %s 池=%d' % (g.sample_count, today.date(), _python_builtins.len(snapshot['frame'])))
+    log.info('[增长口径] 第%d期 %s 母池=%d' % (g.sample_count, today.date(), _python_builtins.len(snapshot['frame'])))
 
 
 def period_statistics(snapshot, frame):
-    return cash_period_statistics(snapshot, frame)
+    return growth_period_statistics(snapshot, frame)
 
 
 def on_strategy_end(context):
@@ -194,18 +145,10 @@ def on_strategy_end(context):
         summary = summarize_periods(pd.DataFrame(g.periods).reindex(columns=PERIOD_COLUMNS), ROTATE_EVERY)
         write_file(OUTPUT_PREFIX + '_summary.csv', summary.to_csv(index=False), append=False)
     g.settings.update(sample_count=g.sample_count, source_errors=g.source_errors,
-                      industry_errors=g.industry_errors, neutral_errors=g.neutral_errors,
                       elapsed_seconds=_time.time() - g.wall_started)
     _write_settings()
-    log.info('[现金支撑结束] 下载settings、quarters、samples、periods、summary五份CSV。')
+    log.info('[增长口径结束] 下载settings、quarters、samples、periods、summary五份CSV；空账户不是结果。')
 
-
-def fixed_groups(values):
-    groups = assign_groups(values, GROUPS)
-    counts = groups.value_counts()
-    if _python_builtins.len(counts) != GROUPS or (counts < MIN_GROUP_SIZE).any():
-        groups[:] = NAN
-    return groups
 
 def forward_quotes(codes, start, end):
     """在已经到期后取统一后复权开盘价，不能把停牌补价视作成交。"""
@@ -252,7 +195,7 @@ def resolve_snapshot(snapshot, today):
         except _python_builtins.Exception as exc:
             quote_error = _python_builtins.str(exc)
             g.source_errors += 1
-            log.info('[现金支撑] 前瞻报价缺失，保留原因：%s' % exc)
+            log.info('[增长口径] 前瞻报价缺失，保留原因：%s' % exc)
     for h in HORIZONS:
         mature = _python_builtins.len(days) > h
         snapshot['status_%d' % h] = ('censored' if not mature else
@@ -313,97 +256,158 @@ def _write_settings():
     frame = pd.DataFrame([_python_builtins.dict(setting=k, value=v) for k, v in g.settings.items()])
     write_file(OUTPUT_PREFIX + '_settings.csv', frame.to_csv(index=False), append=False)
 
+GROWTH_ARMS = ('baseline', 'ttm_total', 'ttm_parent', 'ttm_adjusted')
+
+GROWTH_METRICS = ('net_profit', 'np_parent_company_owners', 'adjusted_profit')
+
 PERIOD_COLUMNS = ['signal_day', 'asof', 'scope', 'horizon', 'group', 'window_status',
                   'n', 'observed', 'coverage', 'return_mean', 'return_available',
-                  'median_available', 'win_available', 'loss15_available', 'gain15_available',
-                  'cash_support_mean', 'snapshot_error']
+                  'median_available', 'win_available', 'loss15_available', 'gain15_available', 'snapshot_error']
 
-def cash_support_features(cash, profit, codes, asof):
-    """两表各自最新四季必须连续、同报告期；不退回旧的完整窗口。"""
+SCAN_DEFAULTS = _python_builtins.dict(roe=12.0, growth=10.0, pe=30.0, pb=5.0, vol=35.0)
+
+SCAN_VARIANTS = (
+    ('no_growth', _python_builtins.dict(growth=None)),
+    ('v5', _python_builtins.dict()),
+    ('growth_0', _python_builtins.dict(growth=0.0)),
+    ('growth_20', _python_builtins.dict(growth=20.0)),
+    ('growth_30', _python_builtins.dict(growth=30.0)),
+    ('roe_15', _python_builtins.dict(roe=15.0)),
+    ('roe_18', _python_builtins.dict(roe=18.0)),
+    ('pe_20', _python_builtins.dict(pe=20.0)),
+    ('pe_15', _python_builtins.dict(pe=15.0)),
+    ('pb_3', _python_builtins.dict(pb=3.0)),
+    ('pb_2', _python_builtins.dict(pb=2.0)),
+    ('vol_25', _python_builtins.dict(vol=25.0)),
+    ('vol_30', _python_builtins.dict(vol=30.0)),
+    ('strict', _python_builtins.dict(growth=20.0, roe=15.0, pe=20.0, pb=3.0, vol=25.0)),
+)
+
+SCAN_BASE = 'v5'
+
+def growth_features(raw, codes, asof):
     asof = pd.Timestamp(asof).normalize()
-    output = []
+    raw = raw.copy()
+    raw['report'] = pd.to_datetime(raw.statDate, errors='coerce').dt.normalize()
+    raw['published'] = pd.to_datetime(raw.pubDate, errors='coerce').dt.normalize()
+    raw['value'] = pd.to_numeric(raw.value, errors='coerce')
+    rows = []
     for code in codes:
-        row = _python_builtins.dict(code=code, cash_support=np.nan, cash_ttm=np.nan,
-                   profit_ttm=np.nan, cash_status='missing_quarters', cash_report='')
-        series = []
-        for frame, field in ((cash, 'net_operate_cash_flow'), (profit, 'operating_profit')):
-            own = frame[frame.code.eq(code)].copy()
-            own['report'] = pd.to_datetime(own.statDate, errors='coerce').dt.normalize()
-            own['published'] = pd.to_datetime(own.pubDate, errors='coerce').dt.normalize()
-            values = pd.to_numeric(own[field], errors='coerce')
+        row = _python_builtins.dict(code=code)
+        for metric, arm in _python_builtins.zip(GROWTH_METRICS, GROWTH_ARMS[1:]):
+            own = raw[raw.code.eq(code) & raw.metric.eq(metric)].sort_values('report')
+            row.update({arm: np.nan, arm + '_current': np.nan, arm + '_prior': np.nan,
+                        arm + '_report': '', arm + '_status': 'missing_quarters'})
             if (own.report.isna().any() or own.published.isna().any()
                     or own.report.gt(asof).any() or own.published.gt(asof).any()
                     or own.published.lt(own.report).any()):
-                row['cash_status'] = 'invalid_visibility'
-                break
+                row[arm + '_status'] = 'invalid_visibility'
+                continue
             if own.report.duplicated().any():
-                row['cash_status'] = 'duplicate_report'
-                break
-            own[field] = values
-            own = own.sort_values('report').tail(4)
-            quarters = own.report.dt.to_period('Q')
-            if (_python_builtins.len(own) != 4 or not own.report.dt.is_quarter_end.all()
-                    or _python_builtins.list(quarters) != _python_builtins.list(pd.period_range(quarters.iloc[-1] - 3, periods=4, freq='Q'))):
-                break
+                row[arm + '_status'] = 'duplicate_report'
+                continue
+            own = own.tail(8)
+            if _python_builtins.len(own) != 8:
+                continue
+            periods = own.report.dt.to_period('Q')
+            if (not own.report.dt.is_quarter_end.all()
+                    or _python_builtins.list(periods) != _python_builtins.list(pd.period_range(periods.iloc[-1] - 7, periods=8, freq='Q'))):
+                continue
+            row[arm + '_report'] = _python_builtins.str(own.report.iloc[-1].date())
             if (asof - own.report.iloc[-1]).days > 240:
-                row['cash_status'] = 'stale_report'
-                break
-            if not np.isfinite(own[field].values).all():
-                row['cash_status'] = 'invalid_value'
-                break
-            series.append(own.set_index('report')[field])
-        if _python_builtins.len(series) == 2:
-            if not series[0].index.equals(series[1].index):
-                row['cash_status'] = 'report_mismatch'
+                row[arm + '_status'] = 'stale_report'
+                continue
+            if not np.isfinite(own.value.values).all():
+                row[arm + '_status'] = 'invalid_value'
+                continue
+            prior, current = _python_builtins.float(own.value.iloc[:4].sum()), _python_builtins.float(own.value.iloc[4:].sum())
+            row.update({arm + '_current': current, arm + '_prior': prior})
+            if not np.isfinite([prior, current]).all():
+                row[arm + '_status'] = 'invalid_value'
+            elif prior <= 0:
+                row[arm + '_status'] = 'nonpositive_prior'
             else:
-                cf, op = _python_builtins.float(series[0].sum()), _python_builtins.float(series[1].sum())
-                row.update(cash_ttm=cf, profit_ttm=op,
-                           cash_report=_python_builtins.str(series[0].index[-1].date()))
-                if not np.isfinite([cf, op]).all():
-                    row['cash_status'] = 'invalid_value'
-                elif op <= 0:
-                    row['cash_status'] = 'nonpositive_profit'
-                else:
-                    value = cf / op
-                    row.update(cash_support=value if np.isfinite(value) else np.nan,
-                               cash_status='ok' if np.isfinite(value) else 'invalid_ratio')
-        output.append(row)
-    return pd.DataFrame(output).set_index('code', drop=False)
+                value = (current / prior - 1) * 100
+                row[arm + '_status'] = 'ok' if np.isfinite(value) else 'invalid_value'
+                row[arm] = value if np.isfinite(value) else np.nan
+        rows.append(row)
+    return pd.DataFrame(rows).set_index('code', drop=False)
 
-def cash_period_statistics(snapshot, frame, scopes=('pool_raw', 'strong_raw', 'pool_neutral'), horizons=(20, 40, 60)):
+def freeze_growth(frame):
+    frame = frame.copy()
+    frame['baseline'] = frame.np_yoy_pct
+    frame['common'] = frame[_python_builtins.list(GROWTH_ARMS)].notna().all(axis=1)
+    baseline_report = pd.to_datetime(frame.stat_date, errors='coerce')
+    for arm in GROWTH_ARMS[1:]:
+        frame['pass_' + arm] = frame[arm].gt(10)
+        frame['common'] &= pd.to_datetime(frame[arm + '_report'], errors='coerce').eq(baseline_report)
+    frame['pass_baseline'] = frame.baseline.gt(10)
+    return frame
+
+def variant_pass(frame, overrides):
+    """在已冻结样本上重算资格；缺列或缺值一律不通过，不回填。"""
+    def values(column):
+        if column not in frame:
+            return pd.Series(np.nan, index=frame.index)
+        return pd.to_numeric(frame[column], errors='coerce')
+    limits = _python_builtins.dict(SCAN_DEFAULTS)
+    limits.update(overrides)
+    roe, growth, pe, pb, vol = (values('roe_ttm_pct'), values('np_yoy_pct'), values('pe_ttm'),
+                                values('pb'), values('vol60'))
+    mask = (roe.gt(limits['roe']) & pe.gt(0) & pe.lt(limits['pe'])
+            & pb.gt(0) & pb.lt(limits['pb']) & vol.lt(limits['vol']))
+    mask &= (growth.notna() if limits['growth'] is None else growth.gt(limits['growth']))
+    return mask.fillna(False).astype(_python_builtins.bool)
+
+def _group_row(snapshot, scope, horizon, group, own):
+    returns = clean(own['r%d' % horizon]) if _python_builtins.len(own) else pd.Series(dtype=_python_builtins.float)
+    known = returns.dropna()
+    return _python_builtins.dict(signal_day=_python_builtins.str(snapshot['signal_day'].date()), asof=_python_builtins.str(snapshot['asof'].date()),
+                scope=scope, horizon=horizon, group=group,
+                window_status=snapshot['status_%d' % horizon],
+                n=_python_builtins.len(own), observed=_python_builtins.len(known), coverage=_python_builtins.len(known)/_python_builtins.len(own) if _python_builtins.len(own) else np.nan,
+                return_mean=_python_builtins.float(returns.mean()) if _python_builtins.len(returns) and returns.notna().all() else np.nan,
+                return_available=_python_builtins.float(known.mean()) if _python_builtins.len(known) else np.nan,
+                median_available=_python_builtins.float(known.median()) if _python_builtins.len(known) else np.nan,
+                win_available=_python_builtins.float(known.gt(0).mean()) if _python_builtins.len(known) else np.nan,
+                loss15_available=_python_builtins.float(known.le(-.15).mean()) if _python_builtins.len(known) else np.nan,
+                gain15_available=_python_builtins.float(known.ge(.15).mean()) if _python_builtins.len(known) else np.nan,
+                snapshot_error=snapshot['error'])
+
+def _group_difference(left, right, group):
+    diff = _python_builtins.dict(left)
+    diff.update(group=group, n=left['n'] + right['n'],
+                observed=left['observed'] + right['observed'],
+                coverage=_python_builtins.min(left['coverage'], right['coverage'])
+                if np.isfinite([left['coverage'], right['coverage']]).all() else np.nan)
+    for key in ('return_mean', 'return_available', 'median_available', 'win_available',
+                'loss15_available', 'gain15_available'):
+        diff[key] = left[key] - right[key]
+    return diff
+
+def growth_period_statistics(snapshot, frame):
     rows = []
-    for scope in scopes:
-        for h in horizons:
-            groups = {}
-            for group, label in _python_builtins.enumerate(('low', 'mid', 'high'), 1):
-                own = (frame[frame['group_' + scope].eq(group)]
-                       if 'group_' + scope in frame else pd.DataFrame())
-                returns = clean(own['r%d' % h]) if _python_builtins.len(own) else pd.Series(dtype=_python_builtins.float)
-                known = returns.dropna()
-                row = _python_builtins.dict(signal_day=_python_builtins.str(snapshot['signal_day'].date()),
-                           asof=_python_builtins.str(snapshot['asof'].date()), scope=scope, horizon=h, group=label,
-                           window_status=snapshot['status_%d' % h], n=_python_builtins.len(own), observed=_python_builtins.len(known),
-                           coverage=_python_builtins.len(known) / _python_builtins.len(own) if _python_builtins.len(own) else np.nan,
-                           return_mean=_python_builtins.float(returns.mean()) if _python_builtins.len(own) and returns.notna().all() else np.nan,
-                           return_available=_python_builtins.float(known.mean()) if _python_builtins.len(known) else np.nan,
-                           median_available=_python_builtins.float(known.median()) if _python_builtins.len(known) else np.nan,
-                           win_available=_python_builtins.float(known.gt(0).mean()) if _python_builtins.len(known) else np.nan,
-                           loss15_available=_python_builtins.float(known.le(-.15).mean()) if _python_builtins.len(known) else np.nan,
-                           gain15_available=_python_builtins.float(known.ge(.15).mean()) if _python_builtins.len(known) else np.nan,
-                           cash_support_mean=_python_builtins.float(own.cash_support.mean()) if _python_builtins.len(own) else np.nan,
-                           snapshot_error=snapshot['error'])
-                groups[label] = row
-                rows.append(row)
-            low, high = groups['low'], groups['high']
-            difference = _python_builtins.dict(high)
-            difference.update(group='high_minus_low', n=low['n'] + high['n'],
-                              observed=low['observed'] + high['observed'],
-                              coverage=_python_builtins.min(low['coverage'], high['coverage'])
-                              if np.isfinite([low['coverage'], high['coverage']]).all() else np.nan)
-            for key in ('return_mean', 'return_available', 'median_available', 'win_available',
-                        'loss15_available', 'gain15_available', 'cash_support_mean'):
-                difference[key] = high[key] - low[key]
-            rows.append(difference)
+    for scope in ('available_inputs', 'common_inputs'):
+        scope_mask = (frame.common.eq(True) if scope == 'common_inputs' and 'common' in frame
+                      else pd.Series(True, index=frame.index))
+        for h in (20, 40, 60):
+            arms, variants = {}, {}
+            for arm in GROWTH_ARMS:
+                mask = (frame['pass_' + arm].eq(True) if 'pass_' + arm in frame
+                        else pd.Series(False, index=frame.index))
+                arms[arm] = _group_row(snapshot, scope, h, arm, frame[mask & scope_mask])
+                rows.append(arms[arm])
+            for left, right in (('ttm_total', 'baseline'), ('ttm_parent', 'ttm_total'),
+                                ('ttm_adjusted', 'ttm_parent'), ('ttm_adjusted', 'baseline')):
+                rows.append(_group_difference(arms[left], arms[right], left + '_minus_' + right))
+            for name, overrides in SCAN_VARIANTS:
+                own = frame[variant_pass(frame, overrides) & scope_mask]
+                variants[name] = _group_row(snapshot, scope, h, name, own)
+                rows.append(variants[name])
+            for name, _ in SCAN_VARIANTS:
+                if name != SCAN_BASE:
+                    rows.append(_group_difference(variants[name], variants[SCAN_BASE],
+                                                  name + '_minus_' + SCAN_BASE))
     return rows
 
 def summarize_periods(periods, sample_every=20):
@@ -603,18 +607,6 @@ def _held(context):
 
 def clean(series):
     return pd.to_numeric(series, errors='coerce').replace([np.inf, -np.inf], np.nan)
-
-def assign_groups(factor, n_groups):
-    """分位数分组；保留同分，边界重复导致缺组时整轮标记缺测。"""
-    values = clean(factor).dropna()
-    empty = pd.Series(np.nan, index=factor.index, dtype=_python_builtins.float)
-    if _python_builtins.len(values) < n_groups or values.nunique() < n_groups:
-        return empty
-    labels = pd.qcut(values, q=n_groups, labels=False, duplicates='drop')
-    if labels.nunique() != n_groups:
-        return empty
-    empty.loc[values.index] = labels + 1
-    return empty
 
 def summarize_ic(ic, lags=3):
     """ICIR保留符号；普通t及Bartlett/Newey-West均值t均报告，不硬设合格线。"""
