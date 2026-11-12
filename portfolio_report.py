@@ -72,6 +72,7 @@ def run(*, asof=None, dry_run=False, now=None, backfill=False):
         FILENAME, collect_close as collect_core_close, load as load_core, refresh_close_prices,
         refresh_fund_navs, render_summary as core_summary, revision, valuation_day,
     )
+    from src.fund_plans import record_due_subscriptions
     sections = [f"# 账户收盘采集 — {target}", ""]
     notes = []
     errors = 0
@@ -91,6 +92,13 @@ def run(*, asof=None, dry_run=False, now=None, backfill=False):
                             logger.warning("场外净值未能更新，保留已有净值：%s", "、".join(funds["failed"]))
                     except Exception:
                         logger.exception("每日场外净值更新失败，保留已有净值")
+                    try:
+                        # 定投补记放在净值刷新与份额确认之后：同一轮不确认本轮扣款，保留全天作废窗口。
+                        recorded = record_due_subscriptions(path)
+                        if recorded:
+                            logger.info("定投补记 %s 笔待确认申购", len(recorded))
+                    except Exception:
+                        logger.exception("定投补记失败，跳过本轮（下次运行自动补上）")
                 for day in window:
                     if day >= target or day.isoformat() <= state["initial"]["date"]:
                         continue

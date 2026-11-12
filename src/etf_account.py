@@ -16,7 +16,7 @@ from data_provider.codes import is_a_stock_code, is_etf_code
 from data_provider.security_names import security_name
 from src.trading_calendar import latest_trading_day_on_or_before
 
-FUND_TRADES = {"fund_buy", "fund_redeem", "fund_pending", "fund_confirm"}
+FUND_TRADES = {"fund_buy", "fund_redeem", "fund_pending", "fund_confirm", "fund_void"}
 FILENAME = "etf_account.json"
 ACCOUNT_PATH = Path("data") / FILENAME
 logger = logging.getLogger(__name__)
@@ -219,6 +219,10 @@ class _Replay:
         if side == "fund_pending":
             self.fund_pending[event["id"]] = {k: v for k, v in event.items() if k != "request"}
             change = -event["amount"]
+        elif side == "fund_void":
+            # 作废补偿流水：撤销在途申购，现金原路退回（扣款失败/误记）。
+            del self.fund_pending[event["voided_pending_id"]]
+            change = event["amount"]
         else:
             change = self._apply_fund_shares(event)
         self.cash += change
@@ -435,8 +439,16 @@ def _net_subscription(amount, fee):
 
 
 def _fund_event(payload, view, day):
-    code = _fund_code(payload.get("code"))
     side = payload["side"]
+    if side == "fund_void":
+        # 作废只引用在途申购，不带 code/amount：金额与标的取自原申购流水。
+        pending_id = payload.get("voided_pending_id")
+        pending = view["fund_pending"].get(pending_id)
+        if not pending:
+            raise ValueError("待确认申购不存在或已确认")
+        return {"code": pending["code"], "amount": pending["amount"],
+                "strategy": "core", "voided_pending_id": pending_id}
+    code = _fund_code(payload.get("code"))
     amount = payload.get("amount")
     if not _positive(amount) or round(amount, 2) != amount:
         raise ValueError("实际金额须为正数，最多两位小数")
@@ -951,10 +963,13 @@ def _edit_location(state, payload):
     index = next((i for i, event in enumerate(events) if event["id"] == payload.get("event_id")), None)
     if index is None:
         raise ValueError("流水不存在")
-    if events[index]["side"] == "fund_pending" and any(
-        e.get("pending_id") == events[index]["id"] for e in events[index + 1:]
-    ):
-        raise ValueError("申购已确认，请在确认流水中更正份额")
+    if events[index]["side"] == "fund_pending":
+        if any(e.get("pending_id") == events[index]["id"] for e in events[index + 1:]):
+            raise ValueError("申购已确认，请在确认流水中更正份额")
+        if any(e.get("voided_pending_id") == events[index]["id"] for e in events[index + 1:]):
+            raise ValueError("申购已作废，流水不可更正")
+    if events[index]["side"] == "fund_void" or payload.get("side") == "fund_void":
+        raise ValueError("作废流水不可更正")
     min_day = events[index - 1]["date"] if index else state["initial"]["date"]
     max_day = events[index + 1]["date"] if index + 1 < len(events) else _today().isoformat()
     return index, min_day, max_day
@@ -1160,6 +1175,12 @@ def _valuation_view(state, today, price_day):
     return view
 
 
+def subscription_fees(state):
+    """各场外基金最近登记的申购费率（后一笔覆盖前一笔），供表单预填与定投补记。"""
+    return {event["code"]: event["subscription_fee"] for event in state["events"]
+            if event["side"] in {"fund_buy", "fund_pending"} and "subscription_fee" in event}
+
+
 def account_data(path):
     state = load(path)
     day = _today()
@@ -1197,8 +1218,7 @@ def account_data(path):
     core["pending_fund_value"] = view["pending_fund_value"]
     core["allocation_budget"] = core["budget"]
     core["allocation_assets"] = core["assets"]
-    fund_subscription_fees = {event["code"]: event["subscription_fee"] for event in state["events"]
-                              if event["side"] in {"fund_buy", "fund_pending"} and "subscription_fee" in event}
+    fund_subscription_fees = subscription_fees(state)
     return {"id": "etf", "name": "投资账户", "can_record": True, **view,
             "holdings_by_kind": holdings_by_kind, "net_contributed": net_contributed,
             "fund_subscription_fees": fund_subscription_fees,

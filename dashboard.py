@@ -17,6 +17,7 @@ import time
 from src.trade_ledger.ledger import derive, load_trades
 from data_provider.security_names import security_name
 from src.trade_ledger.performance import load_performance, valid_records
+from src import fund_plans
 from src.etf_account import FILENAME as ETF_FILENAME, SHANGHAI, account_data as etf_account_data
 from src.dashboard_quotes import QuoteRefresh
 from src.portfolio_config import STRATEGY_NAMES
@@ -105,6 +106,7 @@ def account_data(root, filename):
         refresh = QUOTES.read(path)
         account = etf_account_data(path)
         account["quote_refresh"] = refresh if refresh and refresh["date"] == account["valuation_date"] else None
+        account["dca"] = fund_plans.dca_status(path)
         return account
     path = root / "data" / filename
     if not path.exists():
@@ -266,6 +268,8 @@ class Handler(BaseHTTPRequestHandler):
                     "/api/etf/cash/rebalance": cash_rebalance, "/api/etf/fund/names": lookup_fund_names}
         from src.portfolio_config import update
         handlers["/api/etf/config"] = update
+        handlers["/api/etf/dca/save"] = fund_plans.save_plan
+        handlers["/api/etf/dca/delete"] = fund_plans.delete_plan
         if self.path == "/api/etf/refresh":
             try:
                 path = ROOT / "data" / FILENAME

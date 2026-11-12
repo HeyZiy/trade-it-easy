@@ -105,6 +105,25 @@
         <button type="submit" class="primary-button" id="fund-save">保存记账</button>
       </form>
     </dialog>
+    <dialog id="dca-dialog" aria-labelledby="dca-title">
+      <form id="dca-form">
+        <div class="section-heading"><h2 id="dca-title">定投计划</h2><button id="dca-cancel" type="button" class="text-button">关闭</button></div>
+        <p class="subtle">基金 App 真实扣款，次日盘前自动补记为待确认申购；这里只维护计划本身，不产生真实交易。</p>
+        <div id="dca-plans" class="table-wrap"></div>
+        <fieldset id="dca-fields" class="entry-fields">
+          <div class="section-heading"><h3 id="dca-form-title">添加计划</h3></div>
+          <div class="entry-grid">
+            <label>基金代码<input name="code" inputmode="numeric" pattern="[0-9]{6}" maxlength="6" required><span id="dca-fund-name" class="field-hint"></span></label>
+            <label>每期金额 / 元<input name="amount" type="number" min="0.01" step="0.01" required></label>
+            <label>扣款周期<select name="frequency"><option value="monthly">每月</option><option value="weekly">每周</option></select></label>
+            <label id="dca-anchor-label">扣款日<select name="anchor"></select></label>
+            <label>备注<input name="note" maxlength="50" placeholder="可选"></label>
+          </div>
+        </fieldset>
+        <p id="dca-error" class="warning" role="alert" hidden></p>
+        <button type="submit" class="primary-button" id="dca-save">保存计划</button>
+      </form>
+    </dialog>
     <dialog id="cash-dialog" aria-labelledby="cash-title">
       <form id="cash-form">
         <div class="section-heading"><h2 id="cash-title">分配现金</h2><button id="cash-cancel" type="button" class="text-button">关闭</button></div>
