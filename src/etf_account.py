@@ -12,11 +12,12 @@ import re
 from uuid import uuid4
 
 from data_provider import canonical_stock_code, fund_names
-from data_provider.codes import is_a_stock_code, is_etf_code
+from data_provider.codes import A_STOCK_PREFIXES, ETF_PREFIXES, is_a_stock_code, is_etf_code
 from data_provider.security_names import security_name
 from src.trading_calendar import latest_trading_day_on_or_before
 
 FUND_TRADES = {"fund_buy", "fund_redeem", "fund_pending", "fund_confirm", "fund_void"}
+ETF_HOLDING_PREFIXES = tuple(prefix for prefix in ETF_PREFIXES if prefix not in {"16", "18"})
 FILENAME = "etf_account.json"
 ACCOUNT_PATH = Path("data") / FILENAME
 logger = logging.getLogger(__name__)
@@ -419,14 +420,10 @@ def _fund_code(value):
 
 
 def _subscription_fee(fee, amount):
-    if not isinstance(fee, dict) or set(fee) != {"kind", "value"}:
-        raise ValueError("申购费用设置无效")
-    kind, value = fee["kind"], fee["value"]
-    if kind not in ("none", "rate", "fixed") or type(value) not in (int, float) or not math.isfinite(value) or value < 0:
-        raise ValueError("申购费用设置无效")
-    if (kind == "none" and value != 0) or (kind == "fixed" and value >= amount):
+    fee = portfolio_config.validate_subscription_fee(fee)
+    if fee["kind"] == "fixed" and fee["value"] >= amount:
         raise ValueError("申购费用与实际扣款不匹配")
-    return {"kind": kind, "value": value}
+    return fee
 
 
 def _net_subscription(amount, fee):
@@ -793,14 +790,32 @@ def publish_quality(day, *, path=None, dry_run=False, retry=False):
     return render(rows, status)
 
 
-def _make_event(payload, request_id, day, view):
+def _trade_fee(rules, code, side, qty, price):
+    kind = _holding_kind(code)
+    rule = rules.get(kind)
+    if rule is None:
+        return {}
+    amount = qty * Decimal(str(price))
+    commission = max(Decimal(str(rule["min_commission"])), amount * Decimal(str(rule["commission_per_10000"])) / 10000)
+    stamp_rate = rules.get("stock_sell_stamp_duty_per_10000", 0) if kind == "stock" and side == "sell" else 0
+    stamp_duty = amount * Decimal(str(stamp_rate)) / 10000
+    commission = commission.quantize(Decimal(".01"), rounding=ROUND_HALF_UP)
+    stamp_duty = stamp_duty.quantize(Decimal(".01"), rounding=ROUND_HALF_UP)
+    return {"fee": float(commission + stamp_duty), "commission": float(commission), "stamp_duty": float(stamp_duty)}
+
+
+def _make_event(payload, request_id, day, view, *, config=None):
     """用流水发生前的账户事实校验并生成流水。"""
     side = payload.get("side")
     if side not in {"buy", "sell", "dividend", "deposit", "withdraw", "assign", "cash_assign", "cash_transfer", *FUND_TRADES}:
         raise ValueError("不支持的记账类型")
     event = {"id": request_id, "date": day, "side": side, "request": payload}
     if side in FUND_TRADES:
-        event.update(_fund_event(payload, view, day))
+        fund_payload = payload
+        fund_subscription_fee = (config or {}).get("fund_subscription_fee")
+        if side in {"fund_pending", "fund_buy"} and fund_subscription_fee is not None:
+            fund_payload = {**payload, "subscription_fee": fund_subscription_fee}
+        event.update(_fund_event(fund_payload, view, day))
     elif side == "cash_assign":
         event["cash_allocations"] = _cash_allocation(payload.get("cash_allocations"), view["cash"])
     elif side == "cash_transfer":
@@ -823,14 +838,17 @@ def _make_event(payload, request_id, day, view):
                      transfer_price=view["prices"][code])
     elif side in {"buy", "sell"}:
         qty, price = payload.get("qty"), _money(payload.get("price"))
-        fee = payload.get("fee", 0)
         if not _positive(qty) or int(qty) != qty or (side == "buy" and qty % 100):
             raise ValueError("份额须为正整数，买入须为100份的整数倍")
-        if type(fee) not in (int, float) or not math.isfinite(fee) or fee < 0:
-            raise ValueError("手续费须为有限非负数")
+        qty = int(qty)
         code = canonical_stock_code(payload.get("code", ""))
         if len(code) != 6 or not code.isdigit():
             raise ValueError("请输入六位证券代码")
+        if "fee" not in payload and config is not None:
+            event.update(_trade_fee(config.get("trade_fees", {}), code, side, qty, price))
+        fee = payload.get("fee", event.get("fee", 0))
+        if type(fee) not in (int, float) or not math.isfinite(fee) or fee < 0:
+            raise ValueError("手续费须为有限非负数")
         if side == "sell":
             held = next((r for r in view["strategy_positions"] if r["code"] == code and r["strategy"] == payload.get("strategy", "unassigned")), None)
             if not held or qty > held["count"]:
@@ -842,7 +860,7 @@ def _make_event(payload, request_id, day, view):
             raise ValueError("该策略现金不足，请先分配现金")
         if side == "sell" and round(view["cash_by_strategy"][strategy] + qty * price - fee, 2) < 0:
             raise ValueError("该策略现金不足以扣除费用")
-        event.update(code=code, qty=int(qty), price=price, fee=float(fee), strategy=strategy)
+        event.update(code=code, qty=qty, price=price, fee=float(fee), strategy=strategy)
     else:
         strategy = payload.get("strategy", "unassigned")
         if strategy not in {*portfolio_config.STRATEGY_NAMES, "unassigned"}:
@@ -883,7 +901,7 @@ def record_event(path, payload):
         if day < last_day:
             raise ValueError("记账日期不能早于期初或上笔流水")
         view = snapshot(state, day)
-        event = _make_event(payload, request_id, day, view)
+        event = _make_event(payload, request_id, day, view, config=state["_config"])
         side = event["side"]
         if event.get("strategy") == "rotation":
             from src.etf.rotation_advice import on_event
@@ -1018,6 +1036,10 @@ def edit_event(path, payload):
             try:
                 event_day = day if i == index else _day(stored["date"])
                 checked = _make_event(candidate, stored["id"], event_day, replay.view(event_day))
+                if i == index and "commission" in stored and all(
+                    checked.get(key) == stored[key] for key in ("side", "code", "qty", "price", "fee")
+                ):
+                    checked.update(commission=stored["commission"], stamp_duty=stored["stamp_duty"])
                 # 已确认流水沿用记录的划转估值和资金流价格。
                 event = checked if i == index else stored
                 replay.apply(event)
@@ -1221,7 +1243,10 @@ def account_data(path):
     fund_subscription_fees = subscription_fees(state)
     return {"id": "etf", "name": "投资账户", "can_record": True, **view,
             "holdings_by_kind": holdings_by_kind, "net_contributed": net_contributed,
+            "fund_subscription_fee": state["_config"].get("fund_subscription_fee"),
             "fund_subscription_fees": fund_subscription_fees,
+            "trade_fees": state["_config"].get("trade_fees", {}),
+            "trade_fee_code_prefixes": {"stock": A_STOCK_PREFIXES, "etf": ETF_HOLDING_PREFIXES},
             "fund_names": {code: names.get(code) for code in sorted(fund_codes)},
             "performance": latest, "trades": [{**{k: v for k, v in e.items() if k != "request"},
                          **({"name": names.get(e["code"], f"场外基金 {e['code']}") if e["side"] in FUND_TRADES

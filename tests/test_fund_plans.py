@@ -166,6 +166,19 @@ def test_record_due_subscription_with_fee_and_postponement(account, weekend_cale
     assert view['pending_fund_value'] == 100.0
 
 
+def test_account_fee_covers_first_subscription_for_dca(account, weekend_calendar, monkeypatch):
+    from src import portfolio_config
+
+    config = load(account)['_config']
+    fee = {'kind': 'none', 'value': 0}
+    portfolio_config.update(account, {'config': {**config, 'fund_subscription_fee': fee},
+                                      'revision': portfolio_config.revision(config)})
+    save_backdated(account, monkeypatch, code='999999')
+    recorded, = fund_plans.record_due_subscriptions(account)
+    assert recorded['subscription_fee'] == fee
+    assert recorded['code'] == '999999'
+
+
 def test_record_is_idempotent_across_reruns(account, weekend_calendar, monkeypatch):
     save_backdated(account, monkeypatch, anchor=5)
     fee_event(account)

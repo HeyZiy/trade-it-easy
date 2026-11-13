@@ -35,11 +35,48 @@ def revision(config):
     return hashlib.sha256(json.dumps(config, sort_keys=True, ensure_ascii=False, allow_nan=False).encode()).hexdigest()
 
 
+def validate_subscription_fee(fee):
+    if not isinstance(fee, dict) or set(fee) != {"kind", "value"}:
+        raise ValueError("申购费用设置无效")
+    kind, value = fee["kind"], fee["value"]
+    if kind not in ("none", "rate", "fixed") or type(value) not in (int, float) or not math.isfinite(value) or value < 0:
+        raise ValueError("申购费用设置无效")
+    if kind == "none" and value != 0:
+        raise ValueError("免申购费的金额须为零")
+    return {"kind": kind, "value": value}
+
+
+def _validate_trade_fees(fees):
+    stamp_duty = "stock_sell_stamp_duty_per_10000"
+    if not isinstance(fees, dict) or fees.keys() - {"stock", "etf", stamp_duty}:
+        raise ValueError("场内交易费率设置无效")
+    for kind in ("stock", "etf"):
+        if kind not in fees:
+            continue
+        rule = fees[kind]
+        if not isinstance(rule, dict) or rule.keys() != {"commission_per_10000", "min_commission"}:
+            raise ValueError("请同时设置佣金率和最低佣金")
+        rate, minimum = rule["commission_per_10000"], rule["min_commission"]
+        if type(rate) not in (int, float) or not 0 <= rate <= 10000:
+            raise ValueError("佣金率须在万分之0至10000之间")
+        if type(minimum) not in (int, float) or not math.isfinite(minimum) or minimum < 0 or round(minimum, 2) != minimum:
+            raise ValueError("最低佣金须为非负金额，最多两位小数")
+    if stamp_duty in fees:
+        rate = fees[stamp_duty]
+        if "stock" not in fees or type(rate) not in (int, float) or not 0 <= rate <= 10000:
+            raise ValueError("请先设置股票佣金，印花税率须在万分之0至10000之间")
+
+
 def validate(config):
-    if not isinstance(config, dict) or set(config) != {"schema_version", "budgets", "core"}:
+    required = {"schema_version", "budgets", "core"}
+    if not isinstance(config, dict) or not required <= config.keys() <= required | {"fund_subscription_fee", "trade_fees"}:
         raise ValueError("配置须包含 schema_version、budgets、core")
     if type(config["schema_version"]) is not int or config["schema_version"] != 1:
         raise ValueError("不支持的配置版本")
+    if "fund_subscription_fee" in config:
+        validate_subscription_fee(config["fund_subscription_fee"])
+    if "trade_fees" in config:
+        _validate_trade_fees(config["trade_fees"])
     budgets = config["budgets"]
     if not isinstance(budgets, dict) or set(budgets) - STRATEGY_NAMES.keys():
         raise ValueError("策略目标比例无效")

@@ -49,7 +49,7 @@
           <label data-trade-field>证券代码<input name="code" inputmode="numeric" pattern="[0-9]{6}" maxlength="6" list="entry-securities" autocomplete="off" required><datalist id="entry-securities"></datalist><span id="entry-security" class="field-hint"></span></label>
           <label data-trade-field><span id="entry-qty-label">成交份额</span><input name="qty" type="number" min="1" step="1" required><button type="button" id="entry-all" class="text-button" hidden>全部卖出</button></label>
           <label data-trade-field>成交均价 / 元<input name="price" type="number" min="0.000001" step="any" required></label>
-          <label data-trade-field>手续费 / 元<input name="fee" type="number" min="0" step="0.01" value="0" required></label>
+          <label data-trade-field><span id="entry-fee-label">手续费 / 元</span><input name="fee" type="number" min="0" step="0.01"></label>
           <label data-cash-field hidden>到账 / 转出金额 / 元<input name="amount" type="number" min="0.01" step="0.01" required disabled></label>
         </div>
         <p id="entry-context" class="entry-preview" aria-live="polite"></p>
@@ -62,10 +62,24 @@
     </dialog>
     <dialog id="config-dialog" class="config-dialog" aria-labelledby="config-title">
       <form id="config-form">
-        <div class="section-heading"><h2 id="config-title">策略配置</h2><button id="config-cancel" type="button" class="text-button">关闭</button></div>
+        <div class="section-heading"><h2 id="config-title">投资账户配置</h2><button id="config-cancel" type="button" class="text-button">关闭</button></div>
         <fieldset id="config-fields" class="entry-fields">
         <div class="entry-grid"><label>多资产配置目标占比 / %<input name="core" type="number" min="0" max="100" step="any" placeholder="暂不设置"></label><label>跨资产动量目标占比 / %<input name="rotation" type="number" min="0" max="100" step="any" placeholder="暂不设置"></label><label>质量动量目标占比 / %<input name="quality" type="number" min="0" max="100" step="any" placeholder="暂不设置"></label></div>
         <p class="subtle">以上占比按投资账户总资产计算，合计不超过100%。</p>
+        <h3>账户交易费用</h3>
+        <p class="subtle">佣金按成交金额计算，买卖均适用最低收费。印花税仅在卖出 A 股时按成交金额计算。</p>
+        <div class="entry-grid">
+          <label>股票佣金 / 万分之<input name="stock_commission" type="number" min="0" max="10000" step="any"></label>
+          <label>股票最低佣金 / 元<input name="stock_min_commission" type="number" min="0" step="0.01"></label>
+          <label>ETF 佣金 / 万分之<input name="etf_commission" type="number" min="0" max="10000" step="any"></label>
+          <label>ETF 最低佣金 / 元<input name="etf_min_commission" type="number" min="0" step="0.01"></label>
+          <label>A 股卖出印花税 / 万分之<input name="stock_sell_stamp_duty" type="number" min="0" max="10000" step="any" placeholder="现行 5"></label>
+        </div>
+        <div class="entry-grid">
+          <label>场外基金统一申购费<select name="fund_fee_kind"><option value="">沿用各基金上次设置</option><option value="none">免申购费</option><option value="rate">按比例</option><option value="fixed">固定金额</option></select></label>
+          <label id="config-fund-fee-field" hidden><span id="config-fund-fee-label">实际费率 / %</span><input name="fund_fee_value" type="number" min="0" step="any"></label>
+        </div>
+        <p class="subtle">统一申购费适用于本账户新记的场外申购和定投。</p>
         <div class="section-heading"><h3>多资产配置内部配比</h3><button id="config-add" type="button" class="text-button">＋ 添加配置项</button></div>
         <p class="subtle">每项可填场内产品、场外基金，或两类都填。组内合计金额用于对比目标。</p>
         <div class="table-wrap"><table class="config-table"><thead><tr><th>配置名称与产品</th><th>权重 / %</th><th>设置</th><th></th></tr></thead><tbody id="config-assets"></tbody></table></div>
@@ -89,9 +103,9 @@
             <label id="fund-qty-field"><span id="fund-qty-label">份额</span><input name="qty" type="number" min="0.000001" max="1000000000" step="0.000001" required></label>
           </div>
           <details id="fund-buy-tools">
-            <summary>买入日与费用</summary>
+            <summary id="fund-buy-tools-label">买入日与费用</summary>
             <div class="entry-grid">
-              <label>申购费<select name="fee_kind"><option value="">选择费型</option><option value="none">免申购费</option><option value="rate">按比例</option><option value="fixed">固定金额</option></select></label>
+              <label id="fund-fee-kind-field">申购费<select name="fee_kind"><option value="">选择费型</option><option value="none">免申购费</option><option value="rate">按比例</option><option value="fixed">固定金额</option></select></label>
               <label id="fund-fee-field" hidden><span id="fund-fee-label">实际费率 / %</span><input name="fee" type="number" min="0" step="any"></label>
               <label><span id="fund-nav-day-label">买入日</span><input name="nav_date" type="date"></label>
               <label id="fund-nav-field">单位净值 / 元<input name="nav" type="number" min="0.00000001" max="100000000" step="0.00000001"></label>

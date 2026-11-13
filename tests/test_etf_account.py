@@ -341,6 +341,57 @@ def test_fund_subscription_remembers_last_confirmed_fee_per_code(account):
                                     subscription_fee=second))
 
 
+def test_account_trade_fees_apply_by_security_and_side(account):
+    from src import portfolio_config
+    from src.etf_account import edit_event
+
+    config = load(account)["_config"]
+    rules = {
+        "stock": {"commission_per_10000": .86, "min_commission": 5},
+        "etf": {"commission_per_10000": .5, "min_commission": .2},
+        "stock_sell_stamp_duty_per_10000": 5,
+    }
+    portfolio_config.update(account, {"config": {**config, "trade_fees": rules},
+                                      "revision": portfolio_config.revision(config)})
+    record_event(account, event(account, "deposit", amount=100000))
+    for code, side, qty, price, expected in (
+        ("600519", "buy", 100, 3, (5, 0, 5)),
+        ("600519", "sell", 100, 3.1, (5, .16, 5.16)),
+        ("588000", "buy", 100, 1, (.2, 0, .2)),
+        ("588000", "sell", 100, 100, (.5, 0, .5)),
+        ("600519", "buy", 100, 1000, (8.6, 0, 8.6)),
+    ):
+        trade = record_event(account, event(account, side, code=code, qty=qty, price=price))
+        assert (trade["commission"], trade["stamp_duty"], trade["fee"]) == expected
+    manual = record_event(account, event(account, "sell", code="600519", qty=100, price=1000, fee=7))
+    assert manual["fee"] == 7 and "commission" not in manual
+    state = load(account)
+    stock_sale = state["events"][2]
+    config = state["_config"]
+    portfolio_config.update(account, {"config": {**config, "trade_fees": {**rules, "stock_sell_stamp_duty_per_10000": 0}},
+                                      "revision": portfolio_config.revision(config)})
+    corrected = edit_event(account, event(account, "sell", event_id=stock_sale["id"], code="600519",
+                                           qty=100, price=3.1, fee=5.16))
+    assert (corrected["commission"], corrected["stamp_duty"], corrected["fee"]) == (5, .16, 5.16)
+
+
+def test_pending_subscription_keeps_account_fee_at_recording(account, monkeypatch):
+    from src import portfolio_config, etf_account
+
+    config = load(account)["_config"]
+    free = {"kind": "none", "value": 0}
+    configured = {**config, "fund_subscription_fee": free}
+    portfolio_config.update(account, {"config": configured, "revision": portfolio_config.revision(config)})
+    pending = record_event(account, event(account, "fund_pending", code="096001", amount=100,
+                                          nav_date="2025-01-06", subscription_fee={"kind": "fixed", "value": 3}))
+    assert pending["subscription_fee"] == free
+    portfolio_config.update(account, {"config": {**config, "fund_subscription_fee": {"kind": "rate", "value": 1}},
+                                      "revision": portfolio_config.revision(configured)})
+    monkeypatch.setattr("data_provider.fund_nav.latest_fund_nav", lambda *_: ("2025-01-06", 1))
+    assert etf_account.confirm_fund_subscriptions(account, "2025-01-07") == [pending["id"]]
+    assert load(account)["events"][-1]["qty"] == 100
+
+
 
 def test_pending_subscription_is_an_asset_until_exact_nav_settles_it_once(account, monkeypatch):
     from src import etf_account as wallet

@@ -75,8 +75,8 @@ _MARKET_FAMILY_ROWS = (
     (_B_SHARE_SZ_FAMILIES, "SZ"),
 )
 
-_ETF_PREFIXES = _ETF_SH_FAMILIES + _ETF_SZ_FAMILIES
-_A_STOCK_FAMILIES = _STOCK_SH_FAMILIES + _STOCK_SZ_FAMILIES + _STOCK_BJ_FAMILIES
+ETF_PREFIXES = _ETF_SH_FAMILIES + _ETF_SZ_FAMILIES
+A_STOCK_PREFIXES = _STOCK_SH_FAMILIES + _STOCK_SZ_FAMILIES + _STOCK_BJ_FAMILIES
 
 
 def market_suffix(code: str) -> Optional[str]:
@@ -109,7 +109,7 @@ def is_a_stock_code(code: str) -> bool:
     if "." in raw:
         raw = raw.rsplit(".", 1)[0]
     num, _ = _split_prefix(raw)
-    return len(num) == 6 and num.isdigit() and num.startswith(_A_STOCK_FAMILIES)
+    return len(num) == 6 and num.isdigit() and num.startswith(A_STOCK_PREFIXES)
 
 
 
@@ -188,7 +188,7 @@ def is_etf_code(code: str) -> bool:
     53xxxx（上证系列 ETF）、55xxxx（科创债 ETF）是上交所 2025 年启用的新码族。
     """
     num, _ = _split_prefix(code)
-    return num[:2] in _ETF_PREFIXES
+    return num[:2] in ETF_PREFIXES
 
 
 def is_us_stock_code(code: str) -> bool:

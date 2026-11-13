@@ -11,8 +11,8 @@
   补跑都安全。先扫描账本跳过已存在的 request_id，不依赖重试内容比对。
 - 回看窗口：每次运行回看 CATCHUP_WINDOW_DAYS 个自然日内的到期日（不含当天，
   当天扣款由下次运行补记）；错过多天也能逐日补上，nav_date 各归各位。
-- fail-closed：基金代码没有已登记申购费率（取自最近一笔 fund_buy/fund_pending）
-  则跳过并告警；多资产配置现金不足时该笔记账失败并告警，不影响其他计划；
+- 优先使用账户统一申购费用；未设置时沿用该基金最近登记的费用，两者都缺失则跳过并告警。
+  多资产配置现金不足时该笔记账失败并告警，不影响其他计划；
   交易日历不可用时不猜测扣款日，整体跳过。
 - 待确认申购超过 AGING_TRADING_DAYS 个交易日未确认份额 → 告警（多为净值未公布）。
 
@@ -182,7 +182,7 @@ def _due_dates(plan, window_start, window_end):
 
 def _warn_aging_pendings(state, run_day):
     """在途申购迟迟未确认份额（净值未公布等）时逐日告警。"""
-    for pending in snapshot(state, run_day)["fund_pending"].values():
+    for pending in snapshot(state, run_day.isoformat())["fund_pending"].values():
         lag = trading_days_lag(date.fromisoformat(pending["nav_date"]), run_day)
         if lag is not None and lag > AGING_TRADING_DAYS:
             logger.warning("[定投] %s %s 扣款已 %d 个交易日未确认份额，请检查该日净值是否公布",
@@ -201,7 +201,6 @@ def record_due_subscriptions(account_path):
     window_end = run_day - timedelta(days=1)  # 当天扣款由下次运行补记
     window_start = run_day - timedelta(days=CATCHUP_WINDOW_DAYS)
     state = load_account(account_path)
-    fees = subscription_fees(state)
     known_ids = {event["id"] for event in state["events"]}
     due_plans = sorted(
         ((due, plan) for plan in plans if plan.get("enabled", True)
@@ -212,11 +211,6 @@ def record_due_subscriptions(account_path):
         request_id = f"{DCA_REQUEST_PREFIX}{plan['id']}-{due.isoformat()}"
         if request_id in known_ids:
             continue  # 已补记过：幂等跳过
-        fee = fees.get(plan["code"])
-        if fee is None:
-            logger.warning("[定投] %s 未登记申购费率，跳过 %s 扣款记账；请先手动记一笔该基金的场外申购",
-                           plan["code"], due)
-            continue
         payload = {
             "request_id": request_id,
             "revision": revision(state),
@@ -225,8 +219,14 @@ def record_due_subscriptions(account_path):
             "amount": plan["amount"],
             "date": run_day.isoformat(),
             "nav_date": due.isoformat(),
-            "subscription_fee": fee,
         }
+        if "fund_subscription_fee" not in state["_config"]:
+            fee = subscription_fees(state).get(plan["code"])
+            if fee is None:
+                logger.warning("[定投] %s 未登记申购费率，跳过 %s 扣款记账；请设置账户统一申购费或登记该基金的费用",
+                               plan["code"], due)
+                continue
+            payload["subscription_fee"] = fee
         try:
             event = record_event(account_path, payload)
         except ValueError as error:

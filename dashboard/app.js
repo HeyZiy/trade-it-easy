@@ -751,10 +751,23 @@ function openEntry(account, suggestion, strategy='unassigned', options={}) {
     const context = document.querySelector('#entry-context');
     context.textContent = !ownerName ? '请选择本笔记账所属的策略。' : assign ? field('code').value ? `${ownerName}可划转 ${number(held)} 份` : '选择证券后查看可划转份额。' : `${ownerName}现金 ${money(cash)} 元${trade && field('code').value ? ` · 持有 ${number(held)} 份` : ''}`;
     const amount = trade ? Number(field('qty').value) * Number(field('price').value) : Number(field('amount').value);
-    const fee = trade ? Number(field('fee').value) : 0;
+    const feeInput = field('fee');
+    const code = field('code').value;
+    const kind = Object.keys(account.trade_fee_code_prefixes || {}).find(kind =>
+      /^\d{6}$/.test(code) && account.trade_fee_code_prefixes[kind].some(prefix => code.startsWith(prefix)));
+    const rule = trade && !options.edit ? account.trade_fees?.[kind] : null;
+    const roundMoney = value => Math.round(Number((value * 100).toPrecision(15))) / 100;
+    const automaticFee = rule && feeInput.value === '';
+    const commission = automaticFee && amount > 0 ? roundMoney(Math.max(rule.min_commission, amount * rule.commission_per_10000 / 10000)) : 0;
+    const stampDuty = automaticFee && kind === 'stock' && side === 'sell'
+      ? roundMoney(amount * (account.trade_fees.stock_sell_stamp_duty_per_10000 ?? 0) / 10000) : 0;
+    const fee = automaticFee ? roundMoney(commission + stampDuty) : trade ? Number(feeInput.value) : 0;
+    document.querySelector('#entry-fee-label').textContent = rule ? '手续费 / 元（可按交割单修正）' : '手续费 / 元';
+    feeInput.placeholder = automaticFee && amount > 0 ? `${money(fee)} 元（自动）` : rule ? '按账户费率自动计算' : '0';
     const delta = Math.round((['buy','withdraw','cash_transfer'].includes(side) ? -amount-fee : amount-fee)*100)/100;
     document.querySelector('#event-preview').hidden = assign || !(amount>0);
-    document.querySelector('#event-preview').textContent = `${trade ? `成交金额 ${money(amount)} 元 · 手续费 ${money(fee)} 元。` : ''}现金${delta>=0?'增加':'减少'} ${money(Math.abs(delta))} 元；${ownerName || '所选策略'}记账后余额 ${finite(cash) ? money(cash+delta) : '—'} 元。`;
+    const feeDetails = automaticFee ? ` · 佣金 ${money(commission)} 元${kind === 'stock' && side === 'sell' ? ` · 印花税 ${money(stampDuty)} 元` : ''}` : '';
+    document.querySelector('#event-preview').textContent = `${trade ? `成交金额 ${money(amount)} 元 · 手续费 ${money(fee)} 元${feeDetails}。` : ''}现金${delta>=0?'增加':'减少'} ${money(Math.abs(delta))} 元；${ownerName || '所选策略'}记账后余额 ${finite(cash) ? money(cash+delta) : '—'} 元。`;
     if(cashTransfer && amount>0) document.querySelector('#event-preview').textContent=`${ownerName}划出 ${money(amount)} 元后剩余 ${money(cash-amount)} 元；${STRATEGY_NAMES[field('strategy').value]}收到后余额 ${money(account.cash_by_strategy[field('strategy').value]+amount)} 元。账户总现金不变。`;
     for (const name of ['qty','amount','price','strategy']) field(name).setCustomValidity('');
     let problem = '';
@@ -767,7 +780,7 @@ function openEntry(account, suggestion, strategy='unassigned', options={}) {
       problem = '请选择不同的划转来源和目标。'; field('strategy').setCustomValidity(problem);
     } else if (!assign && finite(cash) && Math.round((cash+delta)*100)<0) {
       problem = `${ownerName}现金不足${side==='buy' ? '，可先通过“划转现金”补充' : ''}。`;
-      field(trade ? 'price' : 'amount').setCustomValidity(problem);
+      if (!automaticFee) field(trade ? 'price' : 'amount').setCustomValidity(problem);
     }
     const validation = document.querySelector('#entry-validation');
     validation.hidden = !problem; validation.textContent = problem;
@@ -802,7 +815,8 @@ function openEntry(account, suggestion, strategy='unassigned', options={}) {
     if (side==='assign') {
       Object.assign(payload, {code:field('code').value, qty:Number(field('qty').value), strategy:field('strategy').value, from_strategy:field('from_strategy').value});
     } else if (['buy','sell'].includes(side)) {
-      Object.assign(payload, {code:field('code').value, qty:Number(field('qty').value), price:Number(field('price').value), fee:Number(field('fee').value), strategy:field('strategy').value});
+      Object.assign(payload, {code:field('code').value, qty:Number(field('qty').value), price:Number(field('price').value), strategy:field('strategy').value});
+      if (options.edit || field('fee').value !== '') payload.fee = Number(field('fee').value);
     } else {
       payload.amount=Number(field('amount').value);
       payload.strategy=field('strategy').value;
@@ -996,6 +1010,7 @@ function openFundTrade(account, side, code, edit=null) {
   const buy = side !== 'fund_redeem';
   const pending = side === 'fund_pending' || (side === 'fund_buy' && !edit);
   const confirming = side === 'fund_confirm';
+  const accountFee = pending && !edit ? account.fund_subscription_fee : null;
   const options = document.querySelector('#fund-buy-tools');
   const summary = document.querySelector('#fund-quick-summary');
   const fundName = document.querySelector('#fund-name');
@@ -1020,6 +1035,8 @@ function openFundTrade(account, side, code, edit=null) {
   document.querySelector('#fund-qty-label').textContent = buy ? '份额（自动计算，可修正）' : '确认赎回份额';
   options.hidden = !buy;
   options.open = buy && !!edit && !confirming;
+  document.querySelector('#fund-buy-tools-label').textContent = accountFee ? '买入日' : '买入日与费用';
+  document.querySelector('#fund-fee-kind-field').hidden = !!accountFee;
   summary.hidden = !pending && !confirming;
   document.querySelector('#fund-code-field').hidden = pending && !!code && !edit;
   document.querySelector('#fund-record-day-field').hidden = pending && !edit;
@@ -1028,7 +1045,8 @@ function openFundTrade(account, side, code, edit=null) {
   document.querySelector('#fund-nav-day-label').textContent = pending ? '买入日' : '申购净值日期';
   fetchNav.hidden = pending || confirming;
   field('qty').disabled = pending;
-  for (const name of ['fee_kind','fee','nav_date','nav']) field(name).disabled = !buy || confirming;
+  field('fee_kind').disabled = !buy || confirming || !!accountFee;
+  field('nav_date').disabled = !buy || confirming;
   field('nav').disabled = !buy || pending || confirming;
   field('code').value = code || '';
   field('code').readOnly = confirming || (!!code && !edit);
@@ -1047,7 +1065,7 @@ function openFundTrade(account, side, code, edit=null) {
   }
   function loadFeeForCode() {
     const code = field('code').value;
-    if (!pending || feeCode === code) return;
+    if (!pending || accountFee || feeCode === code) return;
     feeCode = code;
     const fee = account.fund_subscription_fees?.[code];
     field('fee_kind').value = fee?.kind || '';
@@ -1060,6 +1078,7 @@ function openFundTrade(account, side, code, edit=null) {
   const showError = message => { error.textContent = message; error.hidden = false; };
   const navKey = () => `${field('code').value}:${field('nav_date').value}`;
   function selectedFee() {
+    if (accountFee) return accountFee;
     const kind = field('fee_kind').value, value = Number(field('fee').value);
     if (kind === 'none') return {kind,value:0};
     if (kind && field('fee').value !== '' && finite(value) && value >= 0) return {kind,value};
@@ -1076,7 +1095,7 @@ function openFundTrade(account, side, code, edit=null) {
     const cash = account.cash_by_strategy.core;
     const amount = Number(field('amount').value);
     const kind = field('fee_kind').value;
-    const usesFee = buy && (kind === 'rate' || kind === 'fixed');
+    const usesFee = buy && !accountFee && (kind === 'rate' || kind === 'fixed');
     document.querySelector('#fund-fee-field').hidden = !usesFee;
     document.querySelector('#fund-fee-label').textContent = kind === 'rate' ? '实际费率 / %' : '申购费 / 元';
     field('fee').disabled = !usesFee || confirming;
@@ -1093,7 +1112,7 @@ function openFundTrade(account, side, code, edit=null) {
     const feeLabel = fee?.kind === 'none' ? '免申购费'
       : fee?.kind === 'rate' ? `费率 ${fee.value}%`
       : fee?.kind === 'fixed' ? `申购费 ${money(fee.value)} 元` : '待设置费用';
-    summary.textContent = [code && `基金 ${code}`, `买入日 ${field('nav_date').value || '待选择'}`, feeLabel].filter(Boolean).join(' · ');
+    summary.textContent = [code && `基金 ${code}`, `买入日 ${field('nav_date').value || '待选择'}`, accountFee ? `账户申购费：${feeLabel}` : feeLabel].filter(Boolean).join(' · ');
     preview.hidden = confirming;
     preview.textContent = `多资产配置现金 ${money(cash)} 元 · 持有 ${fundShares(held)} 份${amount > 0 ? ` · 记账后现金 ${money(cash + (buy ? -amount : amount))} 元` : ''}`;
     field('amount').setCustomValidity(buy && !confirming && amount > cash ? '多资产配置现金不足，请先分配现金。' : '');
@@ -1160,7 +1179,7 @@ function openFundTrade(account, side, code, edit=null) {
         if (pending) {
           payload.side = 'fund_pending';
           payload.nav_date = field('nav_date').value;
-          payload.subscription_fee = selectedFee();
+          if (!accountFee) payload.subscription_fee = selectedFee();
           delete payload.qty;
         } else if (buy) {
           if (field('nav').value) {
@@ -1361,6 +1380,12 @@ async function openConfiguration() {
   const error=document.querySelector('#config-error');
   const save=document.querySelector('#config-save');
   const fields=document.querySelector('#config-fields');
+  const feeKind=form.elements.namedItem('fund_fee_kind');
+  const feeValue=form.elements.namedItem('fund_fee_value');
+  const stampDuty=form.elements.namedItem('stock_sell_stamp_duty');
+  const commissions=Object.fromEntries(['stock','etf'].map(kind=>[kind,{
+    rate:form.elements.namedItem(`${kind}_commission`), minimum:form.elements.namedItem(`${kind}_min_commission`),
+  }]));
   let saving=false, saved=false;
   form.reset();error.hidden=true;save.disabled=true;save.textContent='保存配置';fields.disabled=true;
   document.querySelector('#config-history').innerHTML='';
@@ -1380,6 +1405,17 @@ async function openConfiguration() {
   const memberCodes=value=>value.trim().split(/[\s,，、]+/).filter(Boolean);
   const validCodes=codes=>codes.every(code=>/^[0-9]{6}$/.test(code));
   let draft;
+  function updateFeeField() {
+    const usesValue=feeKind.value==='rate' || feeKind.value==='fixed';
+    document.querySelector('#config-fund-fee-field').hidden=!usesValue;
+    document.querySelector('#config-fund-fee-label').textContent=feeKind.value==='rate'?'实际费率 / %':'申购费 / 元';
+    feeValue.disabled=!usesValue;
+    feeValue.required=usesValue;
+    for (const {rate,minimum} of Object.values(commissions)) {
+      rate.required=minimum.value!=='' || (rate===commissions.stock.rate && stampDuty.value!=='');
+      minimum.required=rate.value!=='' || rate.required;
+    }
+  }
   function total() {
     const weights=[...document.querySelectorAll('#config-assets [data-field=weight]')];
     const sum=weights.reduce((n,input)=>n+Number(input.value),0);
@@ -1442,6 +1478,14 @@ async function openConfiguration() {
   function show(config) {
     draft=structuredClone(config);
     for(const key of ['core','rotation','quality']) form.elements.namedItem(key).value=finite(config.budgets[key])?percentInput(config.budgets[key]):'';
+    feeKind.value=config.fund_subscription_fee?.kind ?? '';
+    feeValue.value=config.fund_subscription_fee?.value ?? '';
+    for (const [kind,{rate,minimum}] of Object.entries(commissions)) {
+      rate.value=config.trade_fees?.[kind]?.commission_per_10000 ?? '';
+      minimum.value=config.trade_fees?.[kind]?.min_commission ?? '';
+    }
+    stampDuty.value=config.trade_fees?.stock_sell_stamp_duty_per_10000 ?? '';
+    updateFeeField();
     document.querySelector('#config-assets').innerHTML='';
     config.core.forEach(addRow);total();
   }
@@ -1450,7 +1494,7 @@ async function openConfiguration() {
   history.innerHTML=result.history.map((version,index)=>`<option value="${index}">${esc(quoteTime(version.saved_at))}${version.revision===result.revision?' · 当前配置':''}</option>`).join('');
   history.value=Math.max(0,result.history.findIndex(version=>version.revision===result.revision));
   document.querySelector('#config-load-history').onclick=()=>{const version=result.history[Number(history.value)];if(version)show(version.config);};
-  form.oninput=total;
+  form.oninput=()=>{updateFeeField();total();};
   form.onsubmit=async event=>{
     event.preventDefault();if(saving)return;
     saving=true;save.disabled=true;error.hidden=true;fields.disabled=true;
@@ -1480,8 +1524,16 @@ async function openConfiguration() {
       if (funds.length) asset.fund_codes = funds;
       return asset;
     });
+    const config={schema_version:1,budgets,core};
+    if(feeKind.value) config.fund_subscription_fee={kind:feeKind.value,value:feeKind.value==='none'?0:Number(feeValue.value)};
+    const tradeFees={};
+    for (const [kind,{rate,minimum}] of Object.entries(commissions)) {
+      if (rate.value!=='') tradeFees[kind]={commission_per_10000:Number(rate.value),min_commission:Number(minimum.value)};
+    }
+    if (stampDuty.value!=='') tradeFees.stock_sell_stamp_duty_per_10000=Number(stampDuty.value);
+    if (Object.keys(tradeFees).length) config.trade_fees=tradeFees;
     try {
-      if(!saved) {await accountRequest('/api/etf/config',{revision:result.revision,config:{schema_version:1,budgets,core}});saved=true;}
+      if(!saved) {await accountRequest('/api/etf/config',{revision:result.revision,config});saved=true;}
       await reloadAccount();dialog.close();
       document.querySelector('#status').textContent='配置已保存';
     } catch(failure) {error.textContent=saved?'配置已保存，页面更新失败。请刷新账户查看。':failure.message;error.hidden=false;}
