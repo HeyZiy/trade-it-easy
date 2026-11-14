@@ -29,18 +29,17 @@ from datetime import date, timedelta
 from pathlib import Path
 from uuid import uuid4
 
-from src.json_store import locked as _locked, save as _json_save
+from src.account_replay import fund_code, positive
 from src.etf_account import (
-    _fund_code,
-    _positive,
-    _today,
     load as load_account,
     record_event,
     revision,
     snapshot,
     subscription_fees,
 )
+from src.json_store import locked as _locked, save as _json_save
 from src.trading_calendar import get_trading_dates, trading_days_lag
+from src.trading_calendar import shanghai_today as _today
 
 logger = logging.getLogger(__name__)
 
@@ -72,9 +71,9 @@ def _read_plans(path):
 def _validated_plan(payload):
     if not isinstance(payload, dict):
         raise ValueError("定投计划参数缺失")
-    code = _fund_code(str(payload.get("code") or "").strip())
+    code = fund_code(str(payload.get("code") or "").strip())
     amount = payload.get("amount")
-    if not _positive(amount) or round(amount, 2) != amount:
+    if not positive(amount) or round(amount, 2) != amount:
         raise ValueError("每期金额须为正数，最多两位小数")
     frequency = payload.get("frequency")
     if frequency not in FREQUENCIES:

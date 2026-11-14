@@ -136,7 +136,7 @@ def main():
     window = {"start": str(px.index[0].date()), "end": str(px.index[-1].date())}
     write_report(asset, met, roll, window)
     files = [Path(module.__file__) for module in (base, dc, atr, holding, base.experience, base.asset_config)]
-    files += [Path(__file__), base.PE_CACHE / f"etf_hfq_{ASSET_CODE}.csv"]
+    files += [Path(__file__), base.ETF_DATA / f"etf_hfq_{ASSET_CODE}.csv"]
     manifest = {"generated_at_utc": datetime.now(timezone.utc).isoformat(), "code": ASSET_CODE,
                 "hashes": {p.name: hashlib.sha256(p.read_bytes()).hexdigest() for p in files},
                 "presets": PRESETS, "window": window, "holding_years": HOLDING_YEARS,

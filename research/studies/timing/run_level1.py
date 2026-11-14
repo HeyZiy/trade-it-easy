@@ -118,9 +118,9 @@ def main():
             cohorts.append(rows.assign(code=code, 标的=asset.name))
             summaries.append(experience.rolling_summary(rows).reset_index().assign(
                 code=code, 标的=asset.name, years=years))
-        files.add(base.PE_CACHE / f"etf_hfq_{code}.csv")
+        files.add(base.ETF_DATA / f"etf_hfq_{code}.csv")
         if pe is not None:
-            files.add(base.PE_CACHE / f"pe_{asset.index_code}.csv")
+            files.add(base.PE_DATA / f"pe_{asset.index_code}.csv")
         print(f"{asset.name} 全期及1/3/5年多起点完成", flush=True)
     metrics = pd.concat(full, ignore_index=True)
     rolling = pd.concat(summaries, ignore_index=True)

@@ -53,7 +53,7 @@ def main():
     print("\n## 汇总（标的 × 频率 × 指标）")
     print(summary.round(2).to_markdown())
     files = [Path(__file__), Path(base.__file__), Path(base.experience.__file__), Path(base.asset_config.__file__),
-             *(base.PE_CACHE / f"etf_hfq_{asset.etf_code}.csv" for asset in base.ASSETS)]
+             *(base.ETF_DATA / f"etf_hfq_{asset.etf_code}.csv" for asset in base.ASSETS)]
     manifest = {"generated_at_utc": datetime.now(timezone.utc).isoformat(),
                 "hashes": {p.name: hashlib.sha256(p.read_bytes()).hexdigest() for p in files},
                 "capital": base.CAPITAL, "cost": base.COST, "lot": base.LOT,

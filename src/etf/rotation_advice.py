@@ -12,6 +12,7 @@ from src.etf.rotation import (
     ACCOUNT, COMMISSION, MIN_COMMISSION, RotationRow, affordable_shares, plan_rotation, top_candidate,
 )
 from src.etf.momentum import EtfOrder
+from src.advice_identity import short_digest
 from data_provider.security_names import security_name
 
 
@@ -100,9 +101,9 @@ def advice(signal, strategy, today, *, account_revision, dismissed):
     key = hashlib.sha256(json.dumps(signal, sort_keys=True, ensure_ascii=False).encode()).hexdigest()
     result = []
     for order in orders:
-        identity = hashlib.sha256(
-            f"rotation:{key}:{account_revision}:{order.code}:{order.action}:{order.shares}".encode()
-        ).hexdigest()[:24]
+        identity = short_digest(
+            f"rotation:{key}:{account_revision}:{order.code}:{order.action}:{order.shares}"
+        )
         current = next((p for p in positions if p["code"] == order.code), None)
         current_value = round(current["count"] * prices[order.code], 2) if current else 0
         result.append({"id": identity, "code": order.code, "name": order.name,

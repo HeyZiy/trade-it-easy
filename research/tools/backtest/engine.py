@@ -6,7 +6,8 @@
 最低 5 元、绝对价格滑点 0.002（买加卖减），无印花税。
 
 成交在传入的原始价上加减滑点；信号空间（复权）与成交空间（原始）由调用方分离。
-T+1 由 entry_date 表达：当日买入的份额当日不可卖。分红现金不建模。
+T+1 由 entry_date 表达：当日买入的份额当日不可卖。
+复权总回报模拟可调整在手份额，现金分红到账时间不建模。
 """
 from collections import deque
 
@@ -55,8 +56,12 @@ class Account:
 
     def sell(self, date, code, shares, price):
         pos = self.positions.get(code)
-        shares = int(shares)
-        if pos is None or shares <= 0 or shares > pos["shares"]:
+        if pos is None:
+            return False
+        # 复权总回报模拟可能产生零碎份额，清仓时全部卖出。
+        if shares != pos["shares"]:
+            shares = int(shares)
+        if shares <= 0 or shares > pos["shares"]:
             return False
         if not np.isfinite(price) or price <= 0:
             return False
@@ -70,6 +75,17 @@ class Account:
                             "price": fill, "quantity": shares, "fee": fee,
                             "cash_after": self.cash})
         return True
+
+    def apply_adjustment(self, date, code, multiplier):
+        """按总回报乘数调整在手份额，保留现金和原买入日期。"""
+        if not np.isfinite(multiplier) or multiplier <= 0:
+            raise ValueError("无效的持仓调整乘数")
+        pos = self.positions[code]
+        previous = pos["shares"]
+        pos["shares"] *= multiplier
+        self.ledger.append({"date": str(date), "side": "adjustment", "code": code,
+                            "price": None, "quantity": pos["shares"] - previous,
+                            "fee": 0.0, "cash_after": self.cash, "multiplier": multiplier})
 
     def closeable(self, code, today):
         pos = self.positions.get(code)
@@ -133,6 +149,12 @@ def round_trip_stats(ledger):
     open_batches = 0
     for record in ledger:
         code = record["code"]
+        if record["side"] == "adjustment":
+            multiplier = record["multiplier"]
+            for batch in lots.get(code, ()):
+                batch[0] /= multiplier
+                batch[1] *= multiplier
+            continue
         price, quantity = float(record["price"]), float(record["quantity"])
         fee = float(record["fee"])
         if record["side"] == "buy":

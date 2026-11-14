@@ -3,16 +3,15 @@
 > 策略身份：日频跨资产横截面动量策略，在 15 只 ETF 上按加权回归动量评分排名，
 > 单只全仓持有合格候选第一名，持仓不再是第一名就换仓。收益假设是跨资产趋势延续
 > 与相对强弱切换。它是独立子策略：独立标的池、独立预算与独立台账
-> （`account=etf_rotation`），与 多资产配置、行业动量轮动互不共享持仓，也不是
-> 它们的替代。
+> （`account=etf_rotation`），与多资产配置互不共享持仓，也不是
+> 它的替代。
 >
 > 生产引擎 [`src/etf/rotation.py`](../src/etf/rotation.py)，每日模拟账户入口
 > [`etf_rotation.py`](../etf_rotation.py)（cron 每交易日 10:40，对齐研究线决策
 > 时点）；判定核与研究线
 > 原15只导出版 [`study_etf_fit_jq.py`](../research/studies/rotation/study_etf_fit_jq.py)
 > 一致；[`unified_coverage.py`](../research/studies/rotation/unified_coverage.py)
-> 为同池15只平台入口，17只能源扩充版另行研究。行业轮动是另一独立策略，见
-> [`industry_momentum.md`](industry_momentum.md)，单独维护预算、规则与台账。
+> 为同池15只平台入口，17只能源扩充版另行研究。
 > 收益假设、回测结果与已知研究边界见
 > [`research/studies/rotation/README.md`](../research/studies/rotation/README.md)。
 > 本文件只写生产策略口径、执行边界与已知局限。
@@ -113,7 +112,7 @@ score = 0（跳水过滤）与 nan（数据不足）都不合格：0 与 nan 在
 ## 六、执行口径
 
 - **账户**：独立流水 `data/trade_ledger_etf_rotation.jsonl`，`account=etf_rotation`，
-  与主台账 `core`/`satellite` 互不可见；台账是持仓与现金的唯一事实来源。名义
+  与主台账 `core` 互不可见；台账是持仓与现金的唯一事实来源。名义
   期初 100 万（研究线回测为 10 万；差异只影响整手粒度与费用预检，不改变判定
   规则）。台账为名义影子成交口径，见 `src/trade_ledger/ledger.py`。
 - **决策时点**：每交易日 10:40（研究线口径），`deploy/crontab.server` 已按

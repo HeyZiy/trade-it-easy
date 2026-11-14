@@ -2,10 +2,10 @@
 """共享账户引擎：统一成本、窗口与成交口径，供一级、二级和实验复用。
 
 统一口径：
-- 数据：本研究 _cache/ 东财后复权 OHLC；信号与成交均在复权价空间，
+- 数据：research/data/etf_hfq_em 东财后复权 OHLC；信号与成交均在复权价空间，
   属于复权份额模拟，尚未独立核验上游复权与分红口径。
 - 成本：单边 0.06%（佣金 0.01% + 滑点 0.05%），按 100 股取整（复权价口径）。
-- 窗口：各 ETF 从"MA200 首次可得"之日起至缓存截止日（2026-09-30），
+- 窗口：各 ETF 从"MA200 首次可得"之日起至数据截止日（2026-09-30），
   同一标的的所有规则同起点同窗口，保证可比。
 - 节奏：趋势月末出信号、次日开盘执行；估值使用早于交易日的 PE。
 - 网格：T+1，跳空按开盘价成交；主结果假设 O-L-H-C 路径，O-H-L-C 作对照。
@@ -31,7 +31,9 @@ from . import experience
 
 ASSETS = asset_config.ASSETS
 STUDY = Path(__file__).resolve().parents[1]
-PE_CACHE = STUDY / "_cache"
+DATA = STUDY.parents[1] / "data"
+ETF_DATA = DATA / "etf_hfq_em"
+PE_DATA = DATA / "index_pe_lg"
 
 COST = 0.0006          # 单边：佣金0.01% + 滑点0.05%
 LOT = 100
@@ -46,13 +48,13 @@ VAL_MIN_POINTS = 24
 # ---------------------------------------------------------------- 数据加载
 def load_etf(code):
     """东财后复权 OHLC，DatetimeIndex 升序；统一截至 2026-09-30。"""
-    df = pd.read_csv(PE_CACHE / f"etf_hfq_{code}.csv", index_col="date")
+    df = pd.read_csv(ETF_DATA / f"etf_hfq_{code}.csv", index_col="date")
     df.index = pd.to_datetime(df.index)
     return df.sort_index().loc[:"2026-09-30"]
 
 
 def load_pe(code):
-    df = pd.read_csv(PE_CACHE / f"pe_{code}.csv", index_col="date")
+    df = pd.read_csv(PE_DATA / f"pe_{code}.csv", index_col="date")
     s = df["pe"]
     s.index = pd.to_datetime(s.index)
     return s.sort_index()

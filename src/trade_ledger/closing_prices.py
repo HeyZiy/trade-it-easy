@@ -11,6 +11,13 @@ from data_provider.codes import is_a_stock_code, is_etf_code
 logger = logging.getLogger(__name__)
 
 
+def holding_closes(codes, asof, fetch):
+    """返回指定日期的有效收盘价与缺价持仓，保留持仓顺序。"""
+    prices = {code: price for code, price in fetch(codes, asof).items()
+              if type(price) in (int, float) and math.isfinite(price) and price > 0}
+    return prices, [code for code in codes if code not in prices]
+
+
 def _at(frame, asof, date_column):
     if frame is None or frame.empty or not {date_column, "close"} <= set(frame.columns):
         return None

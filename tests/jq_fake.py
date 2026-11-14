@@ -29,6 +29,7 @@ import importlib.util
 import sys
 import types
 from pathlib import Path
+from types import SimpleNamespace
 
 import pandas as pd
 
@@ -325,3 +326,109 @@ class JQStub(object):
                            key=lambda t: int(t.split(':')[0]) * 60 + int(t.split(':')[1]))
             for t in times:
                 self.scheduled[t](self.ctx)
+
+
+class PoolPortfolio(_Portfolio):
+    @property
+    def total_value(self):
+        return self.cash + sum((p.total_amount + p.locked_amount) * self._stub.price(c)
+                               for c, p in self.positions.items())
+
+    @property
+    def available_cash(self):
+        return self.cash
+
+
+class RotationStub(JQStub):
+    def __init__(self, calendar, closes, cash=1_000_000):
+        super().__init__(calendar, closes, starting_cash=cash)
+        self.portfolio = PoolPortfolio(self, cash)
+        self.ctx.portfolio = self.portfolio
+        self.daily_orders = {}
+        self.live_orders = {}
+        self.exports = {}
+        self.records = []
+        self.costs = []
+        self.log_levels = {}
+        self.sell_caps = {}
+        self.buy_caps = {}
+        self.reject_buys = set()
+        self.oid = 0
+
+    def _history(self, count, unit='1d', field='close', security_list=None, **kw):
+        return pd.DataFrame({c: self.closes[c][self.closes[c].index < self.today].tail(count)
+                             for c in security_list})
+
+    def _get_trade_days(self, start_date=None, end_date=None, count=None, **kw):
+        days = self.calendar
+        if start_date is not None:
+            days = days[days >= pd.Timestamp(start_date).normalize()]
+        if end_date is not None:
+            days = days[days <= pd.Timestamp(end_date).normalize()]
+        return list(days[-count:] if count is not None else days)
+
+    def _order_target(self, code, amount):
+        pos = self.portfolio.positions.setdefault(code, SimpleNamespace(
+            total_amount=0, closeable_amount=0, locked_amount=0, avg_cost=0))
+        delta = amount - pos.total_amount
+        if delta == 0:
+            return None
+        px, is_buy = self.price(code), delta > 0
+        if is_buy and code in self.reject_buys:
+            return None
+        quantity = (min(delta, self.buy_caps.get(code, delta)) if is_buy else
+                    min(-delta, pos.closeable_amount, self.sell_caps.get(code, -delta)))
+        if quantity <= 0:
+            return None
+        cost = self.costs[-1]
+        commission = max(cost.min_commission, quantity * px * cost.open_commission)
+        if is_buy:
+            assert quantity % 100 == 0
+            assert self.portfolio.cash >= quantity * px + commission
+            self.portfolio.cash -= quantity * px + commission
+            pos.total_amount += quantity
+        else:
+            self.portfolio.cash += quantity * px * (1 - cost.close_tax) - commission
+            pos.total_amount -= quantity
+            pos.closeable_amount -= quantity
+        self.orders.append(('B' if is_buy else 'S', self.today.strftime('%F'),
+                            code, quantity, px))
+        self.oid += 1
+        order = SimpleNamespace(security=code, is_buy=is_buy, filled=quantity,
+                                price=px, status='held' if quantity == abs(delta) else 'canceled')
+        self.daily_orders[self.oid] = order
+        return order
+
+    def _get_price(self, code, end_date=None, count=None, **kwargs):
+        assert code == '000906.XSHG'
+        assert pd.Timestamp(end_date).normalize() <= self.today
+        days = self.calendar[self.calendar <= pd.Timestamp(end_date).normalize()][-count:]
+        return pd.DataFrame({'close': [1000.0] * len(days)}, index=days)
+
+    def install(self):
+        super().install()
+        mod = self._module
+        mod.get_open_orders = lambda: self.live_orders
+        mod.get_orders = lambda: self.daily_orders
+        mod.get_price = self._get_price
+        mod.OrderCost = lambda **kw: SimpleNamespace(**kw)
+        mod.set_order_cost = lambda cost, **kw: self.costs.append(cost)
+        mod.set_slippage = lambda *args: None
+        mod.PriceRelatedSlippage = lambda value: value
+        mod.record = lambda **values: self.records.append(values)
+        mod.write_file = lambda name, content: self.exports.__setitem__(name, content)
+        mod.log.set_level = lambda name, level: self.log_levels.__setitem__(name, level)
+        return self
+
+    def run_days(self, dates):
+        for day in dates:
+            self.today = pd.Timestamp(day).normalize()
+            self.daily_orders = {}
+            for pos in self.portfolio.positions.values():
+                pos.closeable_amount = pos.total_amount
+            for time in sorted(self.scheduled):
+                hour, minute = map(int, time.split(':'))
+                self.ctx.current_dt = self.today + pd.Timedelta(hours=hour, minutes=minute)
+                self.scheduled[time](self.ctx)
+            self.ctx.current_dt = self.today + pd.Timedelta(hours=15, minutes=30)
+            self._script.after_trading_end(self.ctx)

@@ -7,14 +7,16 @@
 与聚宽版的口径差异（首版研究假设，须如实读报告）：
 - 聚宽在 14:55 用"25 根已完成日线 + 当日最新价"打分并成交；本地日线用当日收盘
   同时充当最新价与成交价，属收盘近似的无未来函数映射。
-- 打分在后复权价空间。回归对同一窗口内常数缩放不敏感（斜率与 R² 不变），
-  故 hfq 与聚宽前复权口径等价；成交与净值用原始价（对齐 use_real_price=True）。
+- 打分用 AD 后复权价；将同一窗口按当日原始价换算为前复权价时，
+  回归斜率与 R² 不变。成交与估值用原始价。
+- 用相邻有效行情的复权因子变化折算已有持仓份额。现金分红隐含再投资，
+  允许产生零碎模拟份额，缺行情时沿用上一有效估值。
 - 本地无点时历史名单：用 AD 当前 ETF 名单按首根行情（start_date）过滤当日已上市，
   仍有幸存者偏差。无 get_current_data 挂单表，成交即时撮合、无未成交挂单。
 - 停牌/缺数据以 quality!=ok 表达；建池流动性用截至昨日的 20 根完整成交额。
 
-运行（仓库根目录）：
-    .conda/python.exe -m research.studies.etf.v1_local --cache-dir research/data/etf_daily_ad
+运行（仓库根目录，默认使用 research/data/etf_daily_ad）：
+    .conda/python.exe -m research.studies.etf.v1_local
 """
 import argparse
 import importlib.util
@@ -44,14 +46,23 @@ def load_kernel():
 class MomentumLocal:
     def __init__(self, capital=1_000_000.0, cache_dir=None):
         self.k = load_kernel()
-        self.data = LocalEtfData(cache_dir) if cache_dir else LocalEtfData()
+        self.data = LocalEtfData(cache_dir)
         self.cal = self.data.trading_days()
-        self.loc_of = {d: i for i, d in enumerate(self.cal)}
         self.securities = self.data.securities_table
         self.universe = sorted(self.securities.index[self.securities.ok_rows > 0])
-        self.frames = {f: self.data._frame(f)
-                       for f in ["hfq_close", "close", "amount", "quality"]}
-        self.frames["close"] = self.frames["close"].ffill()
+        adjusted = self.data._frame("hfq_close")
+        raw = self.data._frame("close").reindex(columns=adjusted.columns)
+        quality = self.data._frame("quality").reindex(columns=adjusted.columns)
+        self.columns = {code: i for i, code in enumerate(adjusted.columns)}
+        self.adjusted_close = adjusted.to_numpy(dtype=float)
+        self.valid = (quality.eq("ok").to_numpy() & np.isfinite(raw)
+                      & raw.gt(0) & np.isfinite(adjusted) & adjusted.gt(0)).to_numpy()
+        self.raw_close = raw.where(self.valid).ffill()
+        factors = adjusted.div(raw.where(self.valid)).ffill()
+        changes = factors.div(factors.shift()).to_numpy()
+        self.adjustments = np.where(np.isclose(changes, 1.0, rtol=0, atol=1e-9)
+                                    | np.isnan(changes), 1.0, changes)
+        self.amount = self.data._frame("amount")
         # v1 冻结口径：无滑点、万一佣金、无最低佣金。
         self.account = Account(capital, commission=self.k.COMMISSION_RATE,
                                min_commission=0.0, slippage=0.0)
@@ -60,15 +71,6 @@ class MomentumLocal:
         self.neg_run = {}
         self.day = 0
         self.diag = {"pool_invalid": 0, "rank_incomplete": 0}
-
-    def _loc(self, date):
-        key = pd.Timestamp(date).strftime("%Y-%m-%d")
-        if key in self.loc_of:
-            return self.loc_of[key]
-        loc = self.cal.searchsorted(key, side="right") - 1
-        if loc < 0:
-            raise KeyError("%s 早于缓存首日 %s" % (key, self.cal[0]))
-        return loc
 
     def _closes(self, code, count, loc):
         """截至 loc 的最近 count 个交易日收盘；要求整窗天天有效。
@@ -81,20 +83,13 @@ class MomentumLocal:
         start = loc - count + 1
         if start < 0:
             return None
-        closes = self.frames["hfq_close"].iloc[start:loc + 1][code].to_numpy(dtype=float)
-        quality = self.frames["quality"].iloc[start:loc + 1][code].to_numpy()
-        if not ((quality == "ok") & np.isfinite(closes) & (closes > 0)).all():
+        col = self.columns[code]
+        if not self.valid[start:loc + 1, col].all():
             return None
-        return closes
+        return self.adjusted_close[start:loc + 1, col]
 
     def _quality_ok(self, code, loc):
-        value = self.frames["quality"].iloc[loc][code]
-        return isinstance(value, str) and value == "ok"
-
-    def _close(self, code, loc, hfq=False):
-        field = "hfq_close" if hfq else "close"
-        value = self.frames[field].iloc[loc][code]
-        return float(value)
+        return self.valid[loc, self.columns[code]]
 
     def rebuild_pool(self, loc, held):
         k = self.k
@@ -107,7 +102,7 @@ class MomentumLocal:
             raise ValueError("当日无已上市ETF")
         if loc < 20:
             raise ValueError("样本不足20日")
-        amount = self.frames["amount"].iloc[loc - 20:loc].reindex(columns=codes)
+        amount = self.amount.iloc[loc - 20:loc].reindex(columns=codes)
         values = amount.to_numpy(dtype=float)
         contiguous = np.isfinite(values).all(axis=0) & (values >= 0).all(axis=0)
         avg = np.full(values.shape[1], np.nan)
@@ -131,7 +126,7 @@ class MomentumLocal:
         for code in self.pool:
             if not self._quality_ok(code, loc):
                 continue
-            price = self._close(code, loc, hfq=True)
+            price = self.adjusted_close[loc, self.columns[code]]
             closes = self._closes(code, k.SCORE_DAYS if code in held else k.MIN_BARS - 1,
                                   loc - 1)
             if not np.isfinite(price) or price <= 0 or closes is None:
@@ -150,12 +145,12 @@ class MomentumLocal:
         acct = self.account
         rank_of = {r["code"]: i + 1 for i, r in enumerate(rows)}
         row_of = {r["code"]: r for r in rows}
-        raw_close = self.frames["close"].iloc[loc]
+        raw_close = self.raw_close.iloc[loc]
         sold = set()
         for code in list(held):
             if not self._quality_ok(code, loc):
                 continue
-            price = self._close(code, loc, hfq=True)
+            price = self.adjusted_close[loc, self.columns[code]]
             if not np.isfinite(price) or price <= 0:
                 continue
             score_now = row_of.get(code, {}).get("score")
@@ -186,7 +181,7 @@ class MomentumLocal:
     def execute_buys(self, loc, rows, sold_today, today):
         k = self.k
         acct = self.account
-        raw_close = self.frames["close"].iloc[loc]
+        raw_close = self.raw_close.iloc[loc]
         held = set(acct.positions)
         reserved = set(held)
         slots = k.TOPN - len(reserved)
@@ -216,14 +211,22 @@ class MomentumLocal:
     def run(self, start, end):
         acct = self.account
         k = self.k
-        start_loc, end_loc = self._loc(start), self._loc(end)
+        first = pd.Timestamp(start).strftime("%Y-%m-%d")
+        last = pd.Timestamp(end).strftime("%Y-%m-%d")
+        start_loc = self.cal.searchsorted(first, side="left")
+        stop_loc = self.cal.searchsorted(last, side="right")
+        if start_loc >= stop_loc:
+            raise ValueError("回测区间与缓存没有重叠交易日")
         self.pool, self.pool_valid, self.neg_run, self.day = [], False, {}, 0
-        raw_close = self.frames["close"]
         dates, navs, expos = [], [], []
-        for loc in range(start_loc, end_loc + 1):
+        for loc in range(start_loc, stop_loc):
             today = self.cal[loc]
             self.day += 1
             held = set(acct.positions)
+            for code in sorted(held):
+                multiplier = self.adjustments[loc, self.columns[code]]
+                if multiplier != 1.0:
+                    acct.apply_adjustment(today, code, multiplier)
             if not self.pool_valid or (self.day - 1) % k.REBUILD_EVERY == 0:
                 try:
                     self.pool = self.rebuild_pool(loc, held)
@@ -242,7 +245,7 @@ class MomentumLocal:
             sold_today = self.evaluate_exits(loc, held, rows, rank_valid, today)
             if rank_valid:
                 self.execute_buys(loc, rows, sold_today, today)
-            close_today = raw_close.iloc[loc]
+            close_today = self.raw_close.iloc[loc]
             prices = {c: float(close_today.get(c, 0.0)) for c in acct.positions}
             nav = acct.value(prices)
             dates.append(today)
@@ -265,23 +268,25 @@ def _fmt(value):
 
 def write_report(bt, nav, expo, bench, out_dir):
     out_dir.mkdir(parents=True, exist_ok=True)
-    trades = len(bt.account.ledger)
+    ledger = pd.DataFrame(bt.account.ledger)
+    fills = ledger[ledger["side"].isin(["buy", "sell"])] if len(ledger) else ledger
+    trades = len(fills)
     met = metrics(nav, expo, trades, bt.account.capital)
     rt = round_trip_stats(bt.account.ledger)
     nav.to_frame().join(expo).to_csv(out_dir / "nav.csv", encoding="utf-8-sig")
-    pd.DataFrame(bt.account.ledger).to_csv(out_dir / "ledger.csv",
-                                           index=False, encoding="utf-8-sig")
+    ledger.to_csv(out_dir / "ledger.csv", index=False, encoding="utf-8-sig")
     annual_returns(nav, bt.account.capital).to_csv(out_dir / "annual.csv",
                                                    encoding="utf-8-sig")
     bench_nav = bench.reindex(nav.index).ffill()
     bench_met = metrics(bench_nav, pd.Series(1.0, index=nav.index), 1, bt.account.capital)
-    led = pd.DataFrame(bt.account.ledger)
-    first_trade = led["date"].min() if len(led) else "无"
+    first_trade = fills["date"].min() if trades else "无"
     lines = ["v1 本地天级回测（动量轮动基线）", "宇宙: %d 只可信复权ETF" % len(bt.universe),
              "窗口: %s → %s (%d 交易日)" % (nav.index[0].date(), nav.index[-1].date(), len(nav)),
              "", "数据覆盖：",
              "  首个成交日 %s；此前年份空仓。" % first_trade,
              "  结果仅覆盖该缓存宇宙与其上市区间，非全市场无偏验证。",
+             "  收盘成交近似；按复权因子调整在手份额 %d 次，现金分红隐含再投资。"
+             % (len(ledger) - trades),
              "", "指标："]
     for key, value in met.items():
         lines.append("  %-12s %s" % (key, _fmt(value)))
@@ -302,13 +307,13 @@ def main():
     parser.add_argument("--end", default=None)
     parser.add_argument("--capital", type=float, default=1_000_000.0)
     parser.add_argument("--cache-dir", default=None,
-                        help="LocalEtfData 兼容缓存目录，如 research/data/etf_daily_ad")
+                        help="LocalEtfData 兼容缓存目录，默认 research/data/etf_daily_ad")
     parser.add_argument("--out", default=str(STUDY / "results" / "v1_local"))
     args = parser.parse_args()
     bt = MomentumLocal(capital=args.capital, cache_dir=args.cache_dir)
     end = args.end or bt.cal[-1]
     nav, expo = bt.run(args.start, end)
-    bench = bt.benchmark(args.start, end, args.capital)
+    bench = bt.benchmark(nav.index[0], nav.index[-1], args.capital)
     text = write_report(bt, nav, expo, bench, Path(args.out))
     print("[diag] 池无效日 %d | 排名不完整日 %d"
           % (bt.diag["pool_invalid"], bt.diag["rank_incomplete"]))

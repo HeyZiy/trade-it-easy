@@ -46,7 +46,6 @@ env/
 /data/migrations/
 /data/etf_account.json*
 /data/core_account.json*
-/data/industry_momentum_pool.json*
 /data/position_exit_state.json
 /data/environment.json
 /data/AmazingData_local_data
@@ -84,6 +83,7 @@ CLAUDE.md
 
 # 研究数据集需入库的元信息（数据体仍忽略）
 !research/data/**/manifest.json
+!research/studies/etf/industry_etf_universe.json
 
 # 研究绘图产物，可由 plot_curves.py 重新生成
 plots/

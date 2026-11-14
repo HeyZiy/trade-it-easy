@@ -1,9 +1,9 @@
 """质量动量实际账户建议：复用策略判定，冻结本轮份额，只消费人工确认成交。"""
 
 from dataclasses import asdict, replace
-import hashlib
 import json
 
+from src.advice_identity import short_digest
 from src.quality_pool import config, execution
 
 
@@ -39,7 +39,7 @@ def make_signal(day, state, snapshot, previous=None):
               "budget": snapshot.equity, "issues": None,
               "blocked": [asdict(b) for b in result.blocked], "round": plan is not None,
               "next_signal_date": state.get("next_signal_date")}
-    signal["id"] = hashlib.sha256(json.dumps(signal, sort_keys=True).encode()).hexdigest()[:24]
+    signal["id"] = short_digest(json.dumps(signal, sort_keys=True))
     return signal
 
 

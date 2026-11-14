@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 """报告数据源注册表。
 
-投资账户提供共享资金与持仓；行业、质量池及跨资产动量的独立观察各提供一份
+投资账户提供共享资金与持仓；质量池及跨资产动量的独立观察各提供一份
 运行记录。数据源不等于策略：多资产配置和接入账户后的轮动都从投资账户分配份额。
 """
 from __future__ import annotations
@@ -20,13 +20,13 @@ class AccountSource:
     ledger_path: str
     label: str
     benchmark: Dict
+    is_investment: bool = False
 
 
 def all_sources():
     """枚举报告数据源：投资账户及各独立观察记录。"""
     from src.etf.config import ACCOUNT_SOURCE as core
-    from src.etf.industry_account import ACCOUNT_SOURCE as industry
     from src.etf.rotation import ACCOUNT_SOURCE as rotation
     from src.quality_pool.config import ACCOUNT_SOURCE as quality_pool
 
-    return [core, industry, quality_pool, rotation]
+    return [core, quality_pool, rotation]

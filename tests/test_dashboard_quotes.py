@@ -14,7 +14,7 @@ from uuid import uuid4
 import pytest
 
 import dashboard
-from src import etf_account as wallet, trading_calendar
+from src import account_valuation, etf_account as wallet, trading_calendar
 from src.dashboard_quotes import QuoteRefresh
 from src.trade_ledger.closing_prices import ClosingPrices
 
@@ -52,7 +52,8 @@ def wait_finished(refresh, path):
 
 
 def test_valuation_day_uses_confirmed_calendar_for_weekends_and_holidays(monkeypatch):
-    monkeypatch.setattr(wallet, "latest_trading_day_on_or_before", trading_calendar.latest_trading_day_on_or_before)
+    monkeypatch.setattr(account_valuation, "latest_trading_day_on_or_before",
+                        trading_calendar.latest_trading_day_on_or_before)
     dates = [date(2025, 1, 24), date(2025, 1, 27), date(2025, 2, 5)]
     monkeypatch.setattr(trading_calendar, "get_trading_dates",
                         lambda start, end: [day for day in dates if start <= day <= end])
@@ -79,7 +80,8 @@ def test_calendar_recovers_after_temporary_failure(monkeypatch):
     monkeypatch.setattr(trading_calendar, "monotonic", lambda: now[0])
     monkeypatch.setattr(trading_calendar, "_refresh_after", float("-inf"))
     monkeypatch.setattr(trading_calendar, "_trading_dates", [])
-    monkeypatch.setattr(wallet, "latest_trading_day_on_or_before", trading_calendar.latest_trading_day_on_or_before)
+    monkeypatch.setattr(account_valuation, "latest_trading_day_on_or_before",
+                        trading_calendar.latest_trading_day_on_or_before)
     assert wallet.valuation_day(TODAY) is None
     now[0] = 59
     assert wallet.valuation_day(TODAY) is None
@@ -94,7 +96,7 @@ def test_scheduled_report_collects_targets_and_current_holdings_for_valuation(ac
     days = [date.fromisoformat(PRICE_DAY), TODAY]
     monkeypatch.setattr(entry, "get_trading_dates", lambda start, end: [d for d in days if start <= d <= end])
     monkeypatch.setattr("src.account_sources.all_sources", lambda: [
-        SimpleNamespace(ledger_path=str(account), label="投资账户", benchmark={}),
+        SimpleNamespace(ledger_path=str(account), label="投资账户", benchmark={}, is_investment=True),
     ])
     calls = []
 

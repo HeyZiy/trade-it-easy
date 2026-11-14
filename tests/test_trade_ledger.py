@@ -109,12 +109,12 @@ def test_derive_carries_account_attribution():
     trades = [
         _trade("2026-09-22", qty=100),                     # 未打标 → core
         _trade("2026-09-23", code="159611", name="电力ETF",
-               qty=200, account="satellite"),
+               qty=200, account="etf_rotation"),
     ]
     snap = derive(trades, as_of="2026-09-24")
     by_code = {p["code"]: p for p in snap.positions}
     assert by_code["600519"]["account"] == "core"
-    assert by_code["159611"]["account"] == "satellite"
+    assert by_code["159611"]["account"] == "etf_rotation"
 
 
 def test_derive_oversell_breaks_consistency():

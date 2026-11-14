@@ -30,7 +30,8 @@ class SecondaryStudyTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             folder = Path(tmp)
             prices.rename_axis('date').to_csv(folder / 'etf_hfq_513180.csv')
-            with patch.object(s.base, 'STUDY', folder), patch.object(s.base, 'PE_CACHE', folder), \
+            with patch.object(s.base, 'STUDY', folder), patch.object(s.base, 'ETF_DATA', folder), \
+                    patch.object(s.base, 'PE_DATA', folder), \
                     patch.object(s.base, 'ASSETS', (AssetSpec('513180', '恒生科技ETF', ''),)), \
                     patch.object(sys, 'path', sys.path.copy()), redirect_stdout(io.StringIO()):
                 runpy.run_path(str(study / 'run_level1.py'), run_name='__main__')
@@ -55,7 +56,8 @@ class SecondaryStudyTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             folder = Path(tmp)
             prices.rename_axis('date').to_csv(folder / 'etf_hfq_513180.csv')
-            with patch.object(s, 'OUT', folder / 'out'), patch.object(s.base, 'PE_CACHE', folder), \
+            with patch.object(s, 'OUT', folder / 'out'), patch.object(s.base, 'ETF_DATA', folder), \
+                    patch.object(s.base, 'PE_DATA', folder), \
                     patch.object(s.base, 'ASSETS', (AssetSpec('513180', '恒生科技ETF', ''),)), \
                     redirect_stdout(io.StringIO()):
                 s.main()

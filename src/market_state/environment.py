@@ -55,7 +55,7 @@ class GateVerdictView:
         """数据日期落后 as-of 交易日的**交易日**数（假期与周末不涨，周末顺延不误报）。
 
         锚点取 ≤今天的最近交易日：日历上不存在更新的日线时，快照不算旧。
-        日历不可用回退自然日（宁可放行不误杀，同 industry_momentum.pool_needs_rebuild）。
+        日历不可用回退自然日（宁可放行不误杀）。
         """
         if not self.data_date:
             return None

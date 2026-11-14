@@ -30,7 +30,6 @@ ROOT = Path(os.environ.get("TRADE_DASHBOARD_ROOT", APP_ROOT)).resolve()
 # （test_display_table_covers_registry_accounts 强制两侧对齐）。
 DISPLAY = (
     (ETF_FILENAME, "etf", "投资账户"),
-    ("trade_ledger_industry_momentum.jsonl", "satellite", "行业动量"),
     ("trade_ledger_etf_rotation.jsonl", "rotation", "跨资产动量"),
     ("trade_ledger_quality_pool_v2.jsonl", "quality", "质量动量"),
 )
@@ -184,7 +183,7 @@ def _report_files(root) -> list:
     """最近报告清单：按前缀取最新一份，供总览与 /report/ 白名单共用。"""
     report_dir = root / "reports"
     reports = []
-    for prefix, label in (("etf_weekly", "多资产配置"), ("industry_momentum", "行业动量"),
+    for prefix, label in (("etf_weekly", "多资产配置"),
                           ("etf_rotation", "跨资产动量"), ("quality_pool", "质量动量")):
         files = sorted(report_dir.glob(prefix + "_????????.md"), reverse=True)
         if files:
@@ -194,7 +193,7 @@ def _report_files(root) -> list:
 
 
 def _state_detail(filename: str, state) -> str:
-    """状态文件摘要行：质量池给信号节奏，行业池给重建与成员数。"""
+    """状态文件摘要行：质量池给信号节奏。"""
     if filename.startswith("quality"):
         return (f"上次信号：{state.get('last_signal_date') or '暂无'}；"
                 f"下次计划：{state.get('next_signal_date') or '暂无'}；"
@@ -226,12 +225,9 @@ def dashboard_data(root=ROOT):
         if strategy["id"] in {"rotation", "quality"}:
             strategy["observation"] = strategy_view(
                 strategy["id"], strategy["name"] + " · 独立模拟", by_id.get(strategy["id"]), None)
-    observations = [strategy_view(key, name, by_id.get(key), None)
-                    for key, name in (("satellite", "行业轮动"),)]
     reports = _report_files(root)
     states = []
-    for filename, label in (("quality_pool_v2_state.json", "质量动量状态"),
-                            ("industry_momentum_pool.json", "行业池状态")):
+    for filename, label in (("quality_pool_v2_state.json", "质量动量状态"),):
         path = root / "data" / filename
         try:
             detail = _state_detail(filename, json.loads(path.read_text(encoding="utf-8")))
@@ -239,7 +235,7 @@ def dashboard_data(root=ROOT):
             detail = "状态文件不存在或无法读取"
         states.append({"name": label, "detail": detail})
     return {"generated_at": datetime.now().astimezone().isoformat(timespec="seconds"),
-            "accounts": [account], "strategies": strategies, "observations": observations,
+            "accounts": [account], "strategies": strategies, "observations": [],
             "reports": reports, "states": states}
 
 

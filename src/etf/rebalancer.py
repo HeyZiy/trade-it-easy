@@ -126,7 +126,7 @@ class ETFRebalancer:
         """拆分核心持仓与卫星（非核心）持仓。
 
         归属看台账自带的 account 标签（写入侧由各策略 execute_batch 打标：
-        core/satellite/quality_pool），不再用代码名单反推——名单会随池轮换失效。
+        core/quality_pool/etf_rotation），不再用代码名单反推——名单会随池轮换失效。
         卫星持仓独立预算，不参与核心仓偏离计算；
         核心资金 = 总资产 − 卫星持仓市值。
 

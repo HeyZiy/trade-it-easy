@@ -6,7 +6,7 @@ import json
 import numpy as np
 import pandas as pd
 
-DEFAULT_CACHE = Path(__file__).resolve().parent / "_cache"
+DEFAULT_AD_CACHE = Path(__file__).resolve().parents[2] / "data" / "etf_daily_ad"
 PRICE_FIELDS = ("open", "high", "low", "close")
 SCHEMA_VERSION = 2
 
@@ -15,13 +15,15 @@ class LocalEtfData:
     """数据缓存读取器，不模拟平台撮合，也不把缺行情断言为真实停牌。"""
 
     def __init__(self, cache_dir=None):
-        self.cache_dir = Path(cache_dir) if cache_dir else DEFAULT_CACHE
+        self.cache_dir = Path(cache_dir) if cache_dir else DEFAULT_AD_CACHE
         manifest_path = self.cache_dir / "manifest.json"
         if not manifest_path.exists():
-            raise FileNotFoundError("请先运行 python -m research.tools.etf_data.fetch")
+            raise FileNotFoundError(
+                f"缺少 {manifest_path}，请用 python -m research.tools.etf_data.fetch_ad 构建缓存"
+            )
         self.manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
         if self.manifest.get("schema_version") != SCHEMA_VERSION:
-            raise ValueError("旧缓存不含可信复权信息，请用 etf_data.fetch --rebuild 迁移")
+            raise ValueError(f"{manifest_path} 的缓存版本不兼容，要求 schema {SCHEMA_VERSION}")
         self.frames = {}
         self.securities_table = pd.read_csv(self.cache_dir / "etf_securities.csv",
                                              dtype={"code": str}).set_index("code")

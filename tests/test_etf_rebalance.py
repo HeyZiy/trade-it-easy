@@ -173,9 +173,6 @@ def test_no_orders_reason_is_about_the_order_filter_not_absence_of_deviation():
     assert "无偏离" not in plan.reason, plan.reason
 
 
-# 卫星仓买侧场景测试已随日频轮动迁移迁往 tests/test_industry_momentum.py
-
-
 # ══════════════ 持仓归属拆分：看台账 account 标签，不看代码名单 ══════════════
 
 def test_split_rotation_uses_account_label():
@@ -185,7 +182,7 @@ def test_split_rotation_uses_account_label():
         _pos("159611", "电力ETF", 2000, 1.10),
         _pos("159530", "机器人ETF", 500, 1.00),
     ]
-    positions[1]["account"] = "satellite"
+    positions[1]["account"] = "etf_rotation"
     positions[2]["account"] = "quality_pool"
     core, rot_mv, rot = R.split_rotation_positions(positions)
     assert [p["code"] for p in core] == ["563360"]
@@ -196,7 +193,7 @@ def test_split_rotation_uses_account_label():
 def test_split_rotation_does_not_read_pool_files():
     """归属不再依赖池快照/旧名单：卫星代码不在任何清单里也照样识别。"""
     positions = [_pos("999999", "无清单标的", 100, 2.0)]
-    positions[0]["account"] = "satellite"
+    positions[0]["account"] = "etf_rotation"
     core, rot_mv, rot = R.split_rotation_positions(positions)
     assert core == [] and len(rot) == 1 and rot_mv == 200.0
 

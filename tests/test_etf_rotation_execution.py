@@ -96,20 +96,26 @@ def test_public_dividend_dates_are_preserved_and_success_is_cached(monkeypatch, 
     assert len(calls) == 1
 
 
-def test_entry_books_dividend_once_and_dry_run_never_changes_ledger(monkeypatch, tmp_path):
+@pytest.mark.parametrize("market_blocked", [False, True])
+def test_entry_books_dividend_once_and_dry_run_never_changes_ledger(
+    monkeypatch, tmp_path, market_blocked,
+):
     path = tmp_path / 'ledger.jsonl'
     append_trade(TradeRecord('2026-09-01','510300','ETF','buy',100,10.,account=ACCOUNT),path)
     event = dict(date='2026-09-03',record_date='2026-09-02',pay_date='2026-09-07',
                  cash_per_share=1.,split_ratio=1.)
     row = RotationRow('510300','ETF','股票',9.,9.,1.,True,1)
-    diag = dict(n=1,pool=15,eligible=1,realtime_missing=0,prev_trading_day='2026-09-02',
+    rows = [] if market_blocked else [row]
+    diag = dict(n=len(rows),pool=15,eligible=len(rows),realtime_missing=0,prev_trading_day='2026-09-02',
                 dividends={'510300':[event]})
     monkeypatch.setattr(entry,'LEDGER_PATH',path)
-    monkeypatch.setattr(entry,'rotation_snapshot',lambda **kwargs:([row],{'510300':9.},diag))
+    monkeypatch.setattr(entry,'rotation_snapshot',lambda **kwargs:(rows,{'510300':9.},diag))
     before = path.read_bytes()
     entry.run(dry_run=True,trade_date='2026-09-03')
     assert path.read_bytes() == before
-    entry.run(trade_date='2026-09-03')
+    report = entry.run(trade_date='2026-09-03')
+    assert "已登记分红权益 1 项" in report
+    assert ("## ⛔ 本次不执行" in report) == market_blocked
     entry.run(trade_date='2026-09-03')
     trades=load_trades(path)
     assert [t.side for t in trades] == ['buy','dividend']

@@ -30,9 +30,6 @@ logger = logging.getLogger(__name__)
 def _ledger_path(args):
     if args.path is not None:
         return args.path
-    if args.account == "satellite":
-        from src.etf.industry_account import LEDGER_PATH
-        return LEDGER_PATH
     if args.account == "quality_pool":
         from src.quality_pool.config import ACCOUNT_SOURCE
         return ACCOUNT_SOURCE.ledger_path
@@ -122,7 +119,7 @@ def main() -> int:
     sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8')
     parser = argparse.ArgumentParser(description="名义影子成交台账 CLI")
     parser.add_argument("--path", default=None,
-                        help="流水 JSONL 路径（默认ETF账户；satellite 使用行业独立台账）")
+                        help="流水 JSONL 路径（默认ETF账户）")
     sub = parser.add_subparsers(dest="cmd", required=True)
 
     po = sub.add_parser("open", help="手动记建仓（实盘底仓补记）")

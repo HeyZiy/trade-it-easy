@@ -30,6 +30,7 @@ def accounts(tmp_path, monkeypatch):
     # 账户事实的缝＝模拟账户描述符（src/account_sources 各家单点），不再逐家戳源模块常量。
     monkeypatch.setattr("src.etf.config.ACCOUNT_SOURCE.ledger_path", str(main))
     monkeypatch.setattr("src.etf.config.ACCOUNT_SOURCE.benchmark", BENCHMARK)
+    monkeypatch.setattr("src.etf.config.ACCOUNT_SOURCE.is_investment", False)
     monkeypatch.setattr("src.quality_pool.config.ACCOUNT_SOURCE.ledger_path", str(pool))
     monkeypatch.setattr("src.etf.rotation.ACCOUNT_SOURCE.ledger_path", str(rotation))
     monkeypatch.setattr(entry, "get_trading_dates", calendar)
@@ -88,6 +89,22 @@ def test_valid_records_are_not_refetched(accounts, monkeypatch):
     _, errors = entry.run(now=NOW, backfill=True)
     assert calls == [] and errors == 0
     assert performance_path(main).read_bytes() == saved
+
+
+def test_backdated_trade_refreshes_complete_history_and_target(accounts, monkeypatch):
+    import portfolio_report as entry
+    main, _, _ = accounts
+    patch_feed(monkeypatch)
+    entry.run(now=NOW, backfill=True)
+    before = load_performance(main)["records"]
+    append_trade(TradeRecord("2026-09-22", "510300", "测试ETF", "buy", 100, 9), main)
+
+    report, errors = entry.run(now=NOW, backfill=True)
+
+    after = load_performance(main)["records"]
+    assert errors == 0 and "已补齐：2026-09-22" in report
+    assert [row["nav"] for row in after] == pytest.approx([1.0001, 1.0001])
+    assert all(new["fingerprint"] != old["fingerprint"] for old, new in zip(before, after))
 
 
 def test_missing_rows_are_created(accounts, monkeypatch):

@@ -15,7 +15,7 @@ const STRATEGY_NAMES = {core:'多资产配置', rotation:'跨资产动量', qual
 const HOLDING_NAMES = {etf:'ETF', stock:'股票', other:'其他持仓', fund:'场外基金'};
 const isFundTrade = side => typeof side === 'string' && side.startsWith('fund_');
 const fundShares = value => finite(value) ? value.toLocaleString('zh-CN', {maximumFractionDigits:6}) : '—';
-const REPORT_PREFIX = {core:'etf_weekly_', satellite:'industry_momentum_', rotation:'etf_rotation_', quality:'quality_pool_'};
+const REPORT_PREFIX = {core:'etf_weekly_', rotation:'etf_rotation_', quality:'quality_pool_'};
 const ALLOCATION_TOLERANCE = 0.01;
 const allocationToleranceNote = `${ALLOCATION_TOLERANCE*100} 个百分点内视为配平`;
 const isAllocationBalanced = deviation => Math.abs(deviation) <= ALLOCATION_TOLERANCE + Number.EPSILON;

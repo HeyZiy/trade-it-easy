@@ -13,7 +13,7 @@ A 股交易日历（公共模块）
 """
 
 import logging
-from datetime import date, datetime, timedelta
+from datetime import date, datetime, timedelta, timezone
 from threading import Lock
 from time import monotonic
 from typing import List, Optional
@@ -22,9 +22,15 @@ import pandas as pd
 
 logger = logging.getLogger(__name__)
 
+SHANGHAI = timezone(timedelta(hours=8))
+
 _trading_dates: List[date] = []
 _calendar_lock = Lock()
 _refresh_after = float("-inf")
+
+
+def shanghai_today() -> date:
+    return datetime.now(SHANGHAI).date()
 
 
 def _ensure_loaded() -> None:

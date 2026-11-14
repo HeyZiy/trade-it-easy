@@ -230,7 +230,7 @@ def get_index_daily(code: str, days: int = 400) -> Optional[pd.DataFrame]:
     return _finalize(df)
 
 
-# ── 动态规则池取数（strategy/industry_momentum.md v3_1 口径专用）──
+# ── 动态规则池取数（全市场在市 ETF 名单）──
 
 def get_etf_universe() -> Optional[pd.DataFrame]:
     """全市场在市 ETF 名单（新浪单源）：DataFrame[code(6位裸码), name]。

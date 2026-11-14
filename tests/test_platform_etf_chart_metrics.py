@@ -1,5 +1,4 @@
 """聚宽副图按实际成交和持仓统计，不改变交易或年度收益口径。"""
-import ast
 import importlib.util
 import math
 import sys
@@ -11,17 +10,16 @@ import numpy as np
 import pytest
 
 
-FOLDER = Path(__file__).resolve().parents[1] / 'research/studies/rotation'
-SCRIPTS = ['unified_coverage.py', 'unified_energy17.py', 'study_etf_fit_jq.py']
+SCRIPT = Path(__file__).resolve().parents[1] / 'research/studies/rotation/unified.py'
 
 
-@pytest.fixture(params=SCRIPTS)
-def world(request, monkeypatch):
+@pytest.fixture
+def world(monkeypatch):
     api = types.ModuleType('jqdata')
     api.g = types.SimpleNamespace()
     api.sum, api.min, api.max = np.sum, np.min, np.max
     monkeypatch.setitem(sys.modules, 'jqdata', api)
-    spec = importlib.util.spec_from_file_location('chart_test', FOLDER / request.param)
+    spec = importlib.util.spec_from_file_location('chart_test', SCRIPT)
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     errors, records = [], []
@@ -59,13 +57,9 @@ def test_turnover_uses_actual_fills_and_previous_equity(world, amounts, expected
     }
     w.module.after_market_close(w.context)
     assert w.records[-1] == {'单边换手%': expected, '实际仓位%': 25.}
-    if hasattr(w.module.g, 'yearly_performance'):
-        performance = w.module.g.yearly_performance[2024]
-        assert performance['start_value'] == 100000.
-        assert performance['end_value'] == 120000.
-    else:
-        assert w.module.g.year_stats[2024]['start'] == 100000.
-        assert w.module.g.year_stats[2024]['end'] == 120000.
+    performance = w.module.g.yearly_performance[2024]
+    assert performance['start_value'] == 100000.
+    assert performance['end_value'] == 120000.
     assert not w.errors
 
 
@@ -79,9 +73,7 @@ def test_failed_trade_read_is_unknown_and_does_not_stop_annual_stats(world):
     assert math.isnan(w.records[-1]['单边换手%'])
     assert w.records[-1]['实际仓位%'] == 0.
     assert 'trades unavailable' in w.errors[-1]
-    previous = getattr(w.module.g, 'stats_last_total_value',
-                       getattr(w.module.g, 'previous_value', None))
-    assert previous == 100000.
+    assert w.module.g.stats_last_total_value == 100000.
 
 
 def test_missing_held_value_does_not_fabricate_cash_exposure(world):
@@ -93,13 +85,3 @@ def test_missing_held_value_does_not_fabricate_cash_exposure(world):
     assert w.records[-1]['单边换手%'] == 0.
     assert math.isnan(w.records[-1]['实际仓位%'])
     assert w.errors
-
-
-def test_all_standalone_scripts_share_the_same_chart_definition():
-    definitions = []
-    for name in SCRIPTS:
-        tree = ast.parse((FOLDER / name).read_text(encoding='utf-8'))
-        helper = next(node for node in tree.body if isinstance(node, ast.FunctionDef)
-                      and node.name == 'record_execution_metrics')
-        definitions.append(ast.dump(helper))
-    assert len(set(definitions)) == 1

@@ -4,7 +4,7 @@
 任务收尾 I/O（报告落盘 + 通知推送）
 ===================================
 
-各入口脚本（etf_observe / industry_momentum / quality_pool）
+各入口脚本（etf_observe / etf_rotation / quality_pool）
 共用的收尾两个动作——历史上四处逐字复制同一函数体，只差文件名前缀。
 
 - save_report：Markdown 报告落盘 reports/{prefix}_{YYYYMMDD}.md，返回路径。

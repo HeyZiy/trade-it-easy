@@ -91,6 +91,7 @@ def pe_level(pe_pct: float) -> str:
 ACCOUNT_SOURCE = AccountSource(
     ledger_path=f"data/{FILENAME}",
     label="投资账户",
+    is_investment=True,
     benchmark={"name": "ETF期初权重买入持有（现金零收益，不再平衡）",
                "account": "etf"},
 )

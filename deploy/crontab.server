@@ -42,9 +42,6 @@
 # ── 跨资产动量：每交易日 10:40 更新账户建议、独立模拟台账并推送 ──
 40 10 * * 1-5 cd /root/trade-it-easy && flock -n /tmp/etf-rotation.lock /root/miniconda/envs/rt/bin/python etf_rotation.py > /dev/null 2>> logs/cron_error.log
 
-# ── 行业动量轮动（卫星仓）：每交易日 14:50 尾盘（截面排名→卖出/买入→推送）──
-50 14 * * 1-5 cd /root/trade-it-easy && flock -n /tmp/industry_momentum.lock /root/miniconda/envs/rt/bin/python industry_momentum.py > /dev/null 2>> logs/cron_error.log
-
 # ── 收盘成绩：次日08:30（北京时间）采集上一交易日ETF共享组合、质量池与跨资产动量轮动，
 #    并回补最近5个交易日不完整记录；给ETF日线源留出整夜；缺价保留最近完整成绩；
 #    不交易、不推送、不生成日报（成绩看板在 dashboard）──

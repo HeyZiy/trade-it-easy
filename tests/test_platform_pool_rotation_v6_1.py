@@ -2,8 +2,7 @@
 import numpy as np
 import pytest
 
-from test_platform_pool_rotation_v6 import start
-from test_platform_quality_pool_v2 import world  # noqa: F401
+from test_platform_pool_rotation_v6 import start, world  # noqa: F401
 
 
 def rising_world(world):

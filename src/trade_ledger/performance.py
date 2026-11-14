@@ -11,6 +11,7 @@ from pathlib import Path
 import tempfile
 
 from .ledger import DEFAULT_LEDGER_PATH, NOMINAL_EQUITY, derive, load_trades
+from .closing_prices import holding_closes
 
 logger = logging.getLogger(__name__)
 
@@ -42,6 +43,11 @@ def _fingerprint(trades, asof):
 
 def _positive(value):
     return isinstance(value, (int, float)) and math.isfinite(value) and value > 0
+
+
+def record_matches_trades(trades, record):
+    """成绩仅在其日期之前的流水仍相同时有效。"""
+    return record.get("fingerprint") == _fingerprint(trades, record["date"])
 
 
 def _save(ledger_path, state):
@@ -89,13 +95,14 @@ def collect_close(ledger_path, asof, benchmark, *, close_prices, index_prices,
     spec = state["benchmark"]  # 首次采集后冻结，配置变更不重写历史对照。
     unpriced = derive(trades, asof)
     codes = sorted(unpriced.held_counts())
+    prices, missing = {}, []
     issues = []
     try:
-        prices = close_prices(codes, asof) if codes else {}
+        if codes:
+            prices, missing = holding_closes(codes, asof, close_prices)
     except Exception:
         logger.exception("收盘持仓估值失败")
-        prices = {}
-    missing = [c for c in codes if not _positive(prices.get(c))]
+        missing = codes
     if missing:
         issues.append("估值不完整，缺少收盘价：" + "、".join(missing))
     snapshot = derive(trades, asof, {c: prices[c] for c in codes if c not in missing})
@@ -165,7 +172,7 @@ def valid_records(trades, records, asof):
     """
     rows = [r for r in records if r["date"] <= asof]
     valid = [r for r in rows if _positive(r.get("nav"))
-             and r.get("fingerprint") == _fingerprint(trades, r["date"])]
+             and record_matches_trades(trades, r)]
     return rows, valid
 
 
@@ -206,7 +213,7 @@ def render_summary(ledger_path=DEFAULT_LEDGER_PATH, *, today=None, label="组合
             lines.extend(f"⚠️ {rows[-1]['date']}：{issue}" for issue in rows[-1]["issues"])
         lines.append("")
         if rows:
-            if rows[-1]["fingerprint"] != _fingerprint(trades, rows[-1]["date"]):
+            if not record_matches_trades(trades, rows[-1]):
                 lines.append("⚠️ 台账补记后历史估值已失效，须重新采集对应日期。")
     except Exception:
         logger.exception("模拟成绩读取失败")

@@ -37,7 +37,7 @@ python -m research.studies.timing.experiments.grid_reanchor
 python -m research.studies.timing.plot_curves
 ```
 
-已有缓存时，直接运行一级或二级。一级读取[assets.py](assets.py)中的全部12只ETF；二级目前只运行恒生科技，固定规则在run_level2.py的PRESETS中。绘图只读已生成的 daily 曲线，可用 `--layer`、`--code` 缩小范围。
+已有数据时，直接运行一级或二级。一级读取[assets.py](assets.py)中的全部12只ETF；二级目前只运行恒生科技，固定规则在run_level2.py的PRESETS中。绘图只读已生成的 daily 曲线，可用 `--layer`、`--code` 缩小范围。
 
 ## 目录
 
@@ -54,10 +54,12 @@ timing/
 ├─ docs/
 │  ├─ FINDINGS.md      当前结论
 │  └─ METHOD.md        统一口径
-├─ results/            各层原始输出与 plots/；csv、json 与 html 均不入库
-│  ├─ level1/          一级当前结果
-│  ├─ level2/513180/   二级当前结果
-│  ├─ chi_next_drawdown/ 创业板回撤诊断
-│  └─ supplementary/   族扫描与网格频率对照
-└─ _cache/             行情与PE缓存
+└─ results/            各层原始输出与 plots/；csv、json 与 html 均不入库
+   ├─ level1/          一级当前结果
+   ├─ level2/513180/   二级当前结果
+   ├─ chi_next_drawdown/ 创业板回撤诊断
+   └─ supplementary/   族扫描与网格频率对照
 ```
+
+行情与 PE 数据在 `research/data/etf_hfq_em/` 与 `research/data/index_pe_lg/`，
+CSV 不入库，口径与重生成见各目录 README 与 manifest。

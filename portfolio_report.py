@@ -6,6 +6,7 @@
 
 import argparse
 from datetime import datetime, timedelta, timezone
+from functools import partial
 import logging
 import math
 
@@ -14,7 +15,10 @@ from src.cron_entry import hard_exit
 from src.logging_config import setup_logging
 from src.trading_calendar import get_trading_dates
 from src.trade_ledger.closing_prices import ClosingPrices
-from src.trade_ledger.performance import collect_close, load_performance, render_summary
+from src.trade_ledger.ledger import load_trades
+from src.trade_ledger.performance import (
+    collect_close, load_performance, record_matches_trades, render_summary,
+)
 
 logger = logging.getLogger(__name__)
 SHANGHAI = timezone(timedelta(hours=8))
@@ -54,6 +58,43 @@ def _collect(path, day, benchmark, feed, dry_run):
                          trading_dates=get_trading_dates, dry_run=dry_run)
 
 
+def _collect_dates(state, target, window, *, first_day, collect, matches, label,
+                   refresh_target=False):
+    """补齐窗口内缺失、未完成或已失效的成绩，再处理目标日。"""
+    healed, lingering = [], []
+    for day in window:
+        if day >= target or (first_day and day.isoformat() < first_day):
+            continue
+        row = _record(state, day.isoformat())
+        if _complete(row) and matches(state, row):
+            continue
+        try:
+            state = collect(day)
+        except Exception:
+            logger.exception("[回补] %s %s 采集失败", label, day)
+            lingering.append(f"{day}（采集失败）")
+            continue
+        row = _record(state, day.isoformat())
+        if _complete(row) and matches(state, row):
+            healed.append(str(day))
+        elif row is not None:
+            lingering.append(f"{day}（{'；'.join(row.get('issues', [])) or '估值无效'}）")
+        else:
+            lingering.append(f"{day}（未生成记录）")
+    row = _record(state, target.isoformat())
+    if refresh_target or not _complete(row) or not matches(state, row):
+        state = collect(target)
+    return state, healed, lingering
+
+
+def _backfill_notes(notes, label, healed, lingering):
+    if healed:
+        notes.append(f"- {label} 已补齐：{'、'.join(healed)}")
+    if lingering:
+        notes.append(f"- {label} 仍不完整：{'、'.join(lingering)}")
+        logger.warning("[回补] %s 仍不完整：%s", label, "、".join(lingering))
+
+
 def run(*, asof=None, dry_run=False, now=None, backfill=False):
     from src.account_sources import all_sources
 
@@ -67,9 +108,8 @@ def run(*, asof=None, dry_run=False, now=None, backfill=False):
         raise ValueError("目标日期不是已确认交易日")
     feed = ClosingPrices()
     accounts = all_sources()
-    from pathlib import Path
     from src.etf_account import (
-        FILENAME, collect_close as collect_core_close, load as load_core, refresh_close_prices,
+        collect_close as collect_core_close, load as load_core, refresh_close_prices,
         refresh_fund_navs, render_summary as core_summary, revision, valuation_day,
     )
     from src.fund_plans import record_due_subscriptions
@@ -80,7 +120,7 @@ def run(*, asof=None, dry_run=False, now=None, backfill=False):
     for account in accounts:
         path, label, benchmark = (account.ledger_path, account.label,
                                   account.benchmark)
-        if Path(path).name == FILENAME:
+        if account.is_investment:
             try:
                 state = load_core(path)
                 if asof is None and not dry_run:
@@ -99,13 +139,16 @@ def run(*, asof=None, dry_run=False, now=None, backfill=False):
                             logger.info("定投补记 %s 笔待确认申购", len(recorded))
                     except Exception:
                         logger.exception("定投补记失败，跳过本轮（下次运行自动补上）")
-                for day in window:
-                    if day >= target or day.isoformat() <= state["initial"]["date"]:
-                        continue
-                    old = _record(state, day.isoformat())
-                    if not _complete(old) or old.get("revision") != revision(state, day.isoformat()):
-                        state = collect_core_close(path, day.isoformat(), feed.close_prices, dry_run=dry_run)
-                state = collect_core_close(path, target.isoformat(), feed.close_prices, dry_run=dry_run)
+                    state = load_core(path)
+                first_day = datetime.fromisoformat(state["initial"]["date"]).date() + timedelta(days=1)
+                state, healed, lingering = _collect_dates(
+                    state, target, window, first_day=first_day.isoformat(), label=label,
+                    collect=lambda day: collect_core_close(path, day.isoformat(), feed.close_prices,
+                                                          dry_run=dry_run),
+                    matches=lambda current, row: row.get("revision") == revision(current, row["date"]),
+                    refresh_target=True,
+                )
+                _backfill_notes(notes, label, healed, lingering)
                 if asof is None and not dry_run:
                     try:
                         missing = refresh_close_prices(path, today, valuation_day(today), feed.close_prices)
@@ -130,41 +173,20 @@ def run(*, asof=None, dry_run=False, now=None, backfill=False):
             continue
         try:
             state = load_performance(path)
-            healed, lingering = [], []
-            for day in window:
-                if day >= target:
-                    continue
-                start = state.get("start_date")
-                if start and day.isoformat() < start:
-                    continue
-                if _complete(_record(state, day.isoformat())):
-                    continue
-                try:
-                    state = _collect(path, day, benchmark, feed, dry_run)
-                except Exception:
-                    logger.exception("[回补] %s %s 采集失败", label, day)
-                    lingering.append(f"{day}（采集失败）")
-                    continue
-                row = _record(state, day.isoformat())
-                if _complete(row):
-                    healed.append(str(day))
-                elif row is not None:
-                    lingering.append(f"{day}（{'；'.join(row.get('issues', [])) or '估值无效'}）")
-                else:
-                    lingering.append(f"{day}（未生成记录）")
-            # 自动运行不重采已完整的当日记录；手动 --date 保留强制重算语义。
-            if not backfill or not _complete(_record(state, target.isoformat())):
-                state = _collect(path, target, benchmark, feed, dry_run)
+            trades = load_trades(path)
+            first_day = trades[0].date if trades else target.isoformat()
+            state, healed, lingering = _collect_dates(
+                state, target, window, first_day=first_day, label=label,
+                collect=partial(_collect, path, benchmark=benchmark, feed=feed, dry_run=dry_run),
+                matches=lambda _, row: record_matches_trades(trades, row),
+                refresh_target=not backfill,
+            )
             sections.append(render_summary(path, today=target, label=label, state=state))
             row = _record(state, target.isoformat())
             if row and row["issues"]:
                 errors += 1
                 logger.warning("[收盘提示] %s %s：%s", label, target, "；".join(row["issues"]))
-            if healed:
-                notes.append(f"- {label} 已补齐：{'、'.join(healed)}")
-            if lingering:
-                notes.append(f"- {label} 仍不完整：{'、'.join(lingering)}")
-                logger.warning("[回补] %s 仍不完整：%s", label, "、".join(lingering))
+            _backfill_notes(notes, label, healed, lingering)
         except Exception:
             logger.exception("[收盘成绩降级] %s 采集失败，保留已有成绩", label)
             sections.append(f"## {label}\n\n⚠️ 本次收盘采集失败，保留已有成绩。\n\n"

@@ -17,8 +17,8 @@ def test_source_failure_is_suppressed_but_strategy_impact_is_queued(monkeypatch)
         ))
         assert handler._queue.empty()
         handler.emit(logging.LogRecord(
-            "src.etf.industry_momentum", logging.WARNING, __file__, 1,
-            "[行情降级] 行业动量截面 47/47 只 ETF 已回退到最新收盘价（非实时）",
+            "src.etf.rotation", logging.WARNING, __file__, 1,
+            "[行情降级] 跨资产轮动截面 47/47 只 ETF 已回退到最新收盘价（非实时）",
             (), None,
         ))
         level, message = handler._queue.get_nowait()

@@ -131,7 +131,7 @@ def main():
     roll.round(4).to_csv(OUT / "rolling_summary.csv", index=False, encoding="utf-8-sig")
     print("\n固定3年窗口\n" + roll[roll.years == 3].round(2).to_markdown(index=False))
     files = [Path(__file__), Path(dc.__file__), Path(base.__file__), Path(base.experience.__file__), Path(base.asset_config.__file__),
-             *(base.PE_CACHE / f"etf_hfq_{asset.etf_code}.csv" for asset in base.ASSETS)]
+             *(base.ETF_DATA / f"etf_hfq_{asset.etf_code}.csv" for asset in base.ASSETS)]
     manifest = {"generated_at_utc": datetime.now(timezone.utc).isoformat(),
                 "hashes": {p.name: hashlib.sha256(p.read_bytes()).hexdigest() for p in files},
                 "capital": base.CAPITAL, "cost": base.COST, "lot": base.LOT, "ann": base.ANN,

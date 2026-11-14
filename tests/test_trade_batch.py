@@ -20,7 +20,7 @@ def _sell(code, qty, price, name="甲", reason="r_sell"):
 
 
 def _run(orders, path, **kwargs):
-    kwargs.setdefault("account", "satellite")
+    kwargs.setdefault("account", "etf_rotation")
     kwargs.setdefault("trade_date", "2026-09-27")
     return execute_batch(orders, path=path, **kwargs)
 
@@ -51,7 +51,7 @@ class TestHappyPath:
         assert result.abort is None
         written = load_trades(path)[len(before):]
         assert [t.side for t in written] == ["sell", "buy"]
-        assert all(t.account == "satellite" for t in written)
+        assert all(t.account == "etf_rotation" for t in written)
         assert written[0].reasons == ["r_sell"]
         assert _snapshot(path).cash == 2100.0
 
@@ -67,7 +67,7 @@ class TestHappyPath:
         path = tmp_path / "ledger.jsonl"
         _seed(path, {"510300": 100}, cash=0, account="core")
         result = _run([_sell("510300", 100, 4), _buy("512880", 400, 1)],
-                      path, account="satellite")
+                      path, account="etf_rotation")
         assert result.abort is None and all(o.status == "ok" for o in result.outcomes)
         assert _snapshot(path).cash == 0
         assert _snapshot(path).held_counts()["512880"] == 400
@@ -278,18 +278,24 @@ class TestStrategyCallers:
         report = etf_allocation._recommendation_section(allocation)
         assert "本次建议" in report and load_trades(path) == before
 
-    def test_industry_writes_without_caller_cash_or_holdings(self, tmp_path):
-        import industry_momentum
+    def test_etf_batch_writes_and_reconciles_using_ledger(self, tmp_path):
+        from src.etf.execution import execute_orders
         from src.etf.momentum import EtfOrder
 
         path = tmp_path / "ledger.jsonl"
-        _seed(path, {"510300": 100}, cash=0)
+        before = _seed(path, {"510300": 100}, cash=0)
         orders = [EtfOrder("510300", "ETF", "sell", 100, 4, 400, "exit"),
                   EtfOrder("512880", "ETF", "buy", 400, 1, 400, "entry")]
-        abort, lines = industry_momentum._execute(orders, "2026-09-27", ledger_path=path)
-        assert abort is None and len(lines) == 2
+        result = execute_orders(orders, account="etf_rotation", trade_date="2026-09-27",
+                                ledger_path=path, before=before, prices={})
+
+        assert result.batch.abort is None and len(result.batch.outcomes) == 2
+        assert "已记账 2 笔（买入 1，卖出 1）" in result.summary
+        assert [(p["code"], p["count"], p["market_value"]) for p in result.positions] == [
+            ("512880", 400, 400.0),
+            ("600999", 100, 0.0),
+        ]
         assert _snapshot(path).cash == 0
-        assert _snapshot(path).held_counts()["512880"] == 400
 
 
 class TestOutcomeLine:

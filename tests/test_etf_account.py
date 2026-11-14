@@ -203,7 +203,9 @@ def test_scheduled_report_recollects_changed_actual_history(account, monkeypatch
     import portfolio_report as entry
     monkeypatch.setattr('src.etf_account.ACCOUNT_PATH', account)
     from types import SimpleNamespace
-    monkeypatch.setattr('src.account_sources.all_sources', lambda: [SimpleNamespace(ledger_path=str(account), label='多资产配置', benchmark={})])
+    monkeypatch.setattr('src.account_sources.all_sources', lambda: [
+        SimpleNamespace(ledger_path=str(account), label='多资产配置', benchmark={}, is_investment=True),
+    ])
     days = [date(2025, 1, 6), date(2025, 1, 7)]
     monkeypatch.setattr(entry, 'closed_date', lambda now: days[-1])
     monkeypatch.setattr(entry, 'get_trading_dates', lambda start, end: [d for d in days if start <= d <= end])
@@ -228,7 +230,7 @@ def test_daily_report_refreshes_fund_nav_once_and_preserves_backfill_boundary(ac
     now = datetime(2025, 1, 8, 8, 30, tzinfo=entry.SHANGHAI)
     days = [date(2025, 1, 6), target]
     monkeypatch.setattr("src.account_sources.all_sources", lambda: [
-        SimpleNamespace(ledger_path=str(account), label="投资账户", benchmark={}),
+        SimpleNamespace(ledger_path=str(account), label="投资账户", benchmark={}, is_investment=True),
     ])
     monkeypatch.setattr(entry, "closed_date", lambda _: target)
     monkeypatch.setattr(entry, "get_trading_dates", lambda start, end: [d for d in days if start <= d <= end])
@@ -656,7 +658,7 @@ def test_observation_holdings_never_enter_etf_account_or_funding(account):
     assert wallet['equity'] == 3000 and wallet['cash'] == 1000
     assert rotation['budget'] is None and not rotation['positions']
     assert rotation['observation']['positions'][0]['count'] == 100000
-    assert {s['id'] for s in view['observations']} == {'satellite'}
+    assert view['observations'] == []
 
 def test_cli_observation_routes_never_use_etf_account_file():
     from types import SimpleNamespace

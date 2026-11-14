@@ -6,15 +6,13 @@ ETF 趋势分引擎 — 打分与订单的单点实现
 
 CONTEXT.md「趋势分」：25 根已完成日线收盘 + 当日现价共 26 点，对对数价格做
 加权线性回归（权重 1→2 线性升），分 = 年化涨幅 × 加权 R²；近 3 个日环比
-任一 < 0.95（跳水）清零。公式与两条研究线一致（etf_rotation 的
-unified_coverage.calculate_momentum_score、行业动量的 lM_v3_3_2），
-消费方只调不抄。
+任一 < 0.95（跳水）清零。公式与跨资产轮动研究线一致（etf_rotation 的
+unified_coverage.calculate_momentum_score），消费方只调不抄。
 
-消费方（src/etf/rotation.py 跨资产轮动、src/etf/industry_momentum.py
-行业动量卫星）：
+消费方（src/etf/rotation.py 跨资产轮动）：
 - 规范语义：数据不足/价格非法返回 nan（= 不入候选），跳水返回 0.0；
   不四舍五入（与 0/合格边界的严格比较和排名不因取整改变结论）。
-- 历史口径差（行业侧继承研究线的 nan→0.0、round(…,4)）由消费方在缝上
+- 历史口径差（消费方继承研究线的 nan→0.0、round(…,4)）由消费方在缝上
   适配，不进引擎——改口径改适配层，公式只有一份。
 - SCORE_DAYS / DIVE_RATIO 两个打分参数居此处单点；STALE_DAYS 等窗口
   常量语义随各消费方自己的窗口逻辑，留在消费方。

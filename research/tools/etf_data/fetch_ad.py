@@ -2,11 +2,9 @@
 """从 AmazingData 构建规范化 ETF 研究缓存：python -m research.tools.etf_data.fetch_ad --help。
 
 原始 OHLCV 来自 query_kline，复权来自 get_adj_factor 单次事件乘数按日 cumprod。
-派生宽表/日历/名单/manifest 复用东财工具的 build_cache，产出与 LocalEtfData 兼容的
-schema-2 缓存，默认落在 research/data/etf_daily_ad/（研究数据规范布局，非 _cache）。
+生成与 LocalEtfData 兼容的 schema-2 缓存，默认目录为 research/data/etf_daily_ad/。
 """
 import argparse
-import json
 from pathlib import Path
 import sys
 
@@ -17,11 +15,16 @@ ROOT = Path(__file__).resolve().parents[3]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from research.tools.etf_data.data import PRICE_FIELDS, SCHEMA_VERSION
-from research.tools.etf_data.fetch import (AD_SOURCE, atomic_csv, atomic_json,
-                                           build_cache, cache_is_fresh, normalize_bars)
+from research.tools.etf_data.cache import (
+    AD_SOURCE,
+    atomic_csv,
+    atomic_json,
+    build_cache,
+    cache_is_fresh,
+    normalize_bars,
+)
+from research.tools.etf_data.data import DEFAULT_AD_CACHE, PRICE_FIELDS, SCHEMA_VERSION
 
-DEFAULT_AD_CACHE = ROOT / "research" / "data" / "etf_daily_ad"
 BATCH = 200
 
 

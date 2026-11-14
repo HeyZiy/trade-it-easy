@@ -144,8 +144,8 @@ def atrs(df):
     prev_c = c.shift()
     # fmax 而非 maximum：对齐 DataFrame.max 的 skipna，首行 prev_c 为 NaN 时仍取 h-l
     tr = np.fmax(np.fmax(h - l, (h - prev_c).abs()), (l - prev_c).abs())
-    return (tr.rolling(ATR_FAST).mean().to_numpy(),
-            tr.rolling(ATR_SLOW).mean().to_numpy())
+    return (tr.rolling(ATR_FAST).mean().values,
+            tr.rolling(ATR_SLOW).mean().values)
 
 
 def _shift(a, k):
@@ -228,29 +228,29 @@ def build_indicators(df):
     - open/dev/a5/a20/vol_ratio/swing_high/swing_low/e10（无消费方的中间量）
     prior_down/prior_exh 不再建列，由 stage_prereq 按行取窗口惰性计算。
     """
-    c = df["close"].to_numpy()
-    o = df["open"].to_numpy()
-    h = df["high"].to_numpy()
-    l = df["low"].to_numpy()
-    v = df["volume"].to_numpy()
+    c = df["close"].values
+    o = df["open"].values
+    h = df["high"].values
+    l = df["low"].values
+    v = df["volume"].values
 
-    e10 = ema(df["close"], EMA_FAST).to_numpy()
-    e20 = ema(df["close"], EMA_SLOW).to_numpy()
+    e10 = ema(df["close"], EMA_FAST).values
+    e20 = ema(df["close"], EMA_SLOW).values
     dev = (c - e10) / e10
     a5, a20 = atrs(df)
-    vol_ratio = v / df["volume"].rolling(20).mean().to_numpy()
+    vol_ratio = v / df["volume"].rolling(20).mean().values
 
     ph, pl = pivots(df)
-    swing_high = _shift_ffill(np.where(ph.to_numpy(), h, np.nan), PIVOT_WIN)
-    swing_low = _shift_ffill(np.where(pl.to_numpy(), l, np.nan), PIVOT_WIN)
+    swing_high = _shift_ffill(np.where(ph.values, h, np.nan), PIVOT_WIN)
+    swing_low = _shift_ffill(np.where(pl.values, l, np.nan), PIVOT_WIN)
 
     rng = np.where(h - l == 0, np.nan, h - l)        # (h-l).replace(0, nan)
     long_lower = (np.minimum(c, o) - l) / rng >= 0.4
     long_upper = (h - np.maximum(c, o)) / rng >= 0.4
     bullish, bearish = c > o, c < o
 
-    plat_hi = df["high"].rolling(PLAT_WIN).max().to_numpy()
-    plat_lo = df["low"].rolling(PLAT_WIN).min().to_numpy()
+    plat_hi = df["high"].rolling(PLAT_WIN).max().values
+    plat_lo = df["low"].rolling(PLAT_WIN).min().values
     plat_high, plat_low = _shift(plat_hi, 1), _shift(plat_lo, 1)
     rng10 = (plat_hi - plat_lo) / c
     narrow = rng10 < _shift(rng10, PLAT_WIN)
@@ -259,7 +259,7 @@ def build_indicators(df):
     lh = swing_high < _shift(swing_high, STRUCT_WIN)
     ll = swing_low < _shift(swing_low, STRUCT_WIN)
 
-    low250 = df["low"].rolling(250, min_periods=250).min().to_numpy()
+    low250 = df["low"].rolling(250, min_periods=250).min().values
     near250 = c <= low250 * (1 + LOW250_TOL)
 
     above = (c > e10) & (e10 > e20)

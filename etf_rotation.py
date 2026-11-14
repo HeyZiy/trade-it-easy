@@ -24,7 +24,7 @@
 - 独立策略账户 = 独立流水文件（单池名义期初 100 万），与投资账户资金和成交记录
   互不合并；account 标签只做复盘归因；
 - 通用批次安全校验（卖出 ≤ 台账持仓、买入额 ≤ 现金 + 卖出回款）单点在
-  execute_batch；本入口额外 fail-closed：无截面数据或持仓缺价时整次不调仓，
+  execute_batch；策略模拟执行额外 fail-closed：无截面数据或持仓缺价时整次不调仓，
   避免把取数故障记成"清仓"；
 - 买侧股数由引擎按万二佣金/最低 5 元做资金可行性预检，新成交台账按相同口径
   扣费；现金分红按登记日份额确认，发放日前记应收。
@@ -49,15 +49,9 @@ from src.logging_config import setup_logging
 
 setup_env()
 
-from src.etf.rotation import (                    # noqa: E402
-    ACCOUNT, LEDGER_PATH, COMMISSION, MIN_COMMISSION, EtfOrder,
-    dividend_records, plan_rotation, rotation_snapshot,
-)
+from src.etf.execution import run_simulation     # noqa: E402
+from src.etf.rotation import LEDGER_PATH, rotation_snapshot  # noqa: E402
 from src.task_io import notify, save_report       # noqa: E402
-from src.trade_ledger import (                    # noqa: E402
-    append_trade, derive, load_trades,
-)
-from src.trade_ledger.performance import execution_summary  # noqa: E402
 
 logger = logging.getLogger(__name__)
 LABEL = "跨资产动量"
@@ -78,23 +72,6 @@ def _account_advice(trade_date, rows, prices, diag, *, dry_run=False, error=None
             except Exception:
                 logger.exception("投资账户建议暂停状态保存失败")
         return "账户建议生成失败，请检查日志"
-
-
-def _execute(orders: List[EtfOrder], trade_date: str, *,
-             ledger_path=None):
-    """执行一批轮动指令：批次语义（收敛/安全校验/先卖后买/逐单记账）
-    委托 trade_ledger.execute_batch，本函数只映射指令与渲染结果行。
-
-    返回 (abort, lines)：abort 非空 = 通用安全校验未过，整批零记账。"""
-    from src.trade_ledger import BatchOrder, execute_batch
-
-    batch_orders = [BatchOrder(code=o.code, name=o.name, side=o.action,
-                               qty=o.shares, price=o.price, reason=o.reason)
-                    for o in orders]
-    res = execute_batch(batch_orders, account=ACCOUNT, trade_date=trade_date,
-                        path=ledger_path or LEDGER_PATH,
-                        commission_rate=COMMISSION, min_commission=MIN_COMMISSION)
-    return res.abort, [oc.outcome_line for oc in res.outcomes]
 
 
 def _fmt_score(row) -> str:
@@ -122,7 +99,7 @@ def _cross_section_table(rows) -> List[str]:
 
 
 def run(dry_run: bool = False, trade_date: Optional[str] = None) -> str:
-    """每日闭环：台账持仓 → 截面判定 → 安全校验 → 记账 → 报告。"""
+    """获取当日截面，发布投资账户建议，运行独立模拟并生成报告。"""
     trade_date = trade_date or date.today().isoformat()
     decision_date = date.fromisoformat(trade_date)
     try:
@@ -132,26 +109,8 @@ def run(dry_run: bool = False, trade_date: Optional[str] = None) -> str:
             _account_advice(trade_date, [], {}, {}, error="行情更新失败，暂停建议")
         raise
     account_advice = _account_advice(trade_date, rows, prices, diag, dry_run=dry_run)
-
-    trades = load_trades(LEDGER_PATH)
-    distributions = dividend_records(trades, diag.get("dividends", {}), trade_date)
-    if not dry_run:
-        for record in distributions:
-            append_trade(record, path=LEDGER_PATH)
-        trades = load_trades(LEDGER_PATH)
-    else:
-        trades = sorted(trades + distributions, key=lambda t: t.date)
-    unpriced = derive(trades, trade_date)
-    held_codes = [p["code"] for p in unpriced.positions]
-    missing_quotes = [code for code in held_codes if code not in prices]
-    snap = derive(trades, trade_date, prices)
-    positions = [{**p, "name": security_name(p["code"])} for p in snap.positions]
-    total_assets = snap.total_assets
-    avail_cash = snap.cash
-
-    plan = plan_rotation(rows, positions, prices, avail_cash)
-    orders = plan["orders"]
-
+    simulation = run_simulation(rows, prices, diag, trade_date=trade_date,
+                                ledger_path=LEDGER_PATH, dry_run=dry_run)
     lines = [
         f"# {LABEL} — {datetime.now().strftime('%Y-%m-%d')}",
         "",
@@ -162,35 +121,22 @@ def run(dry_run: bool = False, trade_date: Optional[str] = None) -> str:
     ]
     if diag["realtime_missing"]:
         lines.append(f"- 实时价缺失 {diag['realtime_missing']}/{diag['n']} 只，收盘价仅供展示，本次不执行")
-    if distributions:
-        lines.append(f"- {'拟登记' if dry_run else '已登记'}分红权益 {len(distributions)} 项，按公告发放日转为可用现金")
-    if snap.receivables:
-        lines.append(f"- 尚未到账的应收红利：{snap.receivables:,.2f}元（不用于买入）")
+    if simulation.dividend_count:
+        lines.append(f"- {'拟登记' if dry_run else '已登记'}分红权益 "
+                     f"{simulation.dividend_count} 项，按公告发放日转为可用现金")
+    if simulation.before.receivables:
+        lines.append(f"- 尚未到账的应收红利：{simulation.before.receivables:,.2f}元（不用于买入）")
     lines += ["", "## 今日截面", ""]
     lines += _cross_section_table(rows)
     lines += [""]
 
-    # fail-closed：取数故障不得被记账成"清仓"
-    guard = None
-    if not rows:
-        guard = ("池内 15 只全部无可用日线数据，按 fail-closed 本次不调仓"
-                 "（不清仓、不动持仓）")
-    elif missing_quotes:
-        guard = "持仓现价缺失，本次不执行；收盘价不得用作盘中成交价"
-    elif diag["realtime_missing"]:
-        guard = "实时价不完整，本次不执行；收盘价不得用作盘中成交价"
-    elif any(diag.get("skipped", {}).get(k, 0) for k in ("no_bars", "stale", "bad_close", "duplicate")):
-        guard = "候选池行情或分红数据不完整，本次不执行"
-    elif total_assets <= 0:
-        guard = "策略账户净值不可用，本次不调仓"
-    elif positions and any(float(p.get("current_price") or 0) <= 0 for p in positions):
-        guard = "持仓现价缺失，无法确定卖出金额，本次不调仓"
-    if guard:
-        # 单源缺失在行情层只记 INFO；到这里才是真正影响策略的行情故障，汇总成一条 WARNING
-        logger.warning(f"[行情降级] 轮动本次不执行: {guard}")
-        lines += ["## ⛔ 本次不执行", "", f"- {guard}", ""]
+    result = simulation.execution
+    if result is None:
+        lines += ["## ⛔ 本次不执行", "", f"- {simulation.guard}", ""]
         return "\n".join(lines)
 
+    plan = simulation.plan
+    orders = plan["orders"]
     target = plan["target"]
     holding = plan["holding"]
     lines += ["## 决策", ""]
@@ -212,17 +158,10 @@ def run(dry_run: bool = False, trade_date: Optional[str] = None) -> str:
               if not (note.startswith("继续持有 ") and note.endswith("仍为合格候选第一名"))]
     lines += [""]
 
-    exec_index = len(lines)
-    lines.append("")
-
-    def finish() -> str:
-        summary = execution_summary(trades, load_trades(LEDGER_PATH),
-                                    dry_run=dry_run, planned=len(orders))
-        lines.insert(exec_index, summary)
-        return "\n".join(lines)
+    lines += [result.summary, ""]
 
     if not orders:
-        return finish()
+        return "\n".join(lines)
 
     if dry_run:
         lines.append("**dry-run：以下指令未记账**")
@@ -230,26 +169,24 @@ def run(dry_run: bool = False, trade_date: Optional[str] = None) -> str:
             lines.append(f"- [DRY] {order.action.upper()} {order.name}({order.code})"
                          f" {order.shares}股 ≈ {order.amount:,.0f}元（{order.reason}）")
         lines += [""]
-        return finish()
+        return "\n".join(lines)
 
-    abort, exec_lines = _execute(orders, trade_date)
-    if abort:
-        lines.append(f"⛔ 安全校验未通过，本次不执行：{abort}")
-        return finish()
-    lines += exec_lines
+    if result.batch.abort:
+        lines.append(f"⛔ 安全校验未通过，本次不执行：{result.batch.abort}")
+        return "\n".join(lines)
+    lines.extend(outcome.outcome_line for outcome in result.batch.outcomes)
 
-    prices.update({o.code: o.price for o in orders if o.price > 0})
-    fresh = derive(load_trades(LEDGER_PATH), trade_date, prices).positions
-    if fresh:
+    if result.positions:
+        total_assets = simulation.before.total_assets
         lines += ["", "**执行后持仓**："]
-        for pos in fresh:
+        for pos in result.positions:
             mv = float(pos.get("market_value", 0) or 0)
             pct = mv / total_assets * 100 if total_assets > 0 else 0
             lines.append(f"- {security_name(pos['code'])}({pos.get('code', '')}) "
                          f"{pos.get('count', 0)}股 ≈ {mv:,.0f}元（{pct:.1f}%）")
     else:
         lines += ["", "**执行后持仓**：空仓（现金）"]
-    return finish()
+    return "\n".join(lines)
 
 
 def parse_arguments() -> argparse.Namespace:

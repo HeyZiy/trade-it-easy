@@ -132,7 +132,8 @@ class HoldingExperienceTests(unittest.TestCase):
             folder = Path(tmp)
             history.rename_axis('date').to_csv(folder / 'etf_hfq_510001.csv')
             with patch.object(b, 'ASSETS', (AssetSpec('510001', '测试ETF', '000999'),)), \
-                    patch.object(b, 'PE_CACHE', folder), patch.object(h, 'OUT', folder / 'experience'), \
+                    patch.object(b, 'ETF_DATA', folder), patch.object(b, 'PE_DATA', folder), \
+                    patch.object(h, 'OUT', folder / 'experience'), \
                     patch.object(grid, 'OUT', folder / 'grid'), \
                     patch.object(b, 'load_pe', side_effect=AssertionError('无PE配置不得读取')), \
                     redirect_stdout(io.StringIO()):

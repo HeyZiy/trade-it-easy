@@ -20,7 +20,7 @@ def isolate_core_account(tmp_path, tmp_path_factory, monkeypatch):
             day -= timedelta(days=1)
         return day
 
-    monkeypatch.setattr("src.etf_account.latest_trading_day_on_or_before", previous_weekday)
+    monkeypatch.setattr("src.account_valuation.latest_trading_day_on_or_before", previous_weekday)
 
     from src import portfolio_config
     config_path = tmp_path_factory.mktemp("settings") / "etf_config.json"

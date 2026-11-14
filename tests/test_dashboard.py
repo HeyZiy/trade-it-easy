@@ -32,7 +32,7 @@ def test_account_shows_ledger_and_only_valid_performance(tmp_path):
 
 
 def test_curve_keeps_missing_days_as_gaps_and_excludes_future_records(tmp_path):
-    path = tmp_path / "data" / "trade_ledger_industry_momentum.jsonl"
+    path = tmp_path / "data" / "trade_ledger_etf_rotation.jsonl"
     trade = TradeRecord("2025-01-02", "510300", "ETF", "buy", 100, 3.0)
     append_trade(trade, path)
     rows = [
@@ -55,8 +55,8 @@ def test_curve_keeps_missing_days_as_gaps_and_excludes_future_records(tmp_path):
         {"date": "2025-01-06", "nav": 1.02, "benchmark_nav": None},
     ]
     assert account["benchmark_name"] == "测试基准"
-    strategies = {s["id"]: s for s in dashboard_data(tmp_path)["observations"]}
-    assert strategies["satellite"]["history"] == account["history"]
+    strategies = {s["id"]: s for s in dashboard_data(tmp_path)["strategies"]}
+    assert strategies["rotation"]["observation"]["history"] == account["history"]
 
 
 def test_report_retains_readable_formatting_without_active_html(tmp_path):
@@ -100,23 +100,24 @@ def basic(user, password):
     return "Basic " + base64.b64encode(f"{user}:{password}".encode()).decode()
 
 
-def test_core_and_industry_use_independent_ledgers(tmp_path):
+def test_core_and_rotation_use_independent_ledgers(tmp_path):
     from src.etf_account import initialize
     data = tmp_path / "data"
     initialize(data / "etf_account.json", asof="2025-01-02", cash=1000,
                positions=[dict(code="510300", name="核心ETF", count=100, price=3, strategy="core")])
-    append_trade(TradeRecord(date="2025-01-03", code="512500", name="卫星ETF",
-                             side="buy", qty=200, price=2.0, account="satellite"),
-                 data / "trade_ledger_industry_momentum.jsonl")
+    append_trade(TradeRecord(date="2025-01-03", code="512500", name="轮动ETF",
+                             side="buy", qty=200, price=2.0, account="etf_rotation"),
+                 data / "trade_ledger_etf_rotation.jsonl")
     overview = dashboard_data(tmp_path)
-    strategies = {s["id"]: s for s in overview["strategies"] + overview["observations"]}
+    strategies = {s["id"]: s for s in overview["strategies"]}
+    rot_obs = strategies["rotation"]["observation"]
     assert [p["code"] for p in strategies["core"]["positions"]] == ["510300"]
-    assert [p["code"] for p in strategies["satellite"]["positions"]] == ["512500"]
+    assert [p["code"] for p in rot_obs["positions"]] == ["512500"]
     assert strategies["core"]["trades"] == []
-    assert [t["code"] for t in strategies["satellite"]["trades"]] == ["512500"]
+    assert [t["code"] for t in rot_obs["trades"]] == ["512500"]
     assert overview["accounts"][0]["cash"] == 1000
     assert strategies["core"]["account_id"] == "etf"
-    assert not strategies["satellite"]["shared"]
+    assert not rot_obs["shared"]
 
 
 
@@ -129,12 +130,12 @@ def test_strategy_positions_carry_t1_close(tmp_path, monkeypatch):
     initialize(path, asof="2025-01-01", cash=1000,
                positions=[dict(code="510300", name="核心ETF", count=100, price=3, strategy="core")])
     collect_close(path, "2025-01-02", lambda codes, day: {codes[0]: 3.3})
-    append_trade(TradeRecord("2025-01-02", "512500", "卫星ETF", "buy", 200, 2, account="satellite"),
-                 path.with_name("trade_ledger_industry_momentum.jsonl"))
+    append_trade(TradeRecord("2025-01-02", "512500", "轮动ETF", "buy", 200, 2, account="etf_rotation"),
+                 path.with_name("trade_ledger_etf_rotation.jsonl"))
     overview = dashboard_data(tmp_path)
-    strategies = {s["id"]: s for s in overview["strategies"] + overview["observations"]}
+    strategies = {s["id"]: s for s in overview["strategies"]}
     assert strategies["core"]["positions"][0]["close"] == 3.3
-    assert strategies["satellite"]["positions"][0]["close"] is None
+    assert strategies["rotation"]["observation"]["positions"][0]["close"] is None
 
 
 

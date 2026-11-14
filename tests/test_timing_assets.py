@@ -14,7 +14,8 @@ from research.studies.timing import fetch_data as f
 
 class TimingAssetTests(unittest.TestCase):
     def test_existing_fetch_routes_are_preserved(self):
-        with tempfile.TemporaryDirectory() as tmp, patch.object(f, 'CACHE', Path(tmp)), \
+        with tempfile.TemporaryDirectory() as tmp, patch.object(f, 'ETF_DIR', Path(tmp)), \
+                patch.object(f, 'PE_DIR', Path(tmp)), patch.object(f, 'write_manifests'), \
                 patch.object(f, 'fetch_etf_hfq') as etf, \
                 patch.object(f, 'fetch_pe_akshare') as ak, patch.object(f, 'fetch_pe_direct') as direct:
             f.main(tuple(a for a in ASSETS if a.etf_code in {'510300', '510500', '159915'}))
@@ -29,7 +30,8 @@ class TimingAssetTests(unittest.TestCase):
         assets = (AssetSpec('510001', '测试ETF甲', '000999', source),
                   AssetSpec('510002', '测试ETF乙', '000999', source),
                   AssetSpec('510003', '测试ETF丙', '000998'))
-        with tempfile.TemporaryDirectory() as tmp, patch.object(f, 'CACHE', Path(tmp)), \
+        with tempfile.TemporaryDirectory() as tmp, patch.object(f, 'ETF_DIR', Path(tmp)), \
+                patch.object(f, 'PE_DIR', Path(tmp)), patch.object(f, 'write_manifests'), \
                 patch.object(f, 'fetch_etf_hfq') as etf, \
                 patch.object(f, 'fetch_pe_akshare') as ak, patch.object(f, 'fetch_pe_direct') as direct:
             f.main(assets)

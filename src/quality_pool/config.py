@@ -33,7 +33,7 @@ LIMIT_PAD = 0.001                    # 元，涨跌停价比较容差
 # ── 台账与状态 ──
 ACCOUNT = "quality_pool"  # 独立策略流水隔离资金池
 # 台账是单池设计（NOMINAL_EQUITY 一本账），规格要求独立策略账户——用独立流水文件，
-# 与主台账（core/satellite）互不可见。
+# 与主台账（core）互不可见。
 POOL_LEDGER_PATH = "data/trade_ledger_quality_pool_v2.jsonl"
 STATE_PATH = "data/quality_pool_v2_state.json"
 REPORT_PREFIX = "quality_pool"

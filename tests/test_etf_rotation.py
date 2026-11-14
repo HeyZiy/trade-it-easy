@@ -10,7 +10,7 @@
 - 入口 etf_rotation.run：独立台账（account=etf_rotation），dry-run 不记账，
   取数故障 fail-closed（不清仓、不记账）。
 
-测试风格对齐 tests/test_industry_momentum.py：纯函数优先、造数注入；
+测试风格：纯函数优先、造数注入；
 入口集成用 tmp_path 独立台账，monkeypatch 截面取数，禁止真实网络。
 """
 import math
@@ -453,9 +453,9 @@ class TestPlanRotation:
 
     def test_positions_of_other_accounts_are_ignored(self):
         rows = self._rows()
-        # 核心仓/卫星仓持仓（account 非 etf_rotation）不参与本策略
+        # 核心仓/质量池持仓（account 非 etf_rotation）不参与本策略
         others = [_position("513100", price=self.OTHER_PRICE, account="core"),
-                  _position("510300", price=self.TARGET_PRICE, account="satellite")]
+                  _position("510300", price=self.TARGET_PRICE, account="quality_pool")]
         plan = plan_rotation(rows, others,
                              {"510300": self.TARGET_PRICE,
                               "513100": self.OTHER_PRICE}, 1_000_000.0)
@@ -570,6 +570,7 @@ class TestEntryIntegration:
         assert trade.account == ACCOUNT
         assert trade.qty == affordable_shares(1_000_000.0, 4.0) == 249_900
         assert trade.price == 4.0
+        assert trade.fee == 199.92
 
         assert "## 执行明细" not in report and "## 决策" in report
         assert "✅ BUY 沪深300(510300) 249900股" in report

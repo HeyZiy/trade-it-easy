@@ -17,7 +17,7 @@ profit/profit_pct/pos_pct，另附归因用的 account）+ entry_map + 组合敞
 - 整手：qty 必为 100 整数倍，append 处校验收敛（判定口径单点仍在 mx/executor）;
 - 现金 = 名义期初 − Σ买 + Σ卖 − 已记费用 + 到账分红；旧流水费用默认为0；
 - 分红date为除息日，到账前单列应收，pay_date起转为可用现金；无外部调入调出条目；
-- account 标签（core/satellite/quality_pool/etf_rotation）仅服务复盘归因与
+- account 标签（core/quality_pool/etf_rotation）仅服务复盘归因与
   持仓归属拆分，不分账；独立策略账户用独立流水文件（如质量池、跨资产动量轮动）。
 """
 
@@ -43,7 +43,7 @@ LOT = 100                              # A 股一手
 DEFAULT_LEDGER_PATH = Path("data/trade_ledger.jsonl")
 
 SIDES = ("buy", "sell", "dividend")
-ACCOUNTS = ("core", "satellite", "quality_pool", "etf_rotation")
+ACCOUNTS = ("core", "quality_pool", "etf_rotation")
 _DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
 
 
@@ -62,7 +62,7 @@ class TradeRecord:
     side: str                 # buy | sell | dividend
     qty: int                  # 名义股数，100 整数倍
     price: float              # 名义成交价（影子成交=判定时点现价）
-    account: str = "core"     # 归因标签：core/satellite/quality_pool
+    account: str = "core"     # 归因标签：core/quality_pool/etf_rotation
     reasons: List[str] = field(default_factory=list)
     source: str = "cron"      # cron | book
     manual: bool = False      # True=实盘底仓补记（入场日=该日，不追溯）

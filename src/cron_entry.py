@@ -3,11 +3,13 @@
 cron 入口装具 — 交易日政策与硬退出的单点
 ===================================
 
-四个 cron 入口（quality_pool / etf_rotation / etf_observe / industry_momentum，
+三个 cron 入口（quality_pool / etf_rotation / etf_observe，
 另 portfolio_report 仅用 hard_exit）共用的运行政策件：
 
 - add_standard_flags：四个标准旗标（--debug/--no-notify/--dry-run/--force）
   与帮助文案单点；质量池入口的子命令旗标是真差异，不用此件；
+  （三个标准入口 quality_pool / etf_rotation / etf_observe 共用此件；
+  portfolio_report 仅用 hard_exit）
 - resolve_run_gate：交易日闸门与「非交易日 --force 一律只读」推导——
   非交易日不可能有真实成交，硬记账就是假日假账；政策只在装具改一处，
   推导结果（skip / dry_run）由入口自己记日志；

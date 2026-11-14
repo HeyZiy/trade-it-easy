@@ -207,6 +207,7 @@ def test_two_account_collector_keeps_ledgers_untouched(tmp_path, monkeypatch):
     before = [p.read_bytes() for p in (main, pool)]
     monkeypatch.setattr("src.etf.config.ACCOUNT_SOURCE.ledger_path", str(main))
     monkeypatch.setattr("src.etf.config.ACCOUNT_SOURCE.benchmark", {"name":"测试基准","weights":{"510300":1.0}})
+    monkeypatch.setattr("src.etf.config.ACCOUNT_SOURCE.is_investment", False)
     monkeypatch.setattr("src.quality_pool.config.ACCOUNT_SOURCE.ledger_path", str(pool))
     monkeypatch.setattr(entry, "get_trading_dates", calendar)
     monkeypatch.setattr(ClosingPrices, "close_prices", lambda self, codes, asof: {c: 10 if asof == "2026-09-21" else 11 for c in codes})
