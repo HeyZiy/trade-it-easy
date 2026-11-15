@@ -250,6 +250,30 @@ def dashboard_data(root=ROOT):
 
 
 class Handler(BaseHTTPRequestHandler):
+    def check_access(self, *, json_response=False):
+        tailscale_login = os.environ.get("TRADE_DASHBOARD_TAILSCALE_LOGIN")
+        headers = None
+        if tailscale_login:
+            # Serve replaces client-supplied identity headers. Keep the backend on loopback.
+            if self.headers.get_all("Tailscale-User-Login") == [tailscale_login]:
+                return True
+            status, message = 403, "此 Tailscale 账号无权访问。"
+        else:
+            user, password = auth_config()
+            if not password:
+                status, message = 503, "服务未配置访问口令。"
+            elif authorized(self.headers.get("Authorization", ""), user, password):
+                return True
+            else:
+                logging.warning("鉴权失败 %s %s", self.client_address[0], self.path)
+                time.sleep(AUTH_DELAY)
+                status, message = 401, "需要登录。"
+                headers = {"WWW-Authenticate": AUTH_REALM}
+        body = b"{}" if json_response else message.encode("utf-8")
+        content_type = "application/json" if json_response else "text/plain; charset=utf-8"
+        self.respond(body, content_type, status=status, headers=headers)
+        return False
+
     def timing_json(self, result, status=200):
         body = json.dumps(result, ensure_ascii=False, allow_nan=False).encode("utf-8")
         self.respond(body, "application/json; charset=utf-8", status=status)
@@ -292,13 +316,7 @@ class Handler(BaseHTTPRequestHandler):
             self.timing_json({"error": str(error)}, 429)
 
     def do_POST(self):
-        user, password = auth_config()
-        if not password:
-            self.respond(b'{}', "application/json", status=503)
-            return
-        if not authorized(self.headers.get("Authorization", ""), user, password):
-            time.sleep(AUTH_DELAY)
-            self.respond(b'{}', "application/json", status=401, headers={"WWW-Authenticate": AUTH_REALM})
+        if not self.check_access(json_response=True):
             return
         # 自定义头不属于简单跨站请求，浏览器必须先通过同源预检。
         if (self.headers.get("X-Trade-Request") != "dashboard"
@@ -356,16 +374,7 @@ class Handler(BaseHTTPRequestHandler):
                                 ensure_ascii=False).encode(), "application/json; charset=utf-8")
 
     def do_GET(self):
-        user, password = auth_config()
-        if not password:
-            logging.error("未配置 TRADE_DASHBOARD_PASSWORD，拒绝提供服务")
-            self.respond("服务未配置访问口令。".encode("utf-8"), "text/plain; charset=utf-8", status=503)
-            return
-        if not authorized(self.headers.get("Authorization", ""), user, password):
-            logging.warning("鉴权失败 %s %s", self.client_address[0], self.path)
-            time.sleep(AUTH_DELAY)
-            self.respond("需要登录。".encode("utf-8"), "text/plain; charset=utf-8", status=401,
-                         headers={"WWW-Authenticate": AUTH_REALM})
+        if not self.check_access():
             return
         if self.path == "/api/etf/config":
             from src.portfolio_config import data
@@ -427,8 +436,10 @@ def main():
     parser.add_argument("--port", type=int, default=8765)
     args = parser.parse_args()
     server = ThreadingHTTPServer(("127.0.0.1", args.port), Handler)
-    logging.warning("只监听本机 127.0.0.1:%s；需通过 tunnel 访问，口令读 TRADE_DASHBOARD_PASSWORD", args.port)
-    if not auth_config()[1]:
+    logging.info("看板只监听本机 127.0.0.1:%s", args.port)
+    if os.environ.get("TRADE_DASHBOARD_TAILSCALE_LOGIN"):
+        logging.info("看板使用 Tailscale Serve 登录身份")
+    elif not auth_config()[1]:
         logging.error("TRADE_DASHBOARD_PASSWORD 未设置，所有请求将返回 503")
     server.serve_forever()
 

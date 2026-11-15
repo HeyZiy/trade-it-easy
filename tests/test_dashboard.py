@@ -182,6 +182,34 @@ def test_handler_requires_auth_before_routing(monkeypatch):
         server.server_close()
 
 
+def test_serve_identity_replaces_password_for_reads_and_writes(monkeypatch):
+    monkeypatch.setenv("TRADE_DASHBOARD_TAILSCALE_LOGIN", "owner@example.com")
+    monkeypatch.setenv("TRADE_DASHBOARD_PASSWORD", "old-password")
+    owner = {"Tailscale-User-Login": "owner@example.com"}
+    server = serve()
+    try:
+        base = f"http://127.0.0.1:{server.server_port}"
+        for headers in ({"Authorization": basic("trader", "old-password")},
+                        {"Tailscale-User-Login": "other@example.com"}):
+            with pytest.raises(urllib.error.HTTPError) as denied:
+                urllib.request.urlopen(urllib.request.Request(base + "/", headers=headers))
+            assert denied.value.code == 403
+            assert denied.value.headers.get("WWW-Authenticate") is None
+        with urllib.request.urlopen(urllib.request.Request(base + "/", headers=owner)) as response:
+            assert response.status == 200
+
+        post_headers = {"Content-Type": "application/json", "X-Trade-Request": "dashboard"}
+        with pytest.raises(urllib.error.HTTPError) as denied:
+            urllib.request.urlopen(urllib.request.Request(base + "/unknown", data=b"{}", headers=post_headers))
+        assert denied.value.code == 403
+        with pytest.raises(urllib.error.HTTPError) as routed:
+            urllib.request.urlopen(urllib.request.Request(base + "/unknown", data=b"{}", headers=post_headers | owner))
+        assert routed.value.code == 404
+    finally:
+        server.shutdown()
+        server.server_close()
+
+
 def test_report_api_requires_auth_and_returns_inline_content(tmp_path, monkeypatch):
     reports = tmp_path / "reports"
     reports.mkdir()
