@@ -89,12 +89,28 @@ def test_save_and_update_plan_roundtrip(account):
 
 
 def test_plan_validation_rejects_bad_fields(account):
-    bad = [dict(code='51'), dict(amount=0), dict(frequency='daily'),
+    bad = [dict(code='51'), dict(amount=0), dict(frequency='yearly'),
            dict(frequency='monthly', anchor=32), dict(frequency='weekly', anchor=6)]
     for field in bad:
         with pytest.raises(ValueError):
             save(account, **field)
     assert fund_plans.load_plans(account)['plans'] == []
+
+
+def test_switching_to_daily_starts_the_new_schedule_on_save(account, weekend_calendar, monkeypatch):
+    weekly = save_backdated(account, monkeypatch, frequency='weekly')
+    daily = fund_plans.save_plan(account, weekly | {'frequency': 'daily'})
+    assert daily['anchor'] is None
+    assert daily['created_on'] == weekly['created_on']
+
+    monkeypatch.setattr(fund_plans, '_today', lambda: date(2025, 1, 8))
+    updated = fund_plans.save_plan(account, daily | {'note': '改备注'})
+    assert fund_plans._due_dates(updated, date(2025, 1, 1), date(2025, 1, 8)) == [
+        date(2025, 1, 7), date(2025, 1, 8),
+    ]
+
+    switched_back = fund_plans.save_plan(account, updated | {'frequency': 'weekly', 'anchor': 5})
+    assert fund_plans._due_dates(switched_back, date(2025, 1, 1), date(2025, 1, 10)) == [date(2025, 1, 10)]
 
 
 def test_delete_plan_is_idempotent_and_keeps_events(account, weekend_calendar, monkeypatch):
@@ -199,6 +215,23 @@ def test_catchup_records_missed_day_with_correct_nav_date(account, weekend_calen
     assert recorded[0]['date'] == '2025-01-07'
 
 
+def test_daily_catchup_records_each_elapsed_trading_day_once(account, weekend_calendar, monkeypatch):
+    monkeypatch.setattr(fund_plans, '_today', lambda: date(2024, 12, 31))
+    plan = fund_plans.save_plan(account, {'code': '000051', 'amount': 100, 'frequency': 'daily'})
+    assert plan['anchor'] is None
+    monkeypatch.setattr(fund_plans, '_today', lambda: date(2025, 1, 7))
+    weekdays = fund_plans.get_trading_dates
+    monkeypatch.setattr(fund_plans, 'get_trading_dates', lambda start, end: [
+        day for day in weekdays(start, end) if day != date(2025, 1, 1)
+    ])
+    fee_event(account)
+
+    events = fund_plans.record_due_subscriptions(account)
+    assert [event['nav_date'] for event in events] == ['2024-12-31', '2025-01-02', '2025-01-03', '2025-01-06']
+    assert all(event['amount'] == 100 for event in events)
+    assert fund_plans.record_due_subscriptions(account) == []
+
+
 def test_two_plans_same_code_both_recorded(account, weekend_calendar, monkeypatch):
     save_backdated(account, monkeypatch, amount=100.0, note='A')
     save_backdated(account, monkeypatch, amount=200.0, note='B')
@@ -288,8 +321,9 @@ def test_aging_pending_warns_after_threshold(account, weekend_calendar, monkeypa
     assert any('未确认份额' in row.message for row in caplog.records)
 
 
-def test_calendar_unavailable_skips_recording(account, weekend_calendar, monkeypatch):
-    save_backdated(account, monkeypatch, anchor=5)
+@pytest.mark.parametrize('frequency', ['monthly', 'daily'])
+def test_calendar_unavailable_skips_recording(account, weekend_calendar, monkeypatch, frequency):
+    save_backdated(account, monkeypatch, anchor=5, frequency=frequency)
     fee_event(account)
     monkeypatch.setattr('src.fund_plans.get_trading_dates', lambda start, end: [])
     assert fund_plans.record_due_subscriptions(account) == []

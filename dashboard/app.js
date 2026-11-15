@@ -1293,7 +1293,9 @@ function openDcaPlans(account) {
   const plansBox=document.querySelector('#dca-plans');
   const formTitle=document.querySelector('#dca-form-title');
   const nameHint=document.querySelector('#dca-fund-name');
+  const frequencySelect=form.elements.namedItem('frequency');
   const anchorSelect=form.elements.namedItem('anchor');
+  const anchorLabel=document.querySelector('#dca-anchor-label');
   const FREQUENCY_ANCHORS={monthly:Array.from({length:31},(_,i)=>[i+1,`${i+1} 日`]),
     weekly:[[1,'周一'],[2,'周二'],[3,'周三'],[4,'周四'],[5,'周五']]};
   let editing=null, saving=false;
@@ -1304,14 +1306,18 @@ function openDcaPlans(account) {
   save.textContent='保存计划';formTitle.textContent='添加计划';
   function fillAnchors() {
     const current=Number(anchorSelect.value);
-    anchorSelect.innerHTML=FREQUENCY_ANCHORS[form.elements.namedItem('frequency').value].map(([value,label])=>`<option value="${value}">${label}</option>`).join('');
+    const anchors=FREQUENCY_ANCHORS[frequencySelect.value] || [];
+    anchorLabel.hidden=anchorSelect.disabled=anchors.length===0;
+    anchorSelect.innerHTML=anchors.map(([value,label])=>`<option value="${value}">${label}</option>`).join('');
     if ([...anchorSelect.options].some(option=>Number(option.value)===current)) anchorSelect.value=current;
   }
   function renderPlans() {
     const plans=account.dca?.plans || [];
     plansBox.innerHTML=plans.length ? `<table><thead><tr><th>基金</th><th>计划</th><th>状态</th><th></th></tr></thead><tbody>${plans.map(plan=>{
       const name=fundDisplayName(plan.code);
-      const cadence=plan.frequency==='monthly' ? `每月 ${plan.anchor} 日` : `每周${FREQUENCY_ANCHORS.weekly[plan.anchor-1][1].slice(1)}`;
+      let cadence='每个交易日';
+      if (plan.frequency==='monthly') cadence=`每月 ${plan.anchor} 日`;
+      if (plan.frequency==='weekly') cadence=`每周${FREQUENCY_ANCHORS.weekly[plan.anchor-1][1].slice(1)}`;
       return `<tr><td>${name?`${esc(name)}<small>${esc(plan.code)}</small>`:esc(plan.code)}</td><td>${cadence} · ${money(plan.amount)} 元${plan.note?`<small>${esc(plan.note)}</small>`:''}</td><td>${plan.enabled?'启用中':'已停用'}</td><td><button type="button" class="text-button" data-dca-edit="${esc(plan.id)}">${plan.enabled?'修改':'启用'}</button> <button type="button" class="text-button" data-dca-toggle="${esc(plan.id)}">${plan.enabled?'停用':'启用'}</button> <button type="button" class="text-button" data-dca-delete="${esc(plan.id)}">删除</button></td></tr>`;
     }).join('')}</tbody></table>` : '<div class="empty">暂无定投计划。请在基金 App 设定自动扣款后，把计划录到这里。</div>';
     plansBox.querySelectorAll('[data-dca-edit]').forEach(button=>button.onclick=()=>{
@@ -1322,9 +1328,9 @@ function openDcaPlans(account) {
       save.textContent='保存修改';
       form.elements.namedItem('code').value=plan.code;
       form.elements.namedItem('amount').value=plan.amount;
-      form.elements.namedItem('frequency').value=plan.frequency;
+      frequencySelect.value=plan.frequency;
       fillAnchors();
-      anchorSelect.value=plan.anchor;
+      if (!anchorSelect.disabled) anchorSelect.value=plan.anchor;
       form.elements.namedItem('note').value=plan.note || '';
       nameState.code=plan.code;
       nameHint.textContent=fundDisplayName(plan.code) || '';
@@ -1340,7 +1346,7 @@ function openDcaPlans(account) {
     plansBox.querySelectorAll('[data-dca-delete]').forEach(button=>button.onclick=()=>
       withGuard(button, () => accountRequest('/api/etf/dca/delete', {id:button.dataset.dcaDelete}), '定投计划已删除'));
   }
-  form.elements.namedItem('frequency').onchange=fillAnchors;
+  frequencySelect.onchange=fillAnchors;
   form.elements.namedItem('code').oninput=event=>fillFundName(dialog, session, event.target, nameHint, nameState);
   document.querySelector('#dca-cancel').onclick=()=>{if(!saving)dialog.close();};
   dialog.oncancel=event=>{if(saving)event.preventDefault();};
@@ -1351,10 +1357,10 @@ function openDcaPlans(account) {
     saving=true;save.disabled=true;fields.disabled=true;error.hidden=true;
     const payload={code:form.elements.namedItem('code').value.trim(),
       amount:Number(form.elements.namedItem('amount').value),
-      frequency:form.elements.namedItem('frequency').value,
-      anchor:Number(anchorSelect.value),
+      frequency:frequencySelect.value,
       note:form.elements.namedItem('note').value.trim(),
       enabled: true};
+    if (!anchorSelect.disabled) payload.anchor=Number(anchorSelect.value);
     if (editing) payload.id=editing.id;
     try {
       await accountRequest('/api/etf/dca/save', payload);

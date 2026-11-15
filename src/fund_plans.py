@@ -45,7 +45,7 @@ logger = logging.getLogger(__name__)
 
 PLANS_FILENAME = "fund_plans.json"
 DCA_REQUEST_PREFIX = "dca-"
-FREQUENCIES = ("monthly", "weekly")
+FREQUENCIES = ("monthly", "weekly", "daily")
 CATCHUP_WINDOW_DAYS = 14   # 补记回看自然日数：覆盖春节长假与漏跑
 POSTPONE_MAX_DAYS = 10     # 扣款日休市时顺延查找下一交易日的最大跨度
 AGING_TRADING_DAYS = 5     # 待确认超过该交易日数未确认份额即告警
@@ -77,9 +77,11 @@ def _validated_plan(payload):
         raise ValueError("每期金额须为正数，最多两位小数")
     frequency = payload.get("frequency")
     if frequency not in FREQUENCIES:
-        raise ValueError("扣款周期只支持 monthly / weekly")
+        raise ValueError("扣款周期只支持每日、每周或每月")
     anchor = payload.get("anchor")
-    if type(anchor) is not int or not 1 <= anchor <= (31 if frequency == "monthly" else 5):
+    if frequency == "daily":
+        anchor = None
+    elif type(anchor) is not int or not 1 <= anchor <= (31 if frequency == "monthly" else 5):
         raise ValueError("月定投扣款日须为 1-31，周定投须为周一到周五")
     note = str(payload.get("note") or "").strip()
     if len(note) > 50:
@@ -110,7 +112,13 @@ def save_plan(account_path, payload):
             index = next((i for i, row in enumerate(plans) if row.get("id") == plan["id"]), None)
             if index is None:
                 raise ValueError("定投计划不存在，可能已被删除，请刷新")
-            plan["created_on"] = plans[index].get("created_on") or _today().isoformat()
+            previous = plans[index]
+            plan["created_on"] = previous.get("created_on") or _today().isoformat()
+            old_frequency = previous["frequency"]
+            if old_frequency != plan["frequency"] and "daily" in (old_frequency, plan["frequency"]):
+                plan["effective_on"] = _today().isoformat()
+            elif "effective_on" in previous:
+                plan["effective_on"] = previous["effective_on"]
             plans[index] = plan
         else:
             plan["id"] = uuid4().hex
@@ -167,11 +175,16 @@ def _base_dates(plan, window_start, window_end):
 
 
 def _due_dates(plan, window_start, window_end):
-    """[window_start, window_end] 内的到期扣款日：剔除建计划前、休市顺延、去重升序。"""
-    created = _created_on(plan)
+    """每日计划按交易日，周/月计划遇休市顺延；仅计算生效后的到期日。"""
+    effective = _created_on(plan)
+    if "effective_on" in plan:
+        effective = date.fromisoformat(plan["effective_on"])
+    if plan["frequency"] == "daily":
+        start = max(window_start, effective)
+        return get_trading_dates(start, window_end) if start <= window_end else []
     dues = []
     for base in _base_dates(plan, window_start, window_end):
-        if base < created:
+        if base < effective:
             continue
         due = _postponed(base)
         if due is not None and window_start <= due <= window_end:

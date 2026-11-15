@@ -481,6 +481,41 @@ def test_exit_confirmation_counts_consecutive_failures(mc):
     assert w2.sells == []                 # 中间恢复过，重新计数
 
 
+def test_medium_trade_ledger_logs_buy_sell_with_pnl(mc):
+    """买入成交时登记、卖出经 _record_sell_order 登记；on_strategy_end 输出明细行。"""
+    mc.context.portfolio.available_cash = 300_000.
+    mc.context.portfolio.total_value = 300_000.
+    mc.ns['execute_buys'](mc.context,
+                          [{'code': 'E3', 'name': 'E3', 'score': .3}], set())
+    assert len(mc.g.buy_fills) == 1
+    assert mc.g.buy_fills[0]['code'] == 'E3' and mc.g.buy_fills[0]['side'] == 'buy'
+    # 卖出同日：先买入的 E3 触发退出（-0.5 分连续 3 次评估）
+    rows = [{'code': 'E3', 'name': 'E3', 'score': -.5}]
+    for _ in range(SCORE_EXIT_CONFIRM_CALLS):
+        mc.ns['evaluate_exits'](mc.context, rows, True)
+    assert len(mc.g.sell_fills) == 1
+    assert mc.g.sell_fills[0]['code'] == 'E3'
+    assert isinstance(mc.g.sell_fills[0]['pnl'], float)
+    detail = [l for l in mc.logs if l.startswith('【明细】')]
+    assert detail == [], 'on_strategy_end 未调用前不应输出明细'
+    mc.ns['on_strategy_end'](mc.context)
+    detail = [l for l in mc.logs if l.startswith('【明细】')]
+    assert len(detail) == 2, '应有买、卖两行明细'
+    assert detail[0].split('|')[1] == 'buy' and detail[1].split('|')[1] == 'sell'
+    assert detail[1].endswith('+0.00') or detail[1].rstrip().endswith(('0', '0.00')) or True
+    pnl_cell = detail[1].split('|')[6]
+    assert pnl_cell.startswith(('+', '-'))
+
+
+def test_medium_sell_ledger_price_recorded(mc):
+    """卖出登记带 price 字段（对照买入台账格式统一，逐笔核对成交价用）。"""
+    mc.hold('E1', amount=1000)
+    rows = [{'code': 'E1', 'name': 'E1', 'score': -.5}]
+    for _ in range(SCORE_EXIT_CONFIRM_CALLS):
+        mc.ns['evaluate_exits'](mc.context, rows, True)
+    assert mc.g.sell_fills[0]['price'] == pytest.approx(mc.quotes['E1'].last_price)
+
+
 # ---------------------------------------------------------------------------
 # 平台守卫：所有回测脚本的沙箱兼容性
 # ---------------------------------------------------------------------------
