@@ -385,6 +385,7 @@ def test_etf_hfq_bars_accumulate_event_factors(monkeypatch):
     bars = market.fetch_etf_hfq_bars(["516560"], "2026-10-14")
     assert bars["516560"]["date"].tolist() == ["2026-10-12", "2026-10-13", "2026-10-14"]
     assert bars["516560"]["hfq_close"].tolist() == [1.0, 4.0, 6.0]
+    assert bars["516560"]["hfq_open"].tolist() == [1.0, 4.0, 6.0]
     assert bars["516560"]["hfq_high"].tolist() == [2.0, 6.0, 8.0]
     assert bars["516560"]["hfq_low"].tolist() == [0.5, 2.0, 4.0]
 

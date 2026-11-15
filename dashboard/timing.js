@@ -89,9 +89,9 @@ async function loadCatalog() {
 function renderRolling() {
   const container = byId("timing-rolling-results");
   if (!group) return;
-  const current = sections.group.value === "current";
+  const isCurrentVersion = sections.group.value === "current" && overview.version === group.version;
   const years = Number(byId("hold-years").value);
-  const rows = (current && overview.version === group.version ? overview.rolling : group.rolling)
+  const rows = (isCurrentVersion ? overview.rolling : group.rolling)
     .filter(row => row.years === years);
   if (rows.length) {
     const wrap = element("div");
@@ -101,7 +101,7 @@ function renderRolling() {
     return;
   }
   let message = "暂无该期限的结果，可能没有完整持有窗口。";
-  if (current && overview.version === group.version) {
+  if (isCurrentVersion) {
     if (overview.rolling_state === "ready") message = "没有完整的 " + years + " 年持有窗口。";
     else if (overview.phase) message = "正在计算多起点结果…";
     else message = "多起点结果未完成，可重新生成。";
@@ -151,15 +151,25 @@ function drawCharts() {
     const figure = element("figure");
     figure.className = "timing-plot";
     const graph = svg("svg", { viewBox: "0 0 " + width + " " + height, role: "img", "aria-label": title });
-    let min = metric === 0 ? Infinity : 0;
-    let max = metric === 0 ? -Infinity : metric === 2 ? 100 : 0;
-    if (metric !== 2) for (const name of names) {
-      for (let i = indexStart; i <= last; i++) {
-        min = Math.min(min, series[name][metric][i]);
-        max = Math.max(max, series[name][metric][i]);
+    const isNav = metric === 0;
+    const isExposure = metric === 2;
+    let min = isNav ? Infinity : 0;
+    let max = isNav ? -Infinity : 0;
+    if (isExposure) {
+      max = 100;
+    } else {
+      for (const name of names) {
+        const values = series[name][metric];
+        for (let i = indexStart; i <= last; i++) {
+          min = Math.min(min, values[i]);
+          max = Math.max(max, values[i]);
+        }
       }
     }
-    if (max === min) { min -= 0.1; if (metric === 0) max += 0.1; }
+    if (max === min) {
+      min -= 0.1;
+      if (isNav) max += 0.1;
+    }
     const y = value => bottom - (bottom - top) * (value - min) / (max - min);
     for (const tick of [min, (min + max) / 2, max]) {
       graph.append(svg("line", { x1: left, x2: right, y1: y(tick), y2: y(tick), class: "timing-gridline" }),
@@ -175,7 +185,7 @@ function drawCharts() {
     const line = svg("line", { class: "cursor", y1: top, y2: bottom });
     plotCursors.push({ line, x });
     graph.append(line);
-    if (metric === 2) {
+    if (isExposure) {
       graph.append(svg("text", { x: left, y: height - 2 }, dates[indexStart]),
         svg("text", { x: right, y: height - 2, "text-anchor": "end" }, dates[last]));
     }

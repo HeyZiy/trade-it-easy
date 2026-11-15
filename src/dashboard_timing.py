@@ -18,6 +18,10 @@ class QueueFull(Exception):
     pass
 
 
+def _valid_code(code: object) -> bool:
+    return isinstance(code, str) and re.fullmatch(r"[0-9]{6}", code) is not None and is_etf_code(code)
+
+
 class TimingReports:
     def __init__(self, cache, market_cache=None):
         self.cache = cache
@@ -29,7 +33,7 @@ class TimingReports:
         self.worker = ThreadPoolExecutor(max_workers=1, thread_name_prefix="etf-timing")
 
     def _path(self, code):
-        if not isinstance(code, str) or not re.fullmatch(r"[0-9]{6}", code) or not is_etf_code(code):
+        if not _valid_code(code):
             raise ValueError("请输入 6 位沪深上市 ETF 代码。")
         return self.cache / f"{code}.json"
 
@@ -55,10 +59,11 @@ class TimingReports:
 
         catalog = archive_catalog(self.archive)
         for path in self.cache.glob("*.json"):
-            if not re.fullmatch(r"[0-9]{6}", path.stem) or not is_etf_code(path.stem):
+            code = path.stem
+            if not _valid_code(code):
                 continue
-            if report := self._load(path.stem):
-                catalog[path.stem] = {"code": path.stem, "name": report["name"], "end": report["full"]["end"]}
+            if report := self._load(code):
+                catalog[code] = {"code": code, "name": report["name"], "end": report["full"]["end"]}
         return sorted(catalog.values(), key=lambda row: row["code"])
 
     def overview(self, code):

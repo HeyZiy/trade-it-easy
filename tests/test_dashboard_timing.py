@@ -155,3 +155,26 @@ def test_unavailable_refresh_keeps_real_cache_report(reports, tmp_path, monkeypa
     assert requested.is_set()
     assert reports.overview(code)["error"] == "在线行情暂不可用"
     assert reports.group(code, "current") == initial
+
+
+def test_eastmoney_outage_uses_full_amazingdata_history(monkeypatch):
+    from data_provider.fetchers.amazingdata import client, market
+
+    expected = {"date": ["2024-01-02"], "hfq_open": [1.0], "hfq_high": [2.0],
+                "hfq_low": [1.0], "hfq_close": [2.0]}
+    monkeypatch.setattr(web_report, "_listed_etfs", lambda _: {"159920": "恒生 ETF"})
+
+    def eastmoney_down(*args):
+        raise ConnectionError
+
+    def fetch(codes, end, *, begin_date):
+        assert codes == ["159920"] and begin_date == "1990-01-01"
+        return {"159920": pd.DataFrame(expected)}
+
+    monkeypatch.setattr(bars, "get_etf_daily_em", eastmoney_down)
+    monkeypatch.setattr(client, "is_configured", lambda: True)
+    monkeypatch.setattr(market, "fetch_etf_hfq_bars", fetch)
+    name, history, source = web_report.load_live("159920")
+    assert name == "恒生 ETF"
+    assert source == "AmazingData 后复权 · 在线"
+    assert history.loc["2024-01-02", "close"] == 2.0

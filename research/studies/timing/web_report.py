@@ -1,5 +1,6 @@
 """Shared account results for the ETF timing web reader."""
 
+import logging
 from datetime import datetime, time, timedelta, timezone
 from functools import lru_cache
 
@@ -8,6 +9,7 @@ import pandas as pd
 
 from . import scan
 
+logger = logging.getLogger(__name__)
 SOURCE = "东方财富后复权日线"
 PERIODS = (1, 3, 5)
 FULL_FIELDS = ("年化收益%", "最大回撤%", "最长水下交易日", "平均仓位%", "交易次数",
@@ -23,8 +25,8 @@ ARCHIVE_GROUPS = {
 
 
 def _records(frame, fields):
-    cols = [field for field in fields if field in frame]
-    return frame[cols].astype(object).where(frame[cols].notna(), None).to_dict("records")
+    selected = frame[[field for field in fields if field in frame]]
+    return selected.astype(object).where(selected.notna(), None).to_dict("records")
 
 
 def _rolling(frame):
@@ -100,7 +102,8 @@ def archive_group(archive, code, key):
         daily = folder / f"daily_{code}.csv"
     elif key == "detail":
         folder = archive / code
-        metrics, rolling = (_read(folder / f"{name}.csv") for name in ("metrics", "rolling_summary"))
+        metrics = _read(folder / "metrics.csv")
+        rolling = _read(folder / "rolling_summary.csv")
         daily = folder / "daily.csv"
     else:
         folder = archive / "cycle"
@@ -165,17 +168,28 @@ def load_cached(code, cache):
 def load_live(code):
     """Verify a listed ETF, then read provider-adjusted OHLC without modifying the research cache."""
     from data_provider.bars import get_etf_daily_em
+    from data_provider.fetchers.amazingdata import market
+    from data_provider.fetchers.amazingdata.client import is_configured
 
     now = datetime.now(timezone(timedelta(hours=8)))
-    cutoff = now.date() if now.time() >= time(15, 30) else now.date() - timedelta(days=1)
-    name = _listed_etfs(now.date()).get(code)
+    today = now.date()
+    cutoff = today if now.time() >= time(15, 30) else today - timedelta(days=1)
+    name = _listed_etfs(today).get(code)
     if name is None:
         raise ValueError("在当前沪深上市 ETF 名单中未找到该代码。")
+    end = cutoff.isoformat()
     try:
-        rows = get_etf_daily_em(code, cutoff.isoformat())
+        return name, _price_history(get_etf_daily_em(code, end), end), SOURCE
     except Exception as error:
-        raise ValueError("暂时无法获取东方财富后复权日线，请稍后重试。") from error
-    return name, _price_history(rows, cutoff.isoformat()), SOURCE
+        logger.warning("ETF %s 东方财富后复权失败 (%s)", code, type(error).__name__)
+        if not is_configured():
+            raise ValueError("东方财富后复权日线不可用，当前工作台未配置 AmazingData 备用来源。") from error
+    try:
+        rows = market.fetch_etf_hfq_bars([code], end, begin_date="1990-01-01")[code]
+        return name, _price_history(rows, end), "AmazingData 后复权 · 在线"
+    except Exception as error:
+        logger.warning("ETF %s AmazingData 后复权失败 (%s)", code, type(error).__name__)
+        raise ValueError("东方财富和 AmazingData 均未返回可用的后复权日线，请稍后重试。") from error
 
 
 def full_report(history, source):
@@ -188,6 +202,10 @@ def full_report(history, source):
     return {**_group(metrics.reset_index(), curves, pd.DataFrame()), "source": source}, runners
 
 
-def rolling_report(history, runners):
-    return [row for years in PERIODS for row in _rolling(scan.experience.rolling_summary(
-        scan.rolling_cohorts(history, runners, years)).reset_index().assign(years=years))]
+def rolling_report(history, runners) -> list[dict]:
+    rows = []
+    for years in PERIODS:
+        cohorts = scan.rolling_cohorts(history, runners, years)
+        summary = scan.experience.rolling_summary(cohorts)
+        rows.extend(_rolling(summary.reset_index().assign(years=years)))
+    return rows

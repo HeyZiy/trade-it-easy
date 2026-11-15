@@ -211,14 +211,14 @@ def fetch_adj_factors(codes: List[str], begin_date: str,
     return pd.concat(frames, axis=1)
 
 
-def fetch_etf_hfq_bars(codes: List[str], end_date: str) -> Dict[str, pd.DataFrame]:
-    """ETF 供应商后复权 OHLC（date/hfq_high/hfq_low/hfq_close），供通道观察。
+def fetch_etf_hfq_bars(codes: List[str], end_date: str, *, begin_date: str | None = None) -> Dict[str, pd.DataFrame]:
+    """ETF 供应商后复权 OHLC，默认取最近三年。
 
     get_adj_factor 给的是事件当日乘数（除权日 1.98，次日回到 1.0），必须按日
     累积相乘再乘原始 OHLC；直接乘当日因子会把除权日算成暴跌。
     缺行情、缺因子或复权价异常的代码不返回，由调用方按失败处理（不补旧价）。
     """
-    begin = (pd.Timestamp(end_date) - pd.DateOffset(years=3)).strftime('%Y-%m-%d')
+    begin = begin_date or (pd.Timestamp(end_date) - pd.DateOffset(years=3)).strftime('%Y-%m-%d')
     klines = fetch_kline(codes, begin, end_date)
     factors = fetch_adj_factors(codes, begin, end_date)
     factor_columns = {_plain_code(column): column for column in factors.columns}
@@ -227,10 +227,13 @@ def fetch_etf_hfq_bars(codes: List[str], end_date: str) -> Dict[str, pd.DataFram
         column = factor_columns.get(code)
         if column is None:
             continue
+        fields = ["high", "low", "close"]
+        if "open" in raw.columns:
+            fields.insert(0, "open")
         dates = pd.to_datetime(raw['kline_time'], errors='coerce').dt.normalize()
         if dates.isna().any() or dates.duplicated().any():
             continue
-        prices = raw[['high', 'low', 'close']].apply(pd.to_numeric, errors='coerce')
+        prices = raw[fields].apply(pd.to_numeric, errors='coerce')
         prices.index = pd.DatetimeIndex(dates)
         prices = prices.sort_index()
         factor = factors[column].reindex(prices.index).ffill()
