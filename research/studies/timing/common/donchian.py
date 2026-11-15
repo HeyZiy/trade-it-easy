@@ -15,7 +15,7 @@ import pandas as pd
 from . import backtest as base
 from src.etf.trend import channel_signals
 
-OUT = base.STUDY / "results" / "supplementary" / "donchian"
+OUT = base.RESULTS / "supplementary" / "donchian"
 # 55/20 为主规则，20/10、20/20 为独立对照；其余检查邻近周期。
 CASES = {
     "唐奇安55/20": (55, 20, "ohlc"),

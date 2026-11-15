@@ -1,0 +1,73 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>ETF 择时研究 · 交易工作台</title>
+  <link rel="stylesheet" href="/assets/styles.css">
+  <link rel="stylesheet" href="/assets/timing.css">
+  <script src="/assets/timing.js" defer></script>
+</head>
+<body>
+  <header class="masthead"><i class="masthead-orbit" aria-hidden="true"></i><div class="masthead-inner">
+    <div><div class="eyebrow">TRADE IT EASY · RESEARCH</div><h1>ETF 择时研究</h1></div>
+    <a class="private-label" href="/">← 工作台</a>
+  </div></header>
+  <main class="timing">
+    <section class="section timing-search" aria-labelledby="lookup-title">
+      <div><h2 id="lookup-title">每只 ETF 的持有体验</h2>
+        <p class="subtle">在同一交易窗口，对比固定择时规则与买入持有。</p></div>
+      <form id="lookup">
+        <label for="etf-code">沪深 ETF 代码</label>
+        <div><input id="etf-code" name="code" inputmode="numeric" pattern="[0-9]{6}" maxlength="6"
+                    placeholder="例如 513180" required autocomplete="off">
+          <button class="primary-button" type="submit">查看报告</button></div>
+      </form>
+    </section>
+    <details class="section timing-catalog" id="catalog">
+      <summary>已有报告 <span id="catalog-count" class="subtle"></span></summary>
+      <div class="timing-links" id="catalog-list"></div>
+    </details>
+    <section class="section" id="asset" hidden aria-labelledby="asset-name">
+      <div class="section-heading timing-asset-heading">
+        <div><div class="eyebrow" id="asset-code"></div><h2 id="asset-name"></h2></div>
+        <button type="button" id="generate" class="secondary-button" hidden>生成报告</button>
+      </div>
+      <p id="timing-status" class="subtle" role="status"></p>
+      <p id="timing-error" class="warning" role="alert" hidden></p>
+      <p id="timing-empty" class="empty" hidden>这只 ETF 暂无报告。生成后，随时可通过代码再次打开。</p>
+      <div class="timing-controls" id="group-controls" hidden>
+        <label for="report-group">研究结果</label><select id="report-group"></select>
+      </div>
+      <div id="comparison" hidden>
+        <p id="timing-period" class="subtle"></p>
+        <div class="table-wrap" id="timing-metrics"></div>
+        <p class="subtle">回撤改善要和平均仓位一起看。当前对照未单独识别仓位与择时的贡献。</p>
+        <div class="timing-chart-head">
+          <fieldset id="timing-rules"><legend>显示规则</legend><div id="rule-list"></div></fieldset>
+          <label for="chart-range">仅缩放图表
+            <select id="chart-range"><option value="0">全期</option><option value="1">最近 1 年</option><option value="3">最近 3 年</option></select>
+          </label>
+        </div>
+        <div id="timing-charts"></div>
+        <label class="timing-cursor" for="timing-cursor">查看交易日
+          <input type="range" id="timing-cursor" min="0" value="0">
+        </label>
+        <div id="chart-values" class="timing-values"></div>
+        <div class="timing-rolling">
+          <div class="section-heading"><h2>固定持有期 · 多起点</h2>
+            <label for="hold-years">持有期 <select id="hold-years"><option value="1">1 年</option>
+              <option value="3" selected>3 年</option><option value="5">5 年</option></select></label>
+          </div>
+          <p class="subtle">每月从现金重新建账，并与同起点的买入持有配对。窗口相互重叠。</p>
+          <div id="timing-rolling-results"></div>
+        </div>
+      </div>
+    </section>
+    <details class="section" id="timing-case" hidden>
+      <summary>专题 · 创业板最深回撤复盘</summary>
+      <article class="report-prose timing-case" id="timing-case-body"></article>
+    </details>
+  </main>
+</body>
+</html>

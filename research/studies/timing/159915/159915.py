@@ -1,15 +1,22 @@
 """创业板长回撤诊断：固定规则、同时间比较、逐日损益与持仓段核对。
 
-运行 python -m research.studies.timing.experiments.chi_next_drawdown
+运行 python -m research.studies.timing.159915.159915
 只读已有缓存，不试新参数；损益拆分是记账描述，不是改成交规则的反事实。
 """
+from pathlib import Path
+import sys
+
 import numpy as np
 import pandas as pd
 
-from .. import run_level1 as study
+if not __package__:
+    sys.path.insert(0, str(Path(__file__).resolve().parents[4]))
+    __package__ = "research.studies.timing.159915"
+
+from .. import scan as study
 
 base = study.base
-OUT = base.STUDY / "results" / "chi_next_drawdown"
+OUT = base.RESULTS / "159915"
 RULES = ("长拿", "唐奇安20/10", "唐奇安55/20", study.ATR_CASE)
 
 

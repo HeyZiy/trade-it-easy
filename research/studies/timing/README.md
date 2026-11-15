@@ -1,65 +1,30 @@
-# 择时能否改善长期持有体验？
+# ETF 择时与长期持有体验
 
-固定规则的择时能否改善持有体验，以及为此付出多少收益。
+逐只 ETF 比较固定择时规则与买入持有的年化收益、最大回撤、最长水下时间与平均仓位。
 
-## 从这里看
+## 按标的查看
 
-| 想看什么                                      | 入口                                                                                    |
-|-----------------------------------------------|-----------------------------------------------------------------------------------------|
-| 当前结论                                      | [研究结论](docs/FINDINGS.md)                                                            |
-| 数据、规则、指标定义                          | [统一口径](docs/METHOD.md)                                                              |
-| 一级：12只ETF、代表规则横向比较               | [结果](results/level1/summary.md) · [脚本](run_level1.py)                               |
-| 二级：恒生科技、固定参数组比较                | [结果](results/level2/513180/summary.md) · [脚本](run_level2.py)                        |
-| 附加：唐奇安与ATR通道的族扫描（排除参数侥幸） | [结论](docs/FINDINGS.md) · [唐奇安](common/donchian.py) · [ATR通道](common/atr_channel.py) |
-| 附加：网格中枢重定频率是否改变结论            | [结论](docs/FINDINGS.md) · [脚本](experiments/grid_reanchor.py)                         |
-| 创业板：46%回撤如何形成，与恒生科技同时间比较 | [诊断](results/chi_next_drawdown/summary.md) · [脚本](experiments/chi_next_drawdown.py) |
-| 各规则的净值、回撤与仓位曲线                  | [脚本](plot_curves.py)，输出到各层 `plots/`（不入库）                                   |
+启动交易工作台后，从「ETF 择时研究」进入 `/research/timing`。每只 ETF 有独立页面，已有报告复用研究结果的原始日期，各报告组各自与同窗口的长拿配对。
 
-## 当前结论
+输入沪深 ETF 代码后可以按需生成固定价格规则报告。首次生成优先使用质量合格的 AmazingData 本地研究快照；没有快照时核对当前上市 ETF 名单并获取东方财富后复权日线。页面显示来源和实际截止日。先保存全期表和曲线，再计算从现金重新建账的 1、3、5 年多起点结果；历史不足的期限不出数。
 
-恒生科技513180在2022-03-18至2026-09-30的样本中，唐奇安20/10和多组均线ATR通道同时改善了长拿的收益、回撤与最长水下时间；这是4.5年短样本上的单点结果。
+工作台在 `data/timing_reports/<代码>.json` 保存网页生成的报告，从 [`data/timing_reports/archive/`](../../../data/timing_reports/archive/) 读取已归档的回测 CSV。两个路径均相对于工作台的数据根目录。「重新生成」尝试在线更新，取数失败时保留已有报告。
 
-跨12只ETF的族扫描只支持回撤与水下时间的改善：3年滚动窗口中唐奇安族的回撤改善比例为76%–100%、ATR通道族为85%–96%，而两族的超额年化中位数几乎全为负。择时买到的是回撤缓解，不是收益。
+研究解释见[研究结论](FINDINGS.md)，数据及成交口径见[共享账户引擎](common/backtest.py)。
 
-一级用于发现不同标的的表现差异，二级用于并列比较预先固定的代表参数，附加层用于排除参数侥幸；逐标的给结论。完整数字与适用范围见[研究结论](docs/FINDINGS.md)。
+## 复现研究
 
-## 运行
+从仓库根目录运行，回测结果写入 `data/timing_reports/archive/`。行情与 PE 输入仍由共享研究缓存提供。
 
-从仓库根目录运行：
+| 需要生成的数据 | 运行入口 |
+| --- | --- |
+| 行情与 PE 缓存 | `python -m research.studies.timing.fetch_data` |
+| 配置标的的代表规则 | `python -m research.studies.timing.scan` |
+| 恒生科技的固定参数组 | `python -m research.studies.timing.513180.513180` |
+| 唐奇安参数族 | `python -m research.studies.timing.common.donchian` |
+| ATR 通道参数族 | `python -m research.studies.timing.common.atr_channel` |
+| 网格中枢频率对照 | `python -m research.studies.timing.experiments.grid_reanchor` |
+| 创业板回撤诊断 | `python -m research.studies.timing.159915.159915` |
+| Cycle 单 ETF 择时对照 | `python -m research.studies.timing.experiments.cycle_timing` |
 
-```text
-python research/studies/timing/fetch_data.py
-python research/studies/timing/run_level1.py
-python research/studies/timing/run_level2.py
-python -m research.studies.timing.common.donchian
-python -m research.studies.timing.common.atr_channel
-python -m research.studies.timing.experiments.grid_reanchor
-python -m research.studies.timing.plot_curves
-```
-
-已有数据时，直接运行一级或二级。一级读取[assets.py](assets.py)中的全部12只ETF；二级目前只运行恒生科技，固定规则在run_level2.py的PRESETS中。绘图只读已生成的 daily 曲线，可用 `--layer`、`--code` 缩小范围。
-
-## 目录
-
-```text
-timing/
-├─ README.md           研究问题和阅读入口
-├─ assets.py           唯一标的配置
-├─ fetch_data.py       数据准备
-├─ run_level1.py       一级：多标的固定规则
-├─ run_level2.py       二级：单标的固定参数
-├─ plot_curves.py      daily 曲线画成交互 HTML
-├─ common/             共享账户、信号和体验指标；donchian 与 atr_channel 自带族扫描入口
-├─ experiments/        网格频率对照、创业板回撤诊断
-├─ docs/
-│  ├─ FINDINGS.md      当前结论
-│  └─ METHOD.md        统一口径
-└─ results/            各层原始输出与 plots/；csv、json 与 html 均不入库
-   ├─ level1/          一级当前结果
-   ├─ level2/513180/   二级当前结果
-   ├─ chi_next_drawdown/ 创业板回撤诊断
-   └─ supplementary/   族扫描与网格频率对照
-```
-
-行情与 PE 数据在 `research/data/etf_hfq_em/` 与 `research/data/index_pe_lg/`，
-CSV 不入库，口径与重生成见各目录 README 与 manifest。
+[标的配置](assets.py)定义批量复现的覆盖范围。

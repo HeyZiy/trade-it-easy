@@ -21,6 +21,7 @@
   无前视；至少 24 期历史）。
 """
 from collections import deque
+from os import environ
 from pathlib import Path
 
 import numpy as np
@@ -31,6 +32,7 @@ from . import experience
 
 ASSETS = asset_config.ASSETS
 STUDY = Path(__file__).resolve().parents[1]
+RESULTS = Path(environ.get("TRADE_DASHBOARD_ROOT", STUDY.parents[2])).resolve() / "data" / "timing_reports" / "archive"
 DATA = STUDY.parents[1] / "data"
 ETF_DATA = DATA / "etf_hfq_em"
 PE_DATA = DATA / "index_pe_lg"

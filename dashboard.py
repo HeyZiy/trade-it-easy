@@ -12,6 +12,7 @@ import json
 import logging
 import os
 from pathlib import Path
+import re
 import time
 
 from src.trade_ledger.ledger import derive, load_trades
@@ -20,6 +21,7 @@ from src.trade_ledger.performance import load_performance, valid_records
 from src import fund_plans
 from src.etf_account import FILENAME as ETF_FILENAME, SHANGHAI, account_data as etf_account_data
 from src.dashboard_quotes import QuoteRefresh
+from src.dashboard_timing import QueueFull, TimingReports
 from src.portfolio_config import STRATEGY_NAMES
 
 APP_ROOT = Path(__file__).resolve().parent
@@ -36,6 +38,10 @@ DISPLAY = (
 AUTH_REALM = 'Basic realm="trade-dashboard", charset="UTF-8"'
 AUTH_DELAY = 0.5
 QUOTES = QuoteRefresh()
+TIMING_URL = "/research/timing"
+TIMING_API = "/api" + TIMING_URL
+TIMING = TimingReports(ROOT / "data" / "timing_reports",
+                       APP_ROOT / "research" / "data" / "etf_daily_ad")
 
 
 class ReportHTML(HTMLParser):
@@ -63,17 +69,21 @@ class ReportHTML(HTMLParser):
 
 def report_data(root, name):
     """Render only a whitelisted latest report for reading inside the dashboard."""
-    import markdown2
-
     report = next((r for r in _report_files(root) if r["file"] == name), None)
     if report is None:
         raise FileNotFoundError(name)
     markdown = (root / "reports" / name).read_text(encoding="utf-8")
+    return {**report, "html": markdown_html(markdown)}
+
+
+def markdown_html(markdown):
+    import markdown2
+
     cleaner = ReportHTML()
     cleaner.feed(markdown2.markdown(markdown, safe_mode="escape",
                                    extras=["tables", "fenced-code-blocks", "strike"]))
     cleaner.close()
-    return {**report, "html": "".join(cleaner.parts)}
+    return "".join(cleaner.parts)
 
 
 def auth_config():
@@ -240,6 +250,47 @@ def dashboard_data(root=ROOT):
 
 
 class Handler(BaseHTTPRequestHandler):
+    def timing_json(self, result, status=200):
+        body = json.dumps(result, ensure_ascii=False, allow_nan=False).encode("utf-8")
+        self.respond(body, "application/json; charset=utf-8", status=status)
+
+    def read_timing(self):
+        try:
+            if self.path == TIMING_API:
+                self.timing_json({"reports": TIMING.catalog()})
+                return
+            match = re.fullmatch(r"/([0-9]{6})(?:/([a-z-]+))?", self.path.removeprefix(TIMING_API))
+            if not match:
+                raise FileNotFoundError
+            code, group = match.groups()
+            if group == "case" and code == "159915":
+                result = {"html": markdown_html(TIMING.case_study().read_text(encoding="utf-8"))}
+            else:
+                result = TIMING.group(code, group) if group else TIMING.overview(code)
+            self.timing_json(result)
+        except FileNotFoundError:
+            self.timing_json({"error": "未找到该研究结果。"}, 404)
+        except ValueError as error:
+            self.timing_json({"error": str(error)}, 400)
+        except Exception:
+            logging.exception("读取 ETF 择时研究失败")
+            self.timing_json({"error": "无法读取报告，请稍后重试。"}, 500)
+
+    def start_timing(self):
+        try:
+            length = int(self.headers.get("Content-Length", "0"))
+            if not 0 < length <= 1024:
+                raise ValueError("请求内容无效。")
+            payload = json.loads(self.rfile.read(length))
+            if not isinstance(payload, dict):
+                raise ValueError("请求内容无效。")
+            phase = TIMING.start(payload.get("code"), payload.get("refresh", False))
+            self.timing_json({"phase": phase}, 200 if phase == "existing" else 202)
+        except ValueError as error:
+            self.timing_json({"error": str(error)}, 400)
+        except QueueFull as error:
+            self.timing_json({"error": str(error)}, 429)
+
     def do_POST(self):
         user, password = auth_config()
         if not password:
@@ -253,6 +304,9 @@ class Handler(BaseHTTPRequestHandler):
         if (self.headers.get("X-Trade-Request") != "dashboard"
                 or self.headers.get("Content-Type") != "application/json"):
             self.respond(b'{}', "application/json", status=403)
+            return
+        if self.path == TIMING_API:
+            self.start_timing()
             return
         from src.etf_account import (
             FILENAME, cash_rebalance, dismiss, edit_event, event_context, lookup_fund_names, lookup_fund_nav,
@@ -325,7 +379,11 @@ class Handler(BaseHTTPRequestHandler):
             self.respond(json.dumps(result, ensure_ascii=False).encode(), "application/json; charset=utf-8")
         elif self.path == "/":
             self.respond((APP_ROOT / "dashboard" / "index.html").read_bytes(), "text/html; charset=utf-8")
-        elif self.path in {"/assets/app.js", "/assets/styles.css"}:
+        elif self.path == TIMING_URL or re.fullmatch(TIMING_URL + r"/[0-9]{6}", self.path):
+            self.respond((APP_ROOT / "dashboard" / "timing.html").read_bytes(), "text/html; charset=utf-8")
+        elif self.path == TIMING_API or self.path.startswith(TIMING_API + "/"):
+            self.read_timing()
+        elif self.path in {"/assets/app.js", "/assets/styles.css", "/assets/timing.js", "/assets/timing.css"}:
             filename = self.path.rsplit("/", 1)[-1]
             content_type = "text/javascript; charset=utf-8" if filename.endswith(".js") else "text/css; charset=utf-8"
             self.respond((APP_ROOT / "dashboard" / filename).read_bytes(), content_type)

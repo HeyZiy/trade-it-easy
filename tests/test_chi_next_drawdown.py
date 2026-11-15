@@ -1,8 +1,10 @@
 """核对诊断的账户分解，覆盖区间起初已有持仓和期末未平仓。"""
+import importlib
+
 import numpy as np
 import pandas as pd
 
-from research.studies.timing.experiments import chi_next_drawdown as probe
+probe = importlib.import_module("research.studies.timing.159915.159915")
 
 
 def account():

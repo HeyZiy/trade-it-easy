@@ -5,7 +5,7 @@ import numpy as np
 import pandas as pd
 
 from research.studies.timing.common import backtest as b
-from research.studies.timing import run_level1 as h
+from research.studies.timing import scan as h
 
 
 def prices(rows, start='2020-01-02'):

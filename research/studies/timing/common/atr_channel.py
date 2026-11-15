@@ -15,7 +15,7 @@ import pandas as pd
 from . import donchian as dc
 
 base = dc.base
-OUT = base.STUDY / "results" / "supplementary" / "atr_channel"
+OUT = base.RESULTS / "supplementary" / "atr_channel"
 # (均线周期, ATR周期, ATR倍数, 出场线, 均线算法, ATR平滑算法)
 CASES = {
     "MA20_ATR20×1.5_下轨退出": (20, 20, 1.5, "lower", "sma", "wilder"),

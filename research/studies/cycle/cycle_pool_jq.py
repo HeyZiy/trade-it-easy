@@ -71,12 +71,16 @@ import re
 
 import numpy as np
 import pandas as pd
-from jqdata import *
+try:
+    from jqdata import *
+except ModuleNotFoundError as exc:
+    if exc.name != "jqdata":
+        raise
+else:
+    # 逐行性能分析仅在聚宽回测中启用。
+    enable_profile()
 # 必须放在星号导入之后：jqdata 会遮蔽这几个内建名，显式还原
 from builtins import any, min, max, sum
-
-# 逐行性能分析：只在"运行回测"的结果页可见，本身拖慢回测，长区间跑前注释掉
-enable_profile()
 
 # ---- 池子（§1 + etf_pool 口径）----
 LIQ_MIN = 30_000_000.0

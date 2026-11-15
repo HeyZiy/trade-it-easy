@@ -1,6 +1,6 @@
 """二级测试：单标的、固定代表参数组；目前仅运行恒生科技513180。
 
-python research/studies/timing/run_level2.py
+运行 python -m research.studies.timing.513180.513180。
 不扫描参数网格，不按结果选参数，不修改一级规则。
 """
 from datetime import datetime, timezone
@@ -13,14 +13,14 @@ import sys
 import pandas as pd
 
 if not __package__:
-    sys.path.insert(0, str(Path(__file__).resolve().parents[3]))
-    __package__ = "research.studies.timing"
+    sys.path.insert(0, str(Path(__file__).resolve().parents[4]))
+    __package__ = "research.studies.timing.513180"
 
-from . import run_level1 as holding
+from .. import scan as holding
 
 base, dc, atr = holding.base, holding.dc, holding.atr
 ASSET_CODE = "513180"
-OUT = base.STUDY / "results" / "level2" / ASSET_CODE
+OUT = base.RESULTS / ASSET_CODE
 
 # 一次列明固定规则，不从测试结果动态生成候选或推荐参数。
 # 唐奇安保留20/10、55/20两组代表规则，20/20仅作退出周期对照。

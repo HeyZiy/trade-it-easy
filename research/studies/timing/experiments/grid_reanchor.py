@@ -6,7 +6,7 @@ T+1（当日买入不可卖）、跳空按开盘价改善成交、O-L-H-C 主路
 逐标的比较三种中枢频率的年化、回撤、Sharpe、平均仓位与交易次数；
 仅报告对照，不按结果更改主结果参数。
 从仓库根运行：python -m research.studies.timing.experiments.grid_reanchor
-输出：results/supplementary/grid_reanchor/ 下 CSV + 控制台对比表。
+输出：data/timing_reports/archive/supplementary/grid_reanchor/ 下的 CSV。
 """
 from datetime import datetime, timezone
 import hashlib
@@ -17,7 +17,7 @@ import pandas as pd
 
 from ..common import backtest as base
 
-OUT = base.STUDY / "results" / "supplementary" / "grid_reanchor"
+OUT = base.RESULTS / "supplementary" / "grid_reanchor"
 CASES = {"每月重定中枢": dict(reanchor=True, reanchor_every=1),
          "每季重定中枢": dict(reanchor=True, reanchor_every=3),
          "不重定中枢": dict(reanchor=False)}

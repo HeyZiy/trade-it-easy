@@ -8,7 +8,7 @@ import numpy as np
 import pandas as pd
 
 from research.studies.timing.assets import ASSETS, AssetSpec, ValuationSource
-from research.studies.timing import run_level1 as l1
+from research.studies.timing import scan as l1
 from research.studies.timing import fetch_data as f
 
 

@@ -49,6 +49,15 @@ env/
 /data/position_exit_state.json
 /data/environment.json
 /data/AmazingData_local_data
+/data/timing_reports/*
+!/data/timing_reports/archive/
+/data/timing_reports/archive/**
+!/data/timing_reports/archive/level1/
+!/data/timing_reports/archive/159915/
+!/data/timing_reports/archive/513180/
+!/data/timing_reports/archive/level1/summary.md
+!/data/timing_reports/archive/159915/summary.md
+!/data/timing_reports/archive/513180/summary.md
 
 logs/
 reports/
@@ -85,7 +94,6 @@ CLAUDE.md
 !research/data/**/manifest.json
 !research/studies/etf/industry_etf_universe.json
 
-# 研究绘图产物，可由 plot_curves.py 重新生成
 plots/
 
 

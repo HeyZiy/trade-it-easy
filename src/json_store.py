@@ -33,11 +33,12 @@ def locked(path):
                 fcntl.flock(stream, fcntl.LOCK_UN)
 
 
-def save(path, state):
+def save(path, state, *, compact=False):
     handle, temporary = tempfile.mkstemp(dir=Path(path).parent, suffix=".tmp")
     try:
         with os.fdopen(handle, "w", encoding="utf-8") as stream:
-            json.dump(state, stream, ensure_ascii=False, indent=2, allow_nan=False)
+            options = {"separators": (",", ":")} if compact else {"indent": 2}
+            json.dump(state, stream, ensure_ascii=False, allow_nan=False, **options)
             stream.flush()
             os.fsync(stream.fileno())
         for attempt in range(6):

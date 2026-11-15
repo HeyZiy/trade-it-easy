@@ -1,5 +1,6 @@
 """固定二级规则、一级对照一致性及短样本导出。"""
 from contextlib import redirect_stdout
+import importlib
 import io
 import json
 from pathlib import Path
@@ -12,8 +13,9 @@ from unittest.mock import patch
 import numpy as np
 import pandas as pd
 
-from research.studies.timing import run_level2 as s
 from research.studies.timing.assets import AssetSpec
+
+s = importlib.import_module("research.studies.timing.513180.513180")
 
 
 def history():
@@ -30,14 +32,14 @@ class SecondaryStudyTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             folder = Path(tmp)
             prices.rename_axis('date').to_csv(folder / 'etf_hfq_513180.csv')
-            with patch.object(s.base, 'STUDY', folder), patch.object(s.base, 'ETF_DATA', folder), \
+            with patch.object(s.base, 'RESULTS', folder), patch.object(s.base, 'ETF_DATA', folder), \
                     patch.object(s.base, 'PE_DATA', folder), \
                     patch.object(s.base, 'ASSETS', (AssetSpec('513180', '恒生科技ETF', ''),)), \
                     patch.object(sys, 'path', sys.path.copy()), redirect_stdout(io.StringIO()):
-                runpy.run_path(str(study / 'run_level1.py'), run_name='__main__')
-                runpy.run_path(str(study / 'run_level2.py'), run_name='__main__')
-            self.assertTrue((folder / 'results/level1/run_manifest.json').is_file())
-            self.assertTrue((folder / 'results/level2/513180/run_manifest.json').is_file())
+                runpy.run_path(str(study.parent / 'scan.py'), run_name='__main__')
+                runpy.run_path(str(study / '513180.py'), run_name='__main__')
+            self.assertTrue((folder / 'level1/run_manifest.json').is_file())
+            self.assertTrue((folder / '513180/run_manifest.json').is_file())
 
     def test_fixed_presets_preserve_first_level_accounts(self):
         px_all = history()

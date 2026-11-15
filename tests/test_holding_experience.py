@@ -12,7 +12,7 @@ import pandas as pd
 
 from research.studies.timing.common import backtest as b
 from research.studies.timing.common import experience as e
-from research.studies.timing import run_level1 as h
+from research.studies.timing import scan as h
 from research.studies.timing.experiments import grid_reanchor as grid
 from research.studies.timing.assets import AssetSpec
 

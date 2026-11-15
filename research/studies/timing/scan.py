@@ -1,6 +1,6 @@
 """统一比较长期配置的收益、回撤及水下时间；只读取现有缓存。
 
-从仓库根运行 python research/studies/timing/run_level1.py。
+从仓库根运行 python -m research.studies.timing.scan。
 全期与每月重新建账的1/3/5年窗口均使用相同规则、成本和初始资金。
 """
 from datetime import datetime, timezone
@@ -21,7 +21,7 @@ from .common import atr_channel as atr
 dc = atr.dc
 base = atr.base
 experience = base.experience
-OUT = base.STUDY / "results" / "level1"
+OUT = base.RESULTS / "level1"
 ATR_CASE = "MA20_ATR20×1.5_下轨退出"
 
 

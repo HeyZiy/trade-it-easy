@@ -24,5 +24,5 @@ factor\_analysis 提供可调用函数和聚宽代码生成器；具体股票池
 | [expectations](studies/expectations/README.md)          | 低预期 × 已披露盈利维持           | 低预期＋历史盈利维持全期核查完成，未显示稳定增量；60日控制系数HAC t=−0.37                 |
 | [etf](studies/etf/README.md)                            | 全 ETF 跨资产动量轮动（3 只等权） | 独立新研究，IM\_v1 首轮修订                                                               |
 | [rotation](studies/rotation/README.md)                  | ETF跨资产趋势与相对强弱轮动       | 独立维护15只基线与17只能源扩充；行业规则见strategy/industry\_momentum.md                  |
-| [timing](studies/timing/README.md)    | ETF长期配置的持有体验与择时   | 一级比较12只ETF；二级固定参数单跑恒生科技，20/10及ATR通道改善当前样本体验，结论按标的区分 |
+| [timing](studies/timing/README.md)    | ETF长期配置的持有体验与择时   | 工作台逐标的报告与离线回测复现 |
 
