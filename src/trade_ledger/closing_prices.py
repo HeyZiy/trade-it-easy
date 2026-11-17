@@ -54,9 +54,16 @@ class ClosingPrices:
             try:
                 if not is_etf_code(code):
                     raise ValueError("不是已知股票或ETF代码")
-                from data_provider.bars import get_etf_daily
-                # 台账股数与未复权价格配对；不把研究用连续价格当作资产市值。
-                self._prices[code, asof] = _at(get_etf_daily(code, adjust=None), asof, "date")
+                from data_provider.bars import get_etf_daily, get_etf_daily_em
+                # 台账股数与未复权价格配对；东财当日收盘发布早于新浪，优先东财原始线，
+                # 失败或缺当日价再回退新浪；不把研究用连续价格当作资产市值。
+                try:
+                    price = _at(get_etf_daily_em(code, asof), asof, "date")
+                except Exception:
+                    price = None
+                if price is None:
+                    price = _at(get_etf_daily(code, adjust=None), asof, "date")
+                self._prices[code, asof] = price
             except Exception:
                 logger.exception("原始ETF收盘数据缺失：%s %s", code, asof)
                 self._prices[code, asof] = None

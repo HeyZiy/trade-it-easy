@@ -23,11 +23,11 @@ class QuoteRefresh:
         with self._lock:
             return deepcopy(self._state) if self._request and self._request[0] == Path(path).resolve() else {}
 
-    def start(self, path, today):
+    def start(self, path, today, *, now=None):
         """合并重复点击；记账或配置变化后允许立即刷新新增标的。"""
         path = Path(path).resolve()
         account = etf_account.load(path)
-        price_day = etf_account.valuation_day(today)
+        price_day = etf_account.valuation_day(today, now=now)
         view = etf_account.snapshot(account, today.isoformat())
         fund_codes = tuple(sorted(view["fund_positions"].keys() | {row["code"] for row in view["fund_pending"].values()}))
         request = (path, today, price_day, etf_account.revision(account), fund_codes)

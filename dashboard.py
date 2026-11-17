@@ -228,7 +228,8 @@ class Handler(BaseHTTPRequestHandler):
         if self.path == "/api/etf/refresh":
             try:
                 path = ROOT / "data" / FILENAME
-                QUOTES.start(path, datetime.now(SHANGHAI).date())
+                now = datetime.now(SHANGHAI)
+                QUOTES.start(path, now.date(), now=now)
             except Exception:
                 logging.exception("启动网页估值刷新失败")
                 self.respond(json.dumps({"error": "无法刷新估值，请检查账户数据后重试。"}, ensure_ascii=False).encode(),

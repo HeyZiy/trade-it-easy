@@ -1,13 +1,8 @@
-"""Explicit fund distributions: historical price adjustment and cash entitlement dates."""
-from datetime import date
+"""东财基金分红/拆分表解析（研究核验用）；生产复权用东财官方后复权行情。"""
 import io
-import json
-import math
-from pathlib import Path
 import re
 
 import pandas as pd
-import requests
 
 
 def _distribution_dates(row):
@@ -59,67 +54,3 @@ def parse_events(html):
     if len({(e['date'], e['cash_per_share'], e['split_ratio']) for e in events}) != len(events):
         raise ValueError('权益事件重复')
     return sorted(events, key=lambda e: e['date'])
-
-
-def get_fund_events(code, as_of, *, cache_dir=None):
-    """Same-day cached complete event tables; failed fetches never imply no dividend."""
-    date.fromisoformat(str(as_of))
-    if not re.fullmatch(r'\d{6}', code):
-        raise ValueError('Invalid fund code')
-    directory = Path(cache_dir) if cache_dir is not None else Path(__file__).resolve().parents[1] / 'data/fund_actions'
-    path = directory / f'{code}-{as_of}.json'
-    if path.exists():
-        payload = json.loads(path.read_text(encoding='utf-8'))
-        if payload.get('code') != code or payload.get('as_of') != str(as_of):
-            raise ValueError('Fund event cache identity mismatch')
-        events = payload['events']
-    else:
-        for attempt in range(2):
-            try:
-                response = requests.get(f'https://fundf10.eastmoney.com/fhsp_{code}.html', timeout=15)
-                response.raise_for_status()
-                break
-            except requests.RequestException:
-                if attempt:
-                    raise
-        response.encoding = 'utf-8'
-        events = parse_events(response.text)
-    for event in events:
-        cash = float(event['cash_per_share'])
-        if not math.isfinite(cash) or cash < 0:
-            raise ValueError('Invalid dividend amount')
-        if cash:
-            registered, ex, paid = (date.fromisoformat(event[k]) for k in ('record_date', 'date', 'pay_date'))
-            if not registered <= ex <= paid:
-                raise ValueError('Invalid dividend entitlement/ex/payment dates')
-    if not path.exists():
-        directory.mkdir(parents=True, exist_ok=True)
-        path.write_text(json.dumps(dict(code=code, as_of=str(as_of), events=events), ensure_ascii=False), encoding='utf-8')
-    return [event for event in events if event['date'] <= str(as_of)]
-
-
-def adjusted_close(raw, events, decision_date):
-    """Split-adjusted history plus explicit cash adjustment, anchored to decision-day units.
-
-    Retains the existing split treatment; cash dividends use the previous RAW close.
-    No event or bar after the decision date may alter the signal.
-    """
-    from data_provider.bars import adjust_series
-    raw = raw.copy()
-    raw.index = pd.to_datetime(raw.index)
-    if raw.index.has_duplicates:
-        raise ValueError('Duplicate daily bars')
-    raw = raw.loc[raw.index <= pd.Timestamp(decision_date)].sort_index().astype(float)
-    result = adjust_series(raw)
-    for event in events:
-        ex = pd.Timestamp(event['date'])
-        cash = float(event['cash_per_share'])
-        if not cash or ex > pd.Timestamp(decision_date) or not len(raw) or ex <= raw.index[0]:
-            continue
-        prior = raw.loc[raw.index < ex]
-        if prior.empty or not math.isfinite(prior.iloc[-1]) or prior.iloc[-1] <= cash:
-            raise ValueError('Missing/invalid pre-dividend closing price')
-        if event.get('split_ratio', 1.) != 1.:
-            raise ValueError('Simultaneous distribution and split require verified units')
-        result.loc[result.index < ex] *= (prior.iloc[-1] - cash) / prior.iloc[-1]
-    return result

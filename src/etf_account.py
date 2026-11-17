@@ -1,5 +1,6 @@
 """投资账户台账：期初快照、人工流水、收盘估值和调仓建议。"""
 
+from datetime import datetime
 from decimal import Decimal, ROUND_HALF_UP
 import logging
 import math
@@ -23,6 +24,10 @@ from src.trading_calendar import SHANGHAI, shanghai_today as _today
 
 ETF_HOLDING_PREFIXES = tuple(prefix for prefix in ETF_PREFIXES if prefix not in {"16", "18"})
 logger = logging.getLogger(__name__)
+
+
+def _now():
+    return datetime.now(SHANGHAI)
 
 
 def initialize(path, *, asof, cash, positions, targets=None, budgets=None, cash_allocations=None):
@@ -219,7 +224,7 @@ def record_event(path, payload):
 def cash_rebalance(path, payload):
     """按同一组展示估值预览现金再平衡，不保存；持仓超配时按现金缺口比例分配。"""
     today = _today()
-    price_day = valuation_day(today)
+    price_day = valuation_day(today, now=_now())
     with _locked(path):
         state = load(path)
         if payload.get("revision") != revision(state):
@@ -336,7 +341,7 @@ def set_budgets(path, payload):
 
 def dismiss(path, payload):
     today = _today()
-    price_day = valuation_day(today)
+    price_day = valuation_day(today, now=_now())
     with _locked(path):
         state = load(path)
         if payload.get("revision") != revision(state):
@@ -430,7 +435,7 @@ def account_data(path):
     state = load(path)
     day = _today()
     today = day.isoformat()
-    price_day = valuation_day(day)
+    price_day = valuation_day(day, now=_now())
     view = account_valuation.valuation_view(state, day, price_day)
     records, valid = account_valuation.valid_records(state, today)
     valid_dates = {r["date"] for r in valid}

@@ -493,14 +493,15 @@ def test_write_api_requires_auth_and_custom_header(account, monkeypatch):
         thread.join()
 
 @pytest.mark.parametrize("weight,current_value,absolute_review,relative_review,trade_eligible", [
-    (.05, 6249, False, False, False),
-    (.05, 6250, False, True, False),
-    (.05, 3750, False, True, False),
-    (.05, 7000, False, True, True),
-    (.02, 2500, False, True, False),
-    (.60, 64000, False, False, True),
-    (.60, 65000, True, False, True),
-    (0, 2000, False, False, True),
+    # 出指令门＝破复核带(5pp 或 25%)且缺口≥400 元（MIN_TRADE_AMOUNT）。
+    (.05, 6249, False, False, False),   # 相对 24.98% 未破带
+    (.05, 6250, False, True, True),     # 相对 25% 破带，缺口 1250≥400 → 出指令
+    (.05, 3750, False, True, True),     # 低配 25% 破带，缺口 1250≥400
+    (.05, 7000, False, True, True),     # 相对 40% 破带
+    (.02, 2500, False, True, True),     # 微仓相对 25% 破带，缺口 500≥400（旧平 2pp 会冻结）
+    (.60, 64000, False, False, False),  # 绝对 4pp 未破 5pp 带、相对 6.7% 未破 25% → 不出指令
+    (.60, 65000, True, False, True),    # 绝对 5pp 破带
+    (0, 2000, False, False, False),     # 零权重无相对带，绝对 2pp 未破 5pp → 不出指令
 ])
 def test_allocation_gap_drives_review_and_share_reference(
         tmp_path, weight, current_value, absolute_review, relative_review, trade_eligible):

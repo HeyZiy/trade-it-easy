@@ -156,11 +156,39 @@ def test_raw_close_feed_rejects_stale_future_and_duplicate_rows(monkeypatch):
     def fetch(code, *, adjust):
         seen.append((code, adjust))
         return frames[code]
+    def em_unavailable(code, end_date):
+        raise ValueError("东财行情为空")
+    monkeypatch.setattr("data_provider.bars.get_etf_daily_em", em_unavailable)
     monkeypatch.setattr("data_provider.bars.get_etf_daily", fetch)
     feed = ClosingPrices()
     assert feed.close_prices(list(frames), "2026-09-23") == {"512880": 12}
     feed.close_prices(list(frames), "2026-09-23")
     assert len(seen) == 4 and all(adjust is None for _, adjust in seen)
+
+
+def test_raw_close_feed_prefers_em_raw_close_and_falls_back_to_sina(monkeypatch):
+    from src.trade_ledger.closing_prices import ClosingPrices
+    asof = "2026-09-23"
+    em_frames = {
+        "510300": pd.DataFrame({"date": [asof], "close": [10]}),
+        "510050": pd.DataFrame({"date": ["2026-09-22"], "close": [9]}),
+    }
+    em_calls, sina_calls = [], []
+    def em_fetch(code, end_date):
+        em_calls.append(code)
+        if code == "510500":
+            raise ValueError("东财行情为空")
+        return em_frames[code]
+    def sina_fetch(code, *, adjust):
+        sina_calls.append((code, adjust))
+        return pd.DataFrame({"date": [asof], "close": [{"510500": 11, "510050": 12}[code]]})
+    monkeypatch.setattr("data_provider.bars.get_etf_daily_em", em_fetch)
+    monkeypatch.setattr("data_provider.bars.get_etf_daily", sina_fetch)
+    feed = ClosingPrices()
+    assert feed.close_prices(["510300", "510500", "510050"], asof) == {
+        "510300": 10, "510500": 11, "510050": 12}
+    assert em_calls == ["510300", "510500", "510050"]
+    assert sina_calls == [("510500", None), ("510050", None)]
 
 
 def test_close_collector_rejects_intraday_and_nontrading_dates(monkeypatch):

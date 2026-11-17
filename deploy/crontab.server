@@ -40,7 +40,8 @@
 # ── 跨资产动量：每交易日 10:40 更新实际账户建议并推送 ──
 40 10 * * 1-5 cd /root/trade-it-easy && flock -n /tmp/etf-rotation.lock /root/miniconda/envs/rt/bin/python etf_rotation.py > /dev/null 2>> logs/cron_error.log
 
-# ── 收盘成绩：次日08:30（北京时间）采集投资账户上一交易日的收盘估值，
-#    并回补最近5个交易日不完整记录；给ETF日线源留出整夜；缺价保留最近完整成绩；
-#    不交易、不推送、不生成日报（成绩看板在 dashboard）──
-30 8 * * 1-5 cd /root/trade-it-easy && flock -n /tmp/portfolio-report.lock /root/miniconda/envs/rt/bin/python portfolio_report.py > /dev/null 2>> logs/cron_error.log
+# ── 收盘成绩：当日18:30（北京时间）采集投资账户当日收盘估值（ETF 东财优先、
+#    新浪保底，18:30 东财已发布当日收盘），并回补最近5个交易日不完整记录；
+#    部分场外净值晚间才公布，当日记录可能先标待估值、次日晚回补补齐；
+#    缺价保留最近完整成绩；不交易、不推送、不生成日报（成绩看板在 dashboard）──
+30 18 * * 1-5 cd /root/trade-it-easy && flock -n /tmp/portfolio-report.lock /root/miniconda/envs/rt/bin/python portfolio_report.py > /dev/null 2>> logs/cron_error.log

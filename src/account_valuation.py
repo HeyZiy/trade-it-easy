@@ -1,11 +1,11 @@
 """投资账户的收盘成绩与仪表盘估值。"""
 
-from datetime import date, timedelta
+from datetime import date, time, timedelta
 
 from src import portfolio_config
 from src.account_replay import positive, snapshot
 from src.trade_ledger.closing_prices import holding_closes
-from src.trading_calendar import latest_trading_day_on_or_before
+from src.trading_calendar import SHANGHAI, latest_trading_day_on_or_before
 
 # 同期基准：沪深300。起点为期初估值日（非交易日则取之前最近交易日）的指数收盘，
 # 与账户 nav=1 的期初估值锚定同一时点；首次取数成功后冻结，不随配置变更重写历史。
@@ -79,9 +79,20 @@ def benchmark_nav(state, asof, index_prices):
     return float(current) / spec["baseline_price"] if positive(current) else None
 
 
-def valuation_day(today):
-    """场内持仓全天按北京时间前一交易日估值。"""
-    day = latest_trading_day_on_or_before(today - timedelta(days=1), fallback=None)
+# 东财当日收盘与多数场外净值此时已发布；早于该时点仍按前一交易日估值。
+VALUATION_CUTOFF = time(18, 30)
+
+
+def valuation_day(today, *, now=None):
+    """场内估值日：北京时间交易日 18:30 起取当日，其余时间取前一交易日。
+
+    now 缺省按盘前口径（前一交易日），供只有日期的调用方与测试使用；
+    生产调用方传入当前北京时间，晚间看板与采集切换到当日收盘。
+    """
+    if now is not None and now.astimezone(SHANGHAI).time() >= VALUATION_CUTOFF:
+        day = latest_trading_day_on_or_before(today, fallback=None)
+    else:
+        day = latest_trading_day_on_or_before(today - timedelta(days=1), fallback=None)
     return day.isoformat() if day else None
 
 

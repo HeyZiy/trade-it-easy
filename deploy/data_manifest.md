@@ -32,7 +32,6 @@
 | 路径                        | 类别 | 说明                                                                       |
 | ------------------------- | -- | ------------------------------------------------------------------------ |
 | `AmazingData_local_data/` | 缓存 | TGW/AmazingData HDF5 本地表（basedata/infodata，60M）。缺表会让 timing 计算挂死，建议随快照带上 |
-| `fund_actions/`           | 缓存 | 基金分红/拆分事件缓存（\~180 个 json）。缺了自动重拉                                         |
 | `fund_names.sqlite3`      | 缓存 | 基金名称缓存                                                                   |
 | `security_names.sqlite3`  | 缓存 | 证券名称缓存                                                                   |
 | `timing_reports/`         | 归档 | ETF 择时研究报告（archive/ 是研究归档，\*.json 是看板生成）                                 |

@@ -22,8 +22,10 @@
 与聚宽版的已知口径差（实现即事实，写进策略文档）：
   - 决策时点：研究线在聚宽 10:40 用分钟现价决策；本地入口按运行时刻取实时报价，
     部署在10:40即为同一口径；报价缺失时收盘仅展示，整轮不调仓。
-  - 复权：研究线用聚宽 fq='pre'；本地用 data_provider 新浪日线 + 份额折算前复权
-    （`adjust_series`处理>25%的折算/拆分跳变），另按明确分红事件调整历史价格。
+  - 复权：研究线用聚宽 fq='pre'；本地用东财官方后复权日线（含分红与份额折算），
+    按最近已完成 bar 的原始收盘整段缩放，使历史与当日现价同单位。
+    除息日当天现价已除息、历史仍锚定前一日含息收盘，会出现等于分红幅度的
+    单日假跳水；触发跳水阈值即记 0 分回避，不做启发式猜测。
   - 成交：本地是名义影子成交台账，新成交按万二/最低5元计费；
     卖出净回款用于买入资金预检，未模拟滑点。
 
@@ -74,7 +76,7 @@ class RotationRow:
     code: str
     name: str
     group: str
-    close: float          # 最近一根已完成日线的前复权收盘
+    close: float          # 最近一根已完成日线的复权收盘（锚定最新原始价）
     price: float          # 实时报价；缺失时收盘价仅供截面展示，入口不执行
     score: float          # 动量评分；数据不足/非法为 nan，跳水为 0
     eligible: bool = False
@@ -289,27 +291,35 @@ def plan_rotation(rows: Sequence[RotationRow], positions: List[dict],
 # ── 编排（取数 + 决策组装，不执行交易）──
 
 def fetch_bars(codes: Sequence[str], decision_date: Optional[date] = None) -> Dict[str, pd.DataFrame]:
-    """新浪原始日线+明确现金分红，调整至决策日价格单位。
+    """东财官方后复权日线，整段缩放到决策日价格单位。
 
-    份额折算沿用adjust_series；分红表获取失败不回退为“没有分红”。
+    后复权比值与锚点无关：全序列乘（最近已完成 bar 原始收盘 / 后复权收盘），
+    最近已完成收盘回到原始单位，与当日现价直接可比。除息日现价已除息而
+    历史仍锚定前一日含息收盘，会出现等于分红幅度的单日假跳水；触发跳水
+    阈值即记 0 分回避。取数失败或锚点无效按只跳过该标的。
     """
-    from data_provider.bars import get_etf_daily
-    from data_provider.fund_actions import adjusted_close, get_fund_events
+    from data_provider.bars import get_etf_daily_em
 
     decision_date = decision_date or date.today()
     frames: Dict[str, pd.DataFrame] = {}
     for code in codes:
         try:
-            df = get_etf_daily(code, adjust=None)
-            events = get_fund_events(code, decision_date.isoformat())
-            if df is None or df.empty:
-                continue
-            frame = df[["date", "close"]].copy()
+            df = get_etf_daily_em(code, decision_date.isoformat())
+            frame = df[["date", "close", "hfq_close"]].copy()
             frame["date"] = pd.to_datetime(frame["date"], errors="coerce")
             frame = frame.dropna(subset=["date"]).sort_values("date").set_index("date")
-            frame["close"] = adjusted_close(frame["close"], events, decision_date)
-            frame = frame.loc[frame.index <= pd.Timestamp(decision_date)]
-            frames[code] = frame
+            decision = pd.Timestamp(decision_date)
+            frame = frame.loc[frame.index <= decision]
+            history = frame.loc[frame.index < decision]
+            if history.empty:
+                continue
+            raw_last = float(history["close"].iloc[-1])
+            hfq_last = float(history["hfq_close"].iloc[-1])
+            if not (math.isfinite(raw_last) and raw_last > 0
+                    and math.isfinite(hfq_last) and hfq_last > 0):
+                raise ValueError("最近已完成 bar 原始/后复权收盘无效，无法锚定")
+            frame["close"] = frame["hfq_close"] * (raw_last / hfq_last)
+            frames[code] = frame[["close"]]
         except Exception:
             import logging
             logging.getLogger(__name__).warning("ETF 日线获取失败 %s", code,

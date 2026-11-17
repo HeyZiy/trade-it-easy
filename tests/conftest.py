@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 """pytest 根路径注入：保证 `python -m pytest` 从仓库任意目录运行都能 import src.*。"""
-from datetime import timedelta
+from datetime import datetime, timedelta, timezone
 import sys
 from pathlib import Path
 
@@ -21,6 +21,9 @@ def isolate_core_account(tmp_path, tmp_path_factory, monkeypatch):
         return day
 
     monkeypatch.setattr("src.account_valuation.latest_trading_day_on_or_before", previous_weekday)
+    # 估值日 18:30 切换依赖北京时间时刻；测试统一钉在盘前，晚间口径由用例显式传 now。
+    monkeypatch.setattr("src.etf_account._now",
+                        lambda: datetime(2025, 1, 7, 10, 0, tzinfo=timezone(timedelta(hours=8))))
 
     from src import portfolio_config
     config_path = tmp_path_factory.mktemp("settings") / "etf_config.json"

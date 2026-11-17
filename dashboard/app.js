@@ -919,7 +919,7 @@ function strategyPositionTable(strategy) {
   const pct=value=>finite(value)?`${(value*100).toFixed(2)}%`:'—';
   const thresholds = strategy.rebalance_thresholds;
   const suggestions = strategy.suggestions || [];
-  const thresholdNote = thresholds ? `偏离幅度达到 ${(thresholds.single*100).toFixed(0)} 个百分点或该项目标权重的 ${(thresholds.relative*100).toFixed(0)}% 时重点高亮。绝对偏离达到 ${(thresholds.trade*100).toFixed(0)} 个百分点且可换算整手时，提供参考份额。` : '偏离提醒阈值暂不可用。';
+  const thresholdNote = thresholds ? `偏离达到 ${(thresholds.single*100).toFixed(0)} 个百分点或该项目标权重的 ${(thresholds.relative*100).toFixed(0)}%（先达先触发）时重点高亮；破带且缺口≥${thresholds.trade_amount.toFixed(0)} 元、可换算整手时，提供参考份额。` : '偏离提醒阈值暂不可用。';
   let basisNote = '请先在“编辑配置”中设置策略目标占比。';
   if (budget > 0) {
     basisNote = '目标金额 = 配置目标资产 × 配置项权重。配比偏离按配置目标资产计算。';

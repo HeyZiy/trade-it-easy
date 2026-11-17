@@ -1,22 +1,49 @@
-"""Execution accounting: distributions, unavailable quotes and net sale proceeds."""
+"""Execution accounting: official-hfq anchoring, unavailable quotes and net sale proceeds."""
 from datetime import date
 
 import pandas as pd
 
-from data_provider.fund_actions import adjusted_close
-from src.etf.rotation import ACCOUNT, RotationRow, plan_rotation
+from src.etf.rotation import ACCOUNT, RotationRow, fetch_bars, plan_rotation
 from src.trade_ledger import BatchOrder, TradeRecord, append_trade, derive, execute_batch, load_trades
-from data_provider.fund_actions import get_fund_events
 
 
-def test_cash_dividend_does_not_create_false_price_drop_or_use_future_event():
-    raw = pd.Series([10., 10., 9., 9.], index=pd.date_range('2026-09-01', periods=4))
-    events = [dict(date='2026-09-03', cash_per_share=1., split_ratio=1.),
-              dict(date='2026-09-05', cash_per_share=2., split_ratio=1.)]
-    result = adjusted_close(raw, events, date(2026, 9, 4))
-    assert result.tolist() == [9., 9., 9., 9.]
-    # Ex-date can be today before a daily bar exists: today's quote uses ex-dividend units.
-    assert adjusted_close(raw.iloc[:2], events, date(2026, 9, 3)).tolist() == [9., 9.]
+def _em_frame(raw, hfq):
+    n = len(raw)
+    return pd.DataFrame({
+        "date": pd.date_range("2026-08-01", periods=n).strftime("%Y-%m-%d"),
+        "close": raw, "hfq_close": hfq,
+    })
+
+
+def test_fetch_bars_rescales_official_hfq_to_latest_raw_units(monkeypatch):
+    raw = [10.0] * 20 + [5.0] * 5 + [4.5] * 5   # 1:2 折算 + 每份 0.5 分红
+    hfq = [10.0] * 30                            # 官方后复权连续，无跳变
+    monkeypatch.setattr("data_provider.bars.get_etf_daily_em",
+                        lambda code, end_date: _em_frame(raw, hfq))
+    bars = fetch_bars(["510300"], decision_date=date(2026, 9, 1))
+    close = bars["510300"]["close"]
+    assert close.tolist() == [4.5] * 30          # 折算/分红缺口消失
+    assert close.iloc[-1] == raw[-1]             # 最近已完成收盘 = 原始单位
+
+
+def test_fetch_bars_excludes_bars_after_decision_date(monkeypatch):
+    calls = []
+    def fake(code, end_date):
+        calls.append(end_date)
+        return _em_frame([10.0] * 30, [20.0] * 30)
+    monkeypatch.setattr("data_provider.bars.get_etf_daily_em", fake)
+    bars = fetch_bars(["510300"], decision_date=date(2026, 8, 20))
+    frame = bars["510300"]
+    assert calls == ["2026-08-20"]
+    assert frame.index.max() == pd.Timestamp("2026-08-20")
+    assert frame["close"].tolist() == [10.0] * 20
+
+
+def test_fetch_bars_skips_code_when_anchor_close_invalid(monkeypatch):
+    monkeypatch.setattr("data_provider.bars.get_etf_daily_em",
+                        lambda code, end_date: _em_frame([10.0] * 30,
+                                                         [20.0] * 29 + [float("nan")]))
+    assert fetch_bars(["510300"], decision_date=date(2026, 9, 1)) == {}
 
 
 def test_fee_is_deducted_from_cash_and_legacy_records_remain_fee_free(tmp_path):
@@ -44,22 +71,3 @@ def test_switch_uses_sale_proceeds_after_selling_fee():
     plan = plan_rotation([row], held, {'513100': 10.}, 7.)
     buy = plan['buys'][0]
     assert buy.amount + max(5., buy.amount * .0002) <= 10007. - 5.
-
-
-def test_public_dividend_dates_are_preserved_and_success_is_cached(monkeypatch, tmp_path):
-    import requests
-    from types import SimpleNamespace
-    html = '''<table><tr><th>权益登记日</th><th>除息日</th><th>每10份分红</th><th>分红发放日</th></tr>
-    <tr><td>2026-09-02</td><td>2026-09-03</td><td>每10份派现金1.0元</td><td>2026-09-07</td></tr></table>
-    暂无拆分信息'''
-    response = SimpleNamespace(text=html, raise_for_status=lambda: None)
-    calls = []
-    def fetch(*args, **kwargs):
-        calls.append(args)
-        return response
-    monkeypatch.setattr(requests, 'get', fetch)
-    events = get_fund_events('510300', '2026-09-03', cache_dir=tmp_path)
-    assert events == [dict(date='2026-09-03',cash_per_share=.1,split_ratio=1.,
-                           record_date='2026-09-02',pay_date='2026-09-07')]
-    assert get_fund_events('510300', '2026-09-03', cache_dir=tmp_path) == events
-    assert len(calls) == 1

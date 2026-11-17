@@ -145,7 +145,7 @@ def run(*, asof=None, dry_run=False, now=None, backfill=False):
         notes = _backfill_notes(healed, lingering)
         if asof is None and not dry_run:
             try:
-                missing = refresh_close_prices(path, today, valuation_day(today), feed.close_prices)
+                missing = refresh_close_prices(path, today, valuation_day(today, now=now), feed.close_prices)
                 if missing:
                     logger.warning("[账户估值] 收盘价缺失：%s", "、".join(missing))
             except Exception:

@@ -89,6 +89,55 @@ def test_calendar_recovers_after_temporary_failure(monkeypatch):
     assert wallet.valuation_day(TODAY) == PRICE_DAY
 
 
+def test_valuation_day_takes_same_day_after_evening_cutoff():
+    evening = datetime(2025, 1, 7, 18, 30, tzinfo=trading_calendar.SHANGHAI)
+    assert wallet.valuation_day(TODAY, now=evening) == TODAY.isoformat()
+    before = datetime(2025, 1, 7, 18, 29, tzinfo=trading_calendar.SHANGHAI)
+    assert wallet.valuation_day(TODAY, now=before) == PRICE_DAY
+    saturday = datetime(2025, 1, 11, 19, 0, tzinfo=trading_calendar.SHANGHAI)
+    assert wallet.valuation_day(date(2025, 1, 11), now=saturday) == "2025-01-10"
+
+
+def test_evening_refresh_and_display_switch_to_same_day(account, monkeypatch):
+    evening = datetime(2025, 1, 7, 18, 30, tzinfo=trading_calendar.SHANGHAI)
+    monkeypatch.setattr(wallet, "_now", lambda: evening)
+    calls = []
+
+    def fetch(self, codes, day):
+        calls.append((codes, day))
+        return {"588000": 5, "159915": 2}
+
+    monkeypatch.setattr(ClosingPrices, "close_prices", fetch)
+    refresh = QuoteRefresh()
+    refresh.start(account, TODAY, now=evening)
+    state = wait_finished(refresh, account)
+    assert state["date"] == TODAY.isoformat() and state["error"] is None
+    assert calls == [(["159915", "588000"], TODAY.isoformat())]
+    view = wallet.account_data(account)
+    assert view["valuation"] == {"date": TODAY.isoformat(), "missing": []}
+    assert view["equity"] == 15000
+
+
+def test_evening_scheduled_report_collects_same_day(account, monkeypatch):
+    import portfolio_report as entry
+    days = [date.fromisoformat(PRICE_DAY), TODAY]
+    monkeypatch.setattr(entry, "get_trading_dates", lambda start, end: [d for d in days if start <= d <= end])
+    monkeypatch.setattr("src.etf_account.ACCOUNT_PATH", account)
+    calls = []
+
+    def fetch(self, codes, day):
+        calls.append((codes, day))
+        return {code: 3 for code in codes}
+
+    monkeypatch.setattr(ClosingPrices, "close_prices", fetch)
+    report, errors = entry.run(now=datetime(2025, 1, 7, 18, 30, tzinfo=entry.SHANGHAI), backfill=True)
+    assert errors == 0
+    assert all(day == TODAY.isoformat() for _, day in calls)
+    state = wallet.load(account)
+    assert state["records"][-1]["date"] == TODAY.isoformat()
+    assert state["valuation_closes"]["date"] == TODAY.isoformat()
+
+
 def test_scheduled_report_collects_targets_and_current_holdings_for_valuation(account, monkeypatch):
     import portfolio_report as entry
 

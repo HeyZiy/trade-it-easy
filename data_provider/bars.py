@@ -15,12 +15,11 @@
   指数 399→sz、其余→sh），规则写死在各自函数内，不扩散。
 - 源选择（单源为主；指数三腿是"互斥代码族路由 + 一次网络保底"，不是 failover）：
     ETF(51/52/53/55/56/58/15/16/18) → 新浪 fund_etf_hist_sina（带 amount；
-      未复权原始价；份额折算前复权 adjust="qfq"，单点 adjust_series）
-      ——现价与历史比值口径（get_etf_daily）
+      未复权原始价）——台账收盘价新浪保底、observe 现价补口（get_etf_daily）
     ETF 同码族                      → 东财 fund_etf_hist_em 双线（原始 OHLC+amount
-      与供应商后复权 hfq_ OHLC 同表；失败抛错不回退）——唐奇安通道观察与
-      研究缓存口径（get_etf_daily_em）；两适配器复权口径不可互换，
-      通道观察迁回 qfq 折算属策略决策
+      与供应商官方后复权 hfq_ OHLC 同表；失败抛错不回退）——台账收盘价优先源、
+      跨资产动量池分数线（hfq 比值）、唐奇安通道观察与研究缓存口径
+      （get_etf_daily_em）
     A股指数(000/399)          → 中证官网 csindex（000 权威源）
                                 → 东财 index_zh_a_hist（399 深证/国证不在 csindex）
                                 → 新浪 stock_zh_index_daily（东财不可达时保底；
@@ -82,38 +81,15 @@ def _finalize(df: Optional[pd.DataFrame]) -> Optional[pd.DataFrame]:
     return df if len(df) > 0 else None
 
 
-# 份额折算/拆分前复权（复权口径单点；「原始价含份额折算须前复权」的落点）
-SPLIT_JUMP = 0.25               # 单日 |ret|>25% 视为份额折算/拆分（涨跌停 ±10/20%，不可能到达）
-
-
-def adjust_series(close: pd.Series) -> pd.Series:
-    """份额折算/拆分前复权（研究线 adjust_splits 单列版）。
-
-    单日 |ret| > SPLIT_JUMP 视为折算/合并：factor = cur/prev，此前价格全乘
-    factor（连续化），多次折算按时间顺序累积即前复权到样本末。amount 为元
-    口径不调整，与本函数无关。
-    """
-    s = close.dropna().astype(float)
-    if len(s) < 2:
-        return close
-    out = s.copy()
-    r = s.pct_change()
-    for d in r[r.abs() > SPLIT_JUMP].index:
-        i = s.index.get_loc(d)
-        factor = float(s.at[d]) / float(s.iloc[i - 1])
-        out.loc[out.index < d] *= factor
-    return out
-
-
 def get_etf_daily_em(code: str, end_date: str) -> pd.DataFrame:
-    """东财双线日线：原始 OHLC + 供应商后复权 OHLC（hfq_ 前缀同表），禁止猜复权。
+    """东财双线日线：原始 OHLC + 供应商官方后复权 OHLC（hfq_ 前缀同表）。
 
-    与 get_etf_daily（新浪单源）是同一 ETF 日线缝上的第二适配器：本线为
-    供应商后复权口径，消费方是唐奇安通道观察（src/etf/allocation、src/etf/trend）与研究
-    缓存（research/tools/etf_data）。价格两条线来自同一供应商；成交额为元，
+    后复权含分红与份额折算，由供应商维护，不做启发式猜测。消费方：台账收盘价
+    （优先源，原始 close）、跨资产动量池分数线（hfq 比值，src/etf/rotation）、
+    唐奇安通道观察（src/etf/allocation、src/etf/trend）与研究缓存
+    （research/tools/etf_data）。价格两条线来自同一供应商；成交额为元，
     成交量由手转换为份。失败抛错（区别于 get_etf_daily 返 None 的
-    fail-soft），让缓存构建方保留旧缓存并记录失败，不回退到猜测复权。
-    两适配器复权口径不可互换；通道观察迁回 qfq 折算属策略决策，需研究背书。
+    fail-soft），让消费方保留旧数据并记录失败，不回退到猜测复权。
     """
     import akshare as ak
 
@@ -142,21 +118,15 @@ def get_etf_daily_em(code: str, end_date: str) -> pd.DataFrame:
     return tables[0].merge(tables[1], on="date", how="left", validate="one_to_one").sort_values("date")
 
 
-def get_etf_daily(code: str, *, adjust: Optional[str] = None) -> Optional[pd.DataFrame]:
-    """ETF 日线全历史（新浪 fund_etf_hist_sina 单源，带 amount 成交额）。
+def get_etf_daily(code: str) -> Optional[pd.DataFrame]:
+    """ETF 日线全历史（新浪 fund_etf_hist_sina 单源，未复权原始价，带 amount）。
 
-    统一入口（三路合一）：池分数线（momentum）、observe/台账读侧现价补口
-    都走这里；供应商后复权 OHLC 口径走第二适配器 get_etf_daily_em（东财
-    双线，唐奇安通道/研究缓存用）。返回形状唯一：date 列升序，
+    台账收盘价东财优先、新浪保底（ClosingPrices）；observe 现价补口走这里。
+    历史比值口径（池分数线等）用 get_etf_daily_em 的官方后复权，不用本函数。
+    返回形状唯一：date 列升序，
     columns=['date','open','high','low','close','volume','amount']；
     空/失败返回 None；非 ETF 码族拒绝（个股走 DataFetcherManager）。
-
-    adjust 口径（复权单点，勿在调用方自行折算）：
-    - None（默认）：未复权原始价。现货价口径用这个——折算后的最新价本就是现价；
-    - "qfq"：份额折算/拆分前复权（见 adjust_series）。历史比值口径
-      （强弱分数等）必须用这个——原始价含份额折算会伪造假跳水。
-
-    amount 为元口径，不参与复权（与东财逐值一致，研究线实测核对过）。
+    amount 为元口径。
     """
     if not is_etf_code(code):
         logger.warning(f"[bars] {code} 不是 ETF：ETF 日线请传 ETF 代码；个股走 DataFetcherManager")
@@ -178,13 +148,6 @@ def get_etf_daily(code: str, *, adjust: Optional[str] = None) -> Optional[pd.Dat
             df[c] = float("nan")
         df[c] = pd.to_numeric(df[c], errors="coerce")
     out = _finalize(df)
-    if out is None:
-        return None
-    if adjust == "qfq":
-        out = out.copy()
-        out["close"] = adjust_series(out["close"])
-    elif adjust is not None:
-        raise ValueError(f"不支持的 adjust 口径: {adjust!r}（None / 'qfq'）")
     return out
 
 

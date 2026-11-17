@@ -62,17 +62,19 @@ def test_position_price_wins_over_injection():
 
 def test_odd_lot_leg_becomes_todo_not_abort_order():
     """残腿：应卖但持仓不足一手 → 不出卖单，
-    记入 odd_lots 供报告列手动待办。"""
-    positions = [_pos("515180", "红利ETF", 50, 1.0, mv=50)]
-    orders, _, odd = R.compare(TARGET, positions, 200)
+    记入 odd_lots 供报告列手动待办。
+    夹具金额抬到 MIN_TRADE_AMOUNT(400) 以上，隔离阈值变量、单测整手残腿机制。"""
+    positions = [_pos("515180", "红利ETF", 50, 10.0, mv=500)]
+    orders, _, odd = R.compare(TARGET, positions, 1000)
     assert "515180" not in _orders_by_code(orders)
     assert odd == [{"code": "515180", "name": "515180", "count": 50}]
 
 
 def test_sell_clamped_to_held_and_floored():
-    """应卖 315 股、持仓 350 → 整手 300（向下取整，不多卖）。"""
-    positions = [_pos("515180", "红利ETF", 350, 1.0, mv=350)]
-    orders, _, odd = R.compare(TARGET, positions, 500)
+    """应卖 308 股、持仓 350 → 整手 300（向下取整，不多卖）。
+    夹具金额抬到 MIN_TRADE_AMOUNT(400) 以上，隔离阈值变量。"""
+    positions = [_pos("515180", "红利ETF", 350, 10.0, mv=3500)]
+    orders, _, odd = R.compare(TARGET, positions, 5000)
     o = _orders_by_code(orders)["515180"]
     assert o.action == "sell" and o.quantity == 300
     assert odd == []
@@ -130,23 +132,24 @@ def test_build_plan_carries_trigger_verdict():
 
 
 def test_reason_matches_execution_decision():
-    """文案与执行一致：有指令时 reason 不得说"无指令/无需"，
-    单类 2%~5% 的批次照样执行（执行门＝有指令即执行），reason 如实写触发层未达线。
+    """文案与执行一致：破复核带且缺口够最小交易额 ⇒ 出指令且 should=True，
+    reason 不得说"无指令/无需"，如实写触发层。
     """
-    # 目标约 19.2%，偏离 3 个百分点足以给份额参考，但未达到任一复核线。
-    plan = R.build_plan(TARGET, _at_target(**{"513500": TARGET["513500"] + .03}), 50_000)
+    # 513500 目标约 19.2%，+5pp 破绝对带(5pp)，缺口 2500 元≥400 → 出指令。
+    plan = R.build_plan(TARGET, _at_target(**{"513500": TARGET["513500"] + .05}), 50_000)
     assert plan.orders, plan.reason
-    assert plan.should is False, plan.reason
+    assert plan.should is True, plan.reason
     assert "无指令" not in plan.reason and "无需" not in plan.reason, plan.reason
     assert "笔指令" in plan.reason and "触发层" in plan.reason, plan.reason
-    assert "最大单类 3.0%" in plan.reason, plan.reason
+    assert "5.0%" in plan.reason, plan.reason
 
 
-def test_trigger_layer_does_not_block_execution():
-    """契约：触发层只分级、不拦执行——plan.should 为 False 时 orders 仍非空，
-    消费方按 orders 执行（改执行门到 should 属策略语义变更，需先裁决）。"""
+def test_sub_band_drift_is_gated_from_execution():
+    """契约（2026-11-17 裁决）：复核带既分级也拦执行——未破带的漂移不出指令。
+    旧"触发层不拦执行、平 2pp 出指令"语义已被 5/25 带+最小交易额门取代。"""
+    # 513500 +3pp：绝对 3pp<5pp、相对 3/19.2≈15.6%<25% → 未破带 → 无指令。
     plan = R.build_plan(TARGET, _at_target(**{"513500": TARGET["513500"] + .03}), 50_000)
-    assert plan.should is False and len(plan.orders) > 0
+    assert plan.should is False and plan.orders == [], plan.reason
 
 
 def test_trigger_fires_on_magnitude_not_on_executability():
@@ -156,20 +159,37 @@ def test_trigger_fires_on_magnitude_not_on_executability():
     assert "无指令" in no_prices.reason and "触发层" in no_prices.reason, no_prices.reason
 
 
-def test_relative_review_below_trade_minimum():
-    asset = _config.AssetAllocation("518880", _config.AssetType.GOLD, .05, 1)
+def test_relative_review_below_trade_amount():
+    """破相对带但缺口 < MIN_TRADE_AMOUNT：should=True（复核）却不出指令——
+    挡碎额的是金额门（400 元），而非旧的平 2pp。"""
+    asset = _config.AssetAllocation("513120", _config.AssetType.EQUITY, .012, 1)
     engine = ETFRebalancer([asset])
-    positions = [_pos(asset.code, "黄金ETF", 6250, 1)]
+    # 目标 1200，现值 1500 → 缺口 300 元，相对偏离恰 25%（破带），300<400 → 不出指令。
+    positions = [_pos(asset.code, "港股创新药ETF", 1500, 1)]
     plan = engine.build_plan(engine.calculate_target(), positions, 100_000)
     assert plan.should is True and plan.orders == []
     assert "相对偏离 25.0%" in plan.reason
 
 
+def test_micro_position_buyback_after_drawdown():
+    """回归（修复平 2pp 买方永久冻结）：1.2% 微仓跌 50%，绝对偏离仅 0.6pp（旧门永不买），
+    但相对偏离 50% 破带、缺口 600 元≥400 → 出买单补回。"""
+    asset = _config.AssetAllocation("513120", _config.AssetType.EQUITY, .012, 1)
+    engine = ETFRebalancer([asset])
+    # 目标 1200，现值 600（跌 50%）→ 缺口 -600，相对 50%。
+    positions = [_pos(asset.code, "港股创新药ETF", 600, 1)]
+    plan = engine.build_plan(engine.calculate_target(), positions, 100_000)
+    assert plan.should is True
+    o, = plan.orders
+    assert o.code == asset.code and o.action == "buy"
+    assert o.quantity == round_lot(600)
+
+
 def test_no_orders_reason_is_about_the_order_filter_not_absence_of_deviation():
-    """无指令时也不能说"无偏离"：偏离存在但都 < 2%（碎股噪声）。"""
+    """无指令时也不能说"无偏离"：偏离存在但未破复核带（或缺口不够最小交易额）。"""
     plan = R.build_plan(TARGET, _at_target(**{"515180": 0.075}), 50_000)
     assert plan.orders == [], plan.reason
-    assert "无指令" in plan.reason and "2%" in plan.reason, plan.reason
+    assert "无指令" in plan.reason and "400" in plan.reason, plan.reason
     assert "无偏离" not in plan.reason, plan.reason
 
 
