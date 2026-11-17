@@ -57,6 +57,8 @@ def initialize(path, *, asof, cash, positions, targets=None, budgets=None, cash_
              "targets": targets, "budgets": budgets, "events": [], "records": [], "dismissed": []}
     mark = snapshot(state, asof)
     state["records"] = [{**mark, "date": asof, "nav": 1.0, "benchmark_nav": None,
+                         "strategy_benchmark_navs": {},
+                         "strategy_revision": revision(state, asof, include_transfers=True),
                          "issues": [], "source": "用户确认的期初估值",
                          "revision": revision(state, asof)}]
     with _locked(path):
@@ -348,19 +350,56 @@ def dismiss(path, payload):
         _save(path, state)
 
 
-def collect_close(path, asof, close_prices, *, dry_run=False):
+def collect_close(path, asof, close_prices, *, dry_run=False, index_prices=None):
     with _locked(path):
         state = load(path)
         if asof <= state["initial"]["date"]:
             return state
         record = account_valuation.close_record(
             state, asof, close_prices, revision=revision(state, asof),
+            strategy_revision=revision(state, asof, include_transfers=True),
+            index_prices=index_prices,
         )
         state["records"] = sorted([r for r in state["records"] if r["date"] != asof] + [record],
                                   key=lambda r: r["date"])
         if not dry_run:
             _save(path, state)
         return state
+
+
+def backfill_benchmarks(path, index_prices):
+    """为已有收盘记录补齐基准净值与策略成绩：只补基准/策略，不重采持仓估值。
+
+    期初记录的账户基准净值恒为 1（基准起点锚定期初估值）；策略净值按流水重放推导，
+    划转更正后指纹变化即重算。取数失败保留空值，下次运行继续补。
+    """
+    with _locked(path):
+        state = load(path)
+        changed = False
+        for record in state["records"]:
+            if not positive(record.get("benchmark_nav")):
+                if record["date"] <= state["initial"]["date"]:
+                    record["benchmark_nav"] = 1.0
+                    changed = True
+                else:
+                    nav = account_valuation.benchmark_nav(state, record["date"], index_prices)
+                    if nav is not None:
+                        record["benchmark_nav"] = nav
+                        changed = True
+            expected = revision(state, record["date"], include_transfers=True)
+            if "strategy_navs" in record and record.get("strategy_revision") == expected:
+                continue
+            view = snapshot(state, record["date"])
+            navs = (view["strategy_navs"] if not record["issues"]
+                    else dict.fromkeys(portfolio_config.STRATEGY_NAMES))
+            record["strategy_navs"] = navs
+            record["strategy_benchmark_navs"] = account_valuation.strategy_benchmark_navs(
+                state, record["date"], navs, index_prices)
+            record["strategy_revision"] = expected
+            changed = True
+        if changed:
+            _save(path, state)
+    return state
 
 
 def refresh_close_prices(path, today, price_day, close_prices):
@@ -393,9 +432,7 @@ def account_data(path):
     today = day.isoformat()
     price_day = valuation_day(day)
     view = account_valuation.valuation_view(state, day, price_day)
-    records = sorted([r for r in state["records"] if r["date"] <= today], key=lambda r: r["date"])
-    valid = [r for r in records if positive(r.get("nav")) and not r["issues"]
-             and (r["source"] == "用户确认的期初估值" or r["revision"] == revision(state, r["date"]))]
+    records, valid = account_valuation.valid_records(state, today)
     valid_dates = {r["date"] for r in valid}
     latest = valid[-1] if valid else None
     warnings = list(records[-1]["issues"]) if records else []
@@ -439,9 +476,12 @@ def account_data(path):
             "start_date": state["initial"]["date"], "initial_equity": state["initial"]["equity"],
             "revision": revision(state), "config_revision": state["_config_revision"], "suggestions": [],
             "strategies": strategies, "valuation_date": price_day,
-            "has_events": bool(state["events"]), "benchmark_name": None, "warnings": warnings,
+            "has_events": bool(state["events"]),
+            "benchmark_name": (state.get("benchmark") or account_valuation.BENCHMARK)["name"],
+            "warnings": warnings,
             "history": [{"date": r["date"], "nav": r["nav"] if r["date"] in valid_dates else None,
-                         "benchmark_nav": None} for r in records]}
+                         "benchmark_nav": r.get("benchmark_nav") if r["date"] in valid_dates else None}
+                        for r in records]}
 
 
 def strategy_snapshot(path=None):

@@ -224,6 +224,9 @@ class _Replay:
         self.initial_equity = self.units = initial["equity"]
         self.cash = initial["cash"]
         self.cash_by_strategy = cash_allocation(initial.get("cash_allocations", {}), self.cash)
+        # 策略份额：期初资产即期初份额（nav=1）；资金流按事件时点净值折算，
+        # 使策略收益率剔除入出金与策略间划转的本金影响。
+        self.units_by_strategy = dict(self.cash_by_strategy)
         self.held = {}
         self.marks = {}
         self.fund_pending = {}
@@ -239,6 +242,7 @@ class _Replay:
                                          "strategy": strategy, "avail_count": row["count"]}
             self.marks[code] = row["price"]
             self.net_capital[strategy] += row["count"] * row["price"]
+            self.units_by_strategy[strategy] += row["count"] * row["price"]
         self.net_flows = 0.0
         self.day = None
         self.day_closes = {}
@@ -283,6 +287,23 @@ class _Replay:
 
     def _pending_fund_value(self):
         return round(math.fsum(row["amount"] for row in self.fund_pending.values()), 2)
+
+    def _strategy_assets(self, marks, fund_prices=None):
+        assets = dict(self.cash_by_strategy)
+        for (strategy, code), row in self.held.items():
+            if row["count"] > 0:
+                assets[strategy] += row["count"] * marks[code]
+        assets["core"] += (sum(row["market_value"] for row in self._fund_positions(fund_prices).values())
+                           + self._pending_fund_value())
+        return assets
+
+    def _flow_units(self, key, delta, assets):
+        """资金流按事件时点净值折算份额；空策略首次入金从 nav=1 起算。"""
+        units, asset = self.units_by_strategy[key], assets[key]
+        if units > 0 and asset > 0:
+            self.units_by_strategy[key] = max(0.0, units + delta * units / asset)
+        elif delta > 0:
+            self.units_by_strategy[key] = asset + delta
 
     def _apply_fund_trade(self, event):
         side = event["side"]
@@ -330,6 +351,8 @@ class _Replay:
             equity += self._pending_fund_value() + sum(row["market_value"]
                           for row in self._fund_positions(event.get("fund_valuation_prices")).values())
             delta = event["amount"] * (1 if side == "deposit" else -1)
+            self._flow_units(strategy, delta,
+                             self._strategy_assets(self.marks, event.get("fund_valuation_prices")))
             self.units += delta / (equity / self.units)
             self.cash += delta
             self.cash_by_strategy[strategy] += delta
@@ -341,13 +364,26 @@ class _Replay:
             self.cash_by_strategy[strategy] += event["amount"]
             self.net_capital[strategy] -= event["amount"]
         elif side == "cash_assign":
-            self.cash_by_strategy = cash_allocation(event["cash_allocations"], self.cash)
+            assets = self._strategy_assets(self.marks)
+            allocations = cash_allocation(event["cash_allocations"], self.cash)
+            for key, amount in allocations.items():
+                delta = round(amount - self.cash_by_strategy[key], 2)
+                if delta:
+                    self._flow_units(key, delta, assets)
+            self.cash_by_strategy = allocations
         elif side == "cash_transfer":
+            assets = self._strategy_assets(self.marks)
+            self._flow_units(event["from_strategy"], -event["amount"], assets)
+            self._flow_units(event["strategy"], event["amount"], assets)
             self.cash_by_strategy[event["from_strategy"]] -= event["amount"]
             self.cash_by_strategy[event["strategy"]] += event["amount"]
         elif side == "assign":
             code, qty = event["code"], event["qty"]
             strategy = event["strategy"]
+            transfer_value = qty * event.get("transfer_price", self.marks[code])
+            assets = self._strategy_assets(self.marks)
+            self._flow_units(event["from_strategy"], -transfer_value, assets)
+            self._flow_units(strategy, transfer_value, assets)
             source = self.held[event["from_strategy"], code]
             target = self.held.setdefault((strategy, code), {
                 "code": code, "name": source["name"], "count": 0, "avail_count": 0, "strategy": strategy,
@@ -357,7 +393,6 @@ class _Replay:
             source["avail_count"] -= available
             target["count"] += qty
             target["avail_count"] += available
-            transfer_value = qty * event.get("transfer_price", self.marks[code])
             self.net_capital[event["from_strategy"]] -= transfer_value
             self.net_capital[strategy] += transfer_value
         else:
@@ -410,12 +445,19 @@ class _Replay:
                            if row["strategy"] == key) + (fund_value if key == "core" else 0) - capital, 2) or 0.0
             for key, capital in self.net_capital.items()
         }
+        strategy_assets = dict(self.cash_by_strategy)
+        for row in strategy_rows:
+            strategy_assets[row["strategy"]] += row["market_value"]
+        strategy_assets["core"] += fund_value
         return {
             "positions": rows, "strategy_positions": strategy_rows, "fund_positions": funds,
             "fund_pending": dict(self.fund_pending), "pending_fund_value": pending_value,
             "cash": round(self.cash, 2),
             "invested": invested, "equity": equity, "units": self.units, "receivables": 0,
             "prices": marks, "strategy_pnl": strategy_pnl,
+            "strategy_navs": {key: strategy_assets[key] / self.units_by_strategy[key]
+                              if self.units_by_strategy[key] > 0 and strategy_assets[key] > 0 else None
+                              for key in portfolio_config.STRATEGY_NAMES},
             "cash_by_strategy": {key: round(value, 2) or 0.0 for key, value in self.cash_by_strategy.items()},
             "pnl": round(equity - self.initial_equity - self.net_flows, 2) or 0.0,
         }

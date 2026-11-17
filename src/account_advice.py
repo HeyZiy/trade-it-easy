@@ -5,7 +5,7 @@ import logging
 from pathlib import Path
 
 from data_provider.security_names import security_name
-from src import portfolio_config
+from src import account_valuation, portfolio_config
 from src.account_replay import snapshot
 from src.account_store import load, revision, save
 from src.advice_identity import short_digest
@@ -137,9 +137,27 @@ def strategy_facts(state, view, key):
             "suggestions": [], "trades": [e for e in state["events"]
                                            if e.get("strategy") == key or e.get("from_strategy") == key
                                            or e.get("side") == "cash_assign"],
-            "history": [], "performance": None, "benchmark_name": None,
+            "history": [], "performance": None,
+            "benchmark_name": account_valuation.STRATEGY_BENCHMARKS.get(key, {}).get("name"),
             "cash": cash, "assets": assets, "actual_pct": assets / view["equity"] if view["equity"] and assets is not None else None,
             "deviation": round(assets - budget, 2) if budget is not None and assets is not None else None, "status": status}
+
+
+def strategy_history(state, key, today):
+    """策略收益曲线：账户成绩有效且策略指纹（含划转）一致时才展示当日净值。"""
+    from src.account_store import revision
+    records, valid = account_valuation.valid_records(state, today)
+    valid_dates = {r["date"] for r in valid}
+    history = []
+    for r in records:
+        current = (r["date"] in valid_dates
+                   and r.get("strategy_revision") == revision(state, r["date"], include_transfers=True))
+        navs = r.get("strategy_navs") or {}
+        benchmarks = r.get("strategy_benchmark_navs") or {}
+        history.append({"date": r["date"],
+                        "nav": navs.get(key) if current else None,
+                        "benchmark_nav": benchmarks.get(key) if current else None})
+    return history
 
 
 def strategy_views(state, view, *, today, names=None):
@@ -151,6 +169,7 @@ def strategy_views(state, view, *, today, names=None):
     result = []
     for key in portfolio_config.STRATEGY_NAMES:
         row = strategy_facts(state, view, key)
+        row["history"] = strategy_history(state, key, today.isoformat())
         if key == "rotation":
             from src.etf.rotation_advice import advice
             row["suggestions"], row["advice_status"] = advice(
