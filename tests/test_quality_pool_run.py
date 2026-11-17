@@ -3,6 +3,7 @@
 from datetime import date
 from pathlib import Path
 
+import pandas as pd
 import pytest
 
 import quality_pool as entry
@@ -26,7 +27,7 @@ def test_run_consumes_new_signal_once_and_sends_one_report(env):
     assert "目标 2" in report and "已记账 2 笔" in report
     assert reports == [("quality_pool", report)] and notifications == [report]
     saved = state.load_state(config.STATE_PATH)
-    assert saved["pending_plan"] is None and saved["next_signal_date"] == "2026-10-29"
+    assert saved["pending_plan"] is None and saved["last_signal_date"] == "2026-10-01"
 
     before = Path(config.POOL_LEDGER_PATH).read_bytes()
     assert "不重复本轮" in entry.run(date(2026, 10, 1))
@@ -50,7 +51,7 @@ def test_run_dry_run_previews_new_plan_without_state_or_ledger_writes(env, exist
     assert [p.read_bytes() if p.exists() else None for p in paths] == before
 
 
-def test_failed_signal_still_retries_exits_then_recovers_original_cycle(env):
+def test_failed_signal_still_retries_exits_then_recovers_next_day(env):
     _seed_positions([("600001", 100, 10.0)])
     saved = state.load_state(config.STATE_PATH)
     saved["exit_queue"] = {"600001": "out_of_pool"}
@@ -64,37 +65,33 @@ def test_failed_signal_still_retries_exits_then_recovers_original_cycle(env):
     assert load_trades(config.POOL_LEDGER_PATH)[-1].side == "sell"
     saved = state.load_state(config.STATE_PATH)
     assert saved["signal_retry"] and saved["exit_queue"] == {}
-    assert saved["next_signal_date"] == "2026-10-30"
 
     _patch_signal_data(env)
     _patch_execute_data(env, {"600001": 10.0, "600002": 20.0})
     assert "目标 2" in entry.run(date(2026, 10, 5))
     saved = state.load_state(config.STATE_PATH)
-    assert not saved["signal_retry"] and saved["next_signal_date"] == "2026-10-30"
+    assert not saved["signal_retry"] and saved["last_signal_date"] == "2026-10-05"
 
 
-def test_silent_non_round_day_skips_report_and_push(env):
+def test_silent_full_portfolio_day_skips_report_and_push(env):
     _patch_execute_data(env, {})
-    saved = state.load_state(config.STATE_PATH)
-    saved.update(next_signal_date="2026-10-30", deferred_codes=[])
-    state.save_state(saved, config.STATE_PATH)
+    codes = {str(600001 + i) for i in range(config.TOP_N)}
+    _seed_positions([(c, 100, 10.0) for c in sorted(codes)])
+    _patch_signal_data(env, universe=codes)
     reports, notifications = [], []
     env.setattr(entry, "save_report", lambda report, prefix, **kw: reports.append(prefix))
     env.setattr(entry, "notify", notifications.append)
 
     report = entry.run(date(2026, 10, 2))
 
-    assert "非调仓日" in report
+    assert "无交易计划" in report
     assert reports == [] and notifications == []     # 静默日不落盘不推送
 
 
-def test_non_round_day_reviews_unknown_holding_and_exits_in_same_run(env):
+def test_daily_exit_executes_even_when_entry_prices_fail(env):
     from src.quality_pool import feeds
 
     _seed_positions([("600001", 100, 10.0)])
-    saved = state.load_state(config.STATE_PATH)
-    saved.update(next_signal_date="2026-10-30", deferred_codes=["600001"])
-    state.save_state(saved, config.STATE_PATH)
     _patch_signal_data(env)
     _patch_execute_data(env, {"600001": 10.0})
     fundamentals = feeds.fetch_fundamentals
@@ -105,10 +102,24 @@ def test_non_round_day_reviews_unknown_holding_and_exits_in_same_run(env):
         return frame
 
     env.setattr(feeds, "fetch_fundamentals", failed_quality)
+    env.setattr(feeds, "fetch_closes", lambda *a, **kw: pd.DataFrame())
     report = entry.run(date(2026, 10, 2))
 
-    assert "已检查 1 只" in report
+    assert "补位数据异常" in report
     assert [t.side for t in load_trades(config.POOL_LEDGER_PATH)] == ["buy", "sell"]
     saved = state.load_state(config.STATE_PATH)
-    assert saved["deferred_codes"] == [] and saved["exit_queue"] == {}
-    assert saved["next_signal_date"] == "2026-10-30"
+    assert saved["exit_queue"] == {}
+
+
+def test_next_day_reselects_instead_of_replaying_blocked_buy(env):
+    _patch_signal_data(env, universe={"600001"})
+    _patch_execute_data(env, {"600001": 10.0}, suspended={"600001"})
+    assert "paused" in entry.run(date(2026, 10, 2))
+    assert not load_trades(config.POOL_LEDGER_PATH)
+
+    _patch_signal_data(env, universe={"600002"})
+    _patch_execute_data(env, {"600001": 10.0, "600002": 20.0})
+    entry.run(date(2026, 10, 5))
+    assert [(trade.side, trade.code) for trade in load_trades(config.POOL_LEDGER_PATH)] == [
+        ("buy", "600002")
+    ]

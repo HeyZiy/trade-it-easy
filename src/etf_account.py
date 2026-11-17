@@ -181,9 +181,9 @@ def publish_rotation(day, rows, prices, diag, *, path=None, dry_run=False, error
     )
 
 
-def publish_quality(day, *, path=None, dry_run=False, retry=False):
+def publish_quality(day, *, path=None, dry_run=False):
     """发布投资账户的质量动量建议。"""
-    return account_advice.publish_quality(day, path=path or ACCOUNT_PATH, dry_run=dry_run, retry=retry)
+    return account_advice.publish_quality(day, path=path or ACCOUNT_PATH, dry_run=dry_run)
 
 
 def record_event(path, payload):

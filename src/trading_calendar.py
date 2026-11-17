@@ -86,6 +86,14 @@ def latest_trading_day_on_or_before(
     return d
 
 
+def previous_trading_day(day: date) -> date:
+    """返回 day 之前的最近交易日；日历不可用时报错（调用方按轮级暂停处理）。"""
+    prev = latest_trading_day_on_or_before(day - timedelta(days=1), fallback=None)
+    if prev is None:
+        raise RuntimeError(f"交易日历无 {day} 之前的数据")
+    return prev
+
+
 def trading_days_lag(earlier: date, later: date) -> Optional[int]:
     """earlier 落后 later 几个交易日（同日为 0，跨周末/假期不计数）。
 

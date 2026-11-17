@@ -33,7 +33,7 @@ ROOT = Path(os.environ.get("TRADE_DASHBOARD_ROOT", APP_ROOT)).resolve()
 DISPLAY = (
     (ETF_FILENAME, "etf", "投资账户"),
     ("trade_ledger_etf_rotation.jsonl", "rotation", "跨资产动量"),
-    ("trade_ledger_quality_pool_v2.jsonl", "quality", "质量动量"),
+    ("trade_ledger_quality_pool.jsonl", "quality", "质量动量"),
 )
 AUTH_REALM = 'Basic realm="trade-dashboard", charset="UTF-8"'
 AUTH_DELAY = 0.5
@@ -206,7 +206,7 @@ def _state_detail(filename: str, state) -> str:
     """状态文件摘要行：质量池给信号节奏。"""
     if filename.startswith("quality"):
         return (f"上次信号：{state.get('last_signal_date') or '暂无'}；"
-                f"下次计划：{state.get('next_signal_date') or '暂无'}；"
+                "每个交易日检查；"
                 f"待退出：{len(state.get('exit_queue') or {})} 只；"
                 f"重试：{'是' if state.get('signal_retry') else '否'}")
     return f"池更新：{state.get('rebuilt_on') or '暂无'}；成员：{len(state.get('members') or [])} 只"
@@ -237,7 +237,7 @@ def dashboard_data(root=ROOT):
                 strategy["id"], strategy["name"] + " · 独立模拟", by_id.get(strategy["id"]), None)
     reports = _report_files(root)
     states = []
-    for filename, label in (("quality_pool_v2_state.json", "质量动量状态"),):
+    for filename, label in (("quality_pool_state.json", "质量动量状态"),):
         path = root / "data" / filename
         try:
             detail = _state_detail(filename, json.loads(path.read_text(encoding="utf-8")))

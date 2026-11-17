@@ -14,9 +14,8 @@ from src.quality_pool.config import (
 
 
 def build_pool(universe: Set[str], fundamentals: pd.DataFrame,
-               status: pd.DataFrame, closes: pd.DataFrame,
-               unlock_codes=None, audit: Optional[dict] = None) -> List[str]:
-    """停牌只限制成交，不定义质量出池；解禁不参与现行规则。
+               status: pd.DataFrame, *, audit: Optional[dict] = None) -> List[str]:
+    """评估持有资格；波动率和强弱历史仅用于新仓排序。
 
     audit.pool_state 为 passed / failed / unknown。确认失败优先于未知，
     因此已知ROE不达标时，即使估值缺失仍可正确退出。
@@ -51,16 +50,12 @@ def build_pool(universe: Set[str], fundamentals: pd.DataFrame,
             missing.append('status_missing')
         elif bool(status.at[code, 'is_st']):
             failed.append('st')
-        vol = _annualized_vol(closes[code]) if code in closes.columns else None
-        if vol is None:
-            missing.append('vol_history_missing')
-        elif vol >= VOL60_MAX:
-            failed.append('vol_high')
         state = 'failed' if failed else 'unknown' if missing else 'passed'
         if audit is not None:
+            # values（四个财务比率）仅供人工排查，判定消费方只读 pool_state/pool_reason。
             audit.setdefault(code, {}).update(
                 values, pool_state=state, pool_reason='|'.join(dict.fromkeys(failed or missing))
-                or 'passed', vol60=vol)
+                or 'passed')
         if state == 'passed':
             pool.append(code)
     return pool
@@ -76,10 +71,13 @@ def _annualized_vol(series: pd.Series) -> Optional[float]:
 
 
 def rank_pool(pool: List[str], closes: pd.DataFrame) -> Tuple[List[str], Dict[str, float]]:
-    """253根收盘剔除最近21根；同分按代码排序，缺计分历史仅影响新仓。"""
+    """先筛波动率，再按剔除最近21根的强弱分数排序。"""
     scores = {}
     for code in pool:
         if code not in closes.columns:
+            continue
+        vol = _annualized_vol(closes[code])
+        if vol is None or vol >= VOL60_MAX:
             continue
         series = closes[code].iloc[-SCORE_CLOSES:-SCORE_SKIP_RECENT]
         if (len(series) == SCORE_CLOSES - SCORE_SKIP_RECENT
@@ -114,8 +112,6 @@ def select_targets(ranked: List[str], held: Set[str], pool: Set[str],
     rank = {c: i + 1 for i, c in enumerate(ranked)}
     kept = sorted(held & (set(pool) | set(deferred)),
                   key=lambda c: (rank.get(c, len(ranked) + 1), c))
-    if len(kept) > TOP_N:
-        raise ValueError('More existing positions than TOP_N')
     selected = list(kept)
     # 缺旧仓行业时，不能确认新增后集中度；本轮保留旧仓但暂缓所有新开仓。
     if any(not industries.get(c) for c in kept):
@@ -123,7 +119,7 @@ def select_targets(ranked: List[str], held: Set[str], pool: Set[str],
     for code in ranked[:TOP_N]:
         if len(selected) >= TOP_N:
             break
-        if code in selected or industry_buy_block_reason(
+        if code in held or industry_buy_block_reason(
                 industries.get(code), selected, industries):
             continue
         selected.append(code)

@@ -1,4 +1,4 @@
-"""质量动量实际账户闭环：真实选股核、独立周期、人工成交及共享账户边界。"""
+"""质量动量实际账户闭环：真实选股核、独立持仓状态、人工成交及共享账户边界。"""
 
 from datetime import date
 from pathlib import Path
@@ -41,7 +41,7 @@ def event(path, side, **fields):
 def test_plan_uses_ten_percent_budget_and_never_imports_simulated_positions(account, env):
     from dashboard import dashboard_data
 
-    env.setattr(config, "POOL_LEDGER_PATH", str(account.with_name("trade_ledger_quality_pool_v2.jsonl")))
+    env.setattr(config, "POOL_LEDGER_PATH", str(account.with_name("trade_ledger_quality_pool.jsonl")))
     append_trade(TradeRecord("2026-10-01", "600003", "模拟旧仓", "buy", 100, 10, account=config.ACCOUNT),
                  config.POOL_LEDGER_PATH)
     simulated = Path(config.POOL_LEDGER_PATH).read_bytes()
@@ -73,7 +73,7 @@ def test_partial_fill_consumes_only_remaining_plan_and_keeps_realized_pnl(accoun
     assert wallet.account_data(account)["cash_by_strategy"]["core"] == 100000
 
 
-def test_actual_old_position_drives_exit_and_next_day_retries_only_exits(account, env):
+def test_actual_old_position_drives_exit_and_next_day_rechecks_entries(account, env):
     event(account, "buy", code="600003", qty=100, price=10, fee=0)
     # 前一日持仓，允许本轮退出；模拟账户没有这只股票。
     env.setattr(wallet, "_today", lambda: date(2026, 10, 5))
@@ -84,8 +84,10 @@ def test_actual_old_position_drives_exit_and_next_day_retries_only_exits(account
     env.setattr(wallet, "_today", lambda: date(2026, 10, 6))
     assert not quality(account)["suggestions"]  # 昨日买入建议过期。
     wallet.publish_quality("2026-10-06", path=account)
-    assert [(o["side"], o["code"]) for o in quality(account)["suggestions"]] == [("sell", "600003")]
-    assert wallet.load(account)["quality_state"]["next_signal_date"] == "2026-11-02"
+    orders = quality(account)["suggestions"]
+    assert (orders[0]["side"], orders[0]["code"]) == ("sell", "600003")
+    assert {o["code"] for o in orders if o["side"] == "buy"} == {"600001", "600002"}
+    assert wallet.load(account)["quality_state"]["last_signal_date"] == "2026-10-06"
 
 
 def test_dry_run_does_not_write_account_or_simulation(account):
@@ -94,6 +96,22 @@ def test_dry_run_does_not_write_account_or_simulation(account):
     assert "买入" in report
     assert account.read_bytes() == before
     assert not Path(config.STATE_PATH).exists() and not Path(config.POOL_LEDGER_PATH).exists()
+
+
+def test_old_same_day_advice_is_hidden_and_rebuilt(account):
+    from src.account_store import save
+
+    wallet.publish_quality(DAY.isoformat(), path=account)
+    old = wallet.load(account)
+    del old["quality_signal"]["strategy_version"]
+    old.pop("quality_state")
+    save(account, old)
+
+    assert quality(account)["suggestions"] == []
+    assert "买入" in wallet.publish_quality(DAY.isoformat(), path=account)
+    updated = wallet.load(account)
+    assert updated["quality_state"]["version"] == config.STRATEGY_VERSION
+    assert updated["quality_signal"]["strategy_version"] == config.STRATEGY_VERSION
 
 
 def test_ignore_group_remains_ignored_after_cash_changes_and_same_day_rerun(account):
@@ -106,16 +124,15 @@ def test_ignore_group_remains_ignored_after_cash_changes_and_same_day_rerun(acco
     assert quality(account)["advice_status"] == "本轮建议已忽略"
 
 
-def test_failure_pauses_advice_and_recovery_preserves_cycle(account, env):
+def test_failure_pauses_advice_and_recovery_rebuilds_today(account, env):
     _patch_signal_data(env, fail=True)
     assert "暂停" in wallet.publish_quality(DAY.isoformat(), path=account)
     assert not quality(account)["suggestions"]
     assert wallet.load(account)["quality_state"]["signal_retry"]
-    next_day = wallet.load(account)["quality_state"]["next_signal_date"]
     _patch_signal_data(env)
     _patch_execute_data(env, {"600001": 10, "600002": 20})
     assert "买入" in wallet.publish_quality(DAY.isoformat(), path=account)
-    assert wallet.load(account)["quality_state"]["next_signal_date"] == next_day
+    assert wallet.load(account)["quality_state"]["last_signal_date"] == DAY.isoformat()
 
 
 def test_concurrent_account_change_rejects_plan_without_overwriting_user_event(account, env):

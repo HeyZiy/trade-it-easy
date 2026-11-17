@@ -1,16 +1,5 @@
 # -*- coding: utf-8 -*-
-"""质量池状态 — data/quality_pool_v2_state.json 读写。
-
-三个跨日状态（规格四、五节的执行约定）：
-- next_signal_date：原定20交易日节点，失败恢复不重设；
-- pending_plan：生成信号后写、同轮执行消费后清除，版本/执行日/截止日不符则丢弃；
-- exit_queue：未完成退出队列（停牌/跌停/可卖量不足 → 每交易日模拟任务中重试）。
-
-signal_retry在取数前持久化，成功写名单后清除；中断次日重算信号。
-deferred_codes只补判未知旧仓，确认出池加入退出队列，不生成新的买入名单。
-
-文件损坏宁可炸（同 LedgerError 纪律），不带病默认。
-"""
+"""每日名单、失败恢复标记与未完成退出队列的持久化。"""
 
 from __future__ import annotations
 
@@ -26,30 +15,28 @@ STATE_VERSION = STRATEGY_VERSION
 
 _EMPTY = {
     "version": STATE_VERSION,
-    "next_signal_date": None,
     "pending_plan": None,
     "exit_queue": {},
     "signal_retry": False,
     "last_signal_date": None,
-    "deferred_codes": [],
 }
 
 
 def empty_state() -> dict:
-    return dict(_EMPTY, exit_queue={}, deferred_codes=[])
+    return dict(_EMPTY, exit_queue={})
+
+
+def restore(raw: dict) -> dict:
+    if raw.get("version") != STATE_VERSION:
+        raise ValueError("策略状态文件版本不兼容")
+    return {**_EMPTY, **raw, "exit_queue": dict(raw.get("exit_queue") or {})}
 
 
 def load_state(path: Union[str, Path] = STATE_PATH) -> dict:
     p = Path(path)
     if not p.exists():
         return empty_state()
-    raw = json.loads(p.read_text(encoding="utf-8"))
-    if raw.get('version') != STATE_VERSION:
-        raise ValueError('策略状态文件版本不兼容')
-    state = dict(_EMPTY)
-    state.update(raw)
-    state["exit_queue"] = dict(state.get("exit_queue") or {})
-    return state
+    return restore(json.loads(p.read_text(encoding="utf-8")))
 
 
 def save_state(state: dict, path: Union[str, Path] = STATE_PATH) -> None:

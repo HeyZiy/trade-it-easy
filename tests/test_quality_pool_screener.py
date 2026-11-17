@@ -1,12 +1,12 @@
 # -*- coding: utf-8 -*-
-"""质量池筛选核测试 — 规格一、二节逐条映射（strategy/roe_quality_pool.md）。"""
+"""质量池筛选核测试 — 持有资格逐条映射（strategy/quality_pool.md）。"""
 
 import numpy as np
 import pandas as pd
 import pytest
 
 from src.quality_pool import screener
-from src.quality_pool.config import SCORE_CLOSES, SCORE_SKIP_RECENT, VOL_LOOKBACK
+from src.quality_pool.config import SCORE_CLOSES, SCORE_SKIP_RECENT
 
 
 # ── 造数工具 ──
@@ -48,17 +48,16 @@ def test_qualifying_stock_passes():
     universe = {"600001"}
     pool = screener.build_pool(
         universe, _fundamentals({"600001": PASS_FUND}),
-        _status({"600001": {}}), _closes({"600001": [10.0]}), set())
+        _status({"600001": {}}))
     assert pool == ["600001"]
 
 
 def test_roe_threshold_strictly_greater():
-    fund = dict(PASS_FUND, roe_ttm_pct=12.0)   # ×4 = 12%，规格要求 > 12%
+    fund = dict(PASS_FUND, roe_ttm_pct=12.0)   # ×4 = 12%，规则要求 > 12%
     audit = {}
     pool = screener.build_pool({"600001"}, _fundamentals({"600001": fund}),
                                _status({"600001": {}}),
-                               _closes({"600001": [10.0]}),
-                               set(), audit=audit)
+                               audit=audit)
     assert pool == []
     assert audit["600001"]["pool_reason"] == "roe_low"
 
@@ -67,7 +66,7 @@ def test_growth_threshold_and_combined_reason():
     audit = {}
     fund = dict(PASS_FUND, roe_ttm_pct=2.0, np_yoy_pct=10.0)
     screener.build_pool({"600001"}, _fundamentals({"600001": fund}),
-                        _status({}), _closes({"600001": [10.0]}), set(), audit=audit)
+                        _status({}), audit=audit)
     assert audit["600001"]["pool_reason"] == "roe_low|profit_growth_low"
 
 
@@ -75,8 +74,7 @@ def test_financial_missing_reason():
     audit = {}
     pool = screener.build_pool({"600001"}, _fundamentals({}),
                                _status({"600001": {}}),
-                               _closes({"600001": [10.0]}),
-                               set(), audit=audit)
+                               audit=audit)
     assert pool == []
     assert audit["600001"]["pool_state"] == 'unknown'
     assert 'financial_missing' in audit["600001"]["pool_reason"]
@@ -90,7 +88,6 @@ def test_status_filters_st_and_suspended():
                   "600003": dict(is_st=False, is_suspended=True)})
     audit = {}
     pool = screener.build_pool({"600001", "600002", "600003"}, fund, st,
-                               _closes({c: [10.0] for c in fund.index}), set(),
                                audit=audit)
     assert pool == ["600001", "600003"]
     assert audit["600002"]["pool_reason"] == "st"
@@ -99,7 +96,7 @@ def test_status_filters_st_and_suspended():
 
 def test_status_missing_fail_closed():
     pool = screener.build_pool({"600001"}, _fundamentals({"600001": PASS_FUND}),
-                               _status({}), _closes({"600001": [10.0]}), set())
+                               _status({}))
     assert pool == []
 
 
@@ -113,8 +110,7 @@ def test_valuation_upper_bounds_only():
     audit = {}
     pool = screener.build_pool(set(fund.index), fund,
                                _status({c: {} for c in fund.index}),
-                               _closes({c: [10.0] for c in fund.index}),
-                               set(), audit=audit)
+                               audit=audit)
     assert pool == []
     assert audit["600001"]["pool_reason"] == "pe_nonpos"
     assert audit["600002"]["pool_reason"] == "pe_high"
@@ -122,39 +118,22 @@ def test_valuation_upper_bounds_only():
     assert audit["600004"]["pool_reason"] == "valuation_invalid"
 
 
-def test_vol60_annualized_std_and_history():
-    # 恒定价格 → 收益全 0 → vol 0：通过
-    calm = _closes({"600001": [10.0] * VOL_LOOKBACK})
-    assert screener.build_pool({"600001"}, _fundamentals({"600001": PASS_FUND}),
-                               _status({"600001": {}}), calm, set()) == ["600001"]
-    # 窗口内 61 根收盘不可得（次新股：前 61 根无数据）
-    audit = {}
-    short = _closes({"600002": [10.0] * (SCORE_CLOSES - 61)}, rows=SCORE_CLOSES)
-    short.iloc[-61:, 0] = np.nan
-    pool = screener.build_pool({"600002"}, _fundamentals({"600002": PASS_FUND}),
-                               _status({"600002": {}}), short, set(), audit=audit)
-    assert pool == []
-    assert audit["600002"]["pool_reason"] == "vol_history_missing"
+def test_vol60_missing_history_blocks_only_entry():
+    code = "600001"
+    closes = _closes({code: [10.0]})
+    pool = screener.build_pool({code}, _fundamentals({code: PASS_FUND}), _status({code: {}}))
+    assert screener.rank_pool(pool, closes)[0] == [code]
+    closes.iloc[-1, 0] = np.nan
+    assert pool == [code]
+    assert screener.rank_pool(pool, closes)[0] == []
 
 
-def test_vol60_high_excluded():
-    rng = np.random.default_rng(7)
-    noisy = list(10 * np.exp(np.cumsum(rng.normal(0, 0.04, VOL_LOOKBACK))))
-    vol = screener._annualized_vol(pd.Series(noisy))
-    assert vol is not None and vol > 35
-    audit = {}
-    pool = screener.build_pool({"600001"}, _fundamentals({"600001": PASS_FUND}),
-                               _status({"600001": {}}), _closes({"600001": noisy}),
-                               set(), audit=audit)
-    assert pool == []
-    assert audit["600001"]["pool_reason"] == "vol_high"
-
-
-def test_unlock_window_excludes():
-    pool = screener.build_pool({"600001"}, _fundamentals({"600001": PASS_FUND}),
-                               _status({"600001": {}}), _closes({"600001": [10.0]}),
-                               {"600001"})
-    assert pool == ["600001"]
+def test_vol60_high_blocks_only_entry():
+    code = "600001"
+    closes = _closes({code: [10, 11] * 31})
+    pool = screener.build_pool({code}, _fundamentals({code: PASS_FUND}), _status({code: {}}))
+    assert pool == [code]
+    assert screener.rank_pool(pool, closes)[0] == []
 
 
 def test_filter_chain_order_first_failure_recorded():
@@ -162,23 +141,22 @@ def test_filter_chain_order_first_failure_recorded():
     audit = {}
     fund = dict(PASS_FUND, roe_ttm_pct=1.0, pe_ttm=99.0)
     screener.build_pool({"600001"}, _fundamentals({"600001": fund}),
-                        _status({"600001": dict(is_st=True, is_suspended=False)}),
-                        _closes({"600001": [10.0]}), {"600001"}, audit=audit)
+                        _status({"600001": dict(is_st=True, is_suspended=False)}), audit=audit)
     assert 'roe_low' in audit["600001"]["pool_reason"]
 
 
 # ── 二、怎么选 ──
 
 def _window_closes(base: float, final_ratio: float, rows: int = SCORE_CLOSES) -> list:
-    """121 根收盘：窗口首尾比 final_ratio，最后 20 根暴涨（不应进分数）。"""
+    """253 根收盘，计分窗口首尾比为 final_ratio。"""
     window = [base * (1 + (final_ratio - 1) * i / (SCORE_CLOSES - SCORE_SKIP_RECENT - 1))
               for i in range(SCORE_CLOSES - SCORE_SKIP_RECENT)]
-    spike = [window[-1] * (1 + 0.1 * i) for i in range(1, SCORE_SKIP_RECENT + 1)]
+    spike = [window[-1] * (1 + 0.012 * i) for i in range(1, SCORE_SKIP_RECENT + 1)]
     return window + spike
 
 
-def test_rank_score_skips_recent_20_days():
-    # A 窗口内 +100%，B 窗口内 +10%；B 最近 20 日暴涨 10 倍——分数仍 A > B
+def test_rank_score_skips_recent_21_days():
+    # A 窗口内 +100%，B 窗口内 +10%；B 最近 21 日上涨约 25%——分数仍 A > B
     closes = _closes({
         "600001": _window_closes(10.0, 2.0),
         "600002": _window_closes(10.0, 1.1),

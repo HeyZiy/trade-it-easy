@@ -23,7 +23,7 @@ def _raw(**over):
 
 def _prev_always(monkeypatch, prev="2026-09-30"):
     monkeypatch.setattr("src.trading_calendar.latest_trading_day_on_or_before",
-                        lambda day: date.fromisoformat(prev))
+                        lambda day, **kw: date.fromisoformat(prev))
 
 
 def test_none_yields_none(monkeypatch):

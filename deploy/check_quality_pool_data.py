@@ -68,7 +68,7 @@ def main() -> int:
     fundamentals = feeds.fetch_fundamentals(codes, asof_str, raw_closes)
     status = feeds.fetch_screening_status(codes, asof_str)
     industries = feeds.fetch_industries(codes, asof_str)
-    pool = screener.build_pool(set(codes), fundamentals, status, closes)
+    pool = screener.build_pool(set(codes), fundamentals, status)
     ranked, _ = screener.rank_pool(pool, closes)
     after = _cache_bytes(info_cache)
     print(json.dumps({

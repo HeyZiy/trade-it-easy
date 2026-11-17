@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""质量池执行核测试 — 规格三、四节逐条映射（strategy/roe_quality_pool.md）。"""
+"""质量池执行核测试 — 先卖后买与名额规则逐条映射（strategy/quality_pool.md：补位与成交）。"""
 
 import pytest
 
@@ -113,28 +113,10 @@ def test_buy_blocked_by_upper_limit_or_st():
     assert plan.trades == [] and plan.blocked[0].blocked_by == "ST"
 
 
-def test_overweight_keeper_reduced_to_budget():
-    snap = _holding(_snap(), "600001", 8000, 10.0)
-    plan = plan_round(["600001"], {}, 50_000.0, snap)   # 目标 5000 股
-    sells = [t for t in plan.trades if t.side == "sell"]
-    assert len(sells) == 1 and sells[0].qty == 3000 and sells[0].reason == "equal_weight"
-
-
-def test_underweight_keeper_topped_up():
-    snap = _holding(_snap(), "600001", 3000, 10.0)
-    plan = plan_round(["600001"], {}, 50_000.0, snap)   # 补到 5000
-    buys = [t for t in plan.trades if t.side == "buy"]
-    assert len(buys) == 1 and buys[0].qty == 2000
-
-
-def test_tiny_deviation_not_traded():
-    """差额不足一手不动（规格三节：交易差额不足100股则不动）。"""
-    snap = _holding(_snap(), "600001", 5040, 10.0)   # 高于预算 400 股 → 减 0
-    plan = plan_round(["600001"], {}, 50_000.0, snap)
-    assert plan.trades == []
-    snap = _holding(_snap(), "600001", 5060, 10.0)   # 高 60 股
-    plan = plan_round(["600001"], {}, 50_000.0, snap)
-    assert plan.trades == []
+@pytest.mark.parametrize("shares", [3000, 8000])
+def test_retained_holding_keeps_original_weight(shares):
+    snap = _holding(_snap(), "600001", shares, 10.0)
+    assert plan_round(["600001"], {}, 50_000.0, snap).trades == []
 
 
 def test_pending_exit_occupies_slot():
@@ -152,7 +134,7 @@ def test_pending_exit_occupies_slot():
 
 
 def test_freed_slot_allows_new_buy():
-    """退出在本轮完成的名额让给新股票（规格二节例：B 退出，第 8 名补入）。"""
+    """退出在本轮完成的名额让给新股票（例：B 退出，第 8 名补入）。"""
     snap = _snap()
     codes = [f"{600000 + i}" for i in range(TOP_N)]
     for i, code in enumerate(codes):
@@ -167,10 +149,10 @@ def test_freed_slot_allows_new_buy():
 
 
 def test_sequencing_sells_before_buys():
-    """先卖后买：卖出指令先于买入指令（规格三节执行序）。"""
+    """先卖后买：卖出指令先于买入指令。"""
     snap = _holding(_snap(), "600001", 8000, 10.0)
     snap.prices["600002"] = 10.0
-    plan = plan_round(["600001", "600002"], {}, 50_000.0, snap)
+    plan = plan_round(["600002"], {"600001": "out_of_pool"}, 50_000.0, snap)
     sides = [t.side for t in plan.trades]
     assert sides[0] == "sell" and "buy" in sides
 
@@ -178,8 +160,8 @@ def test_sequencing_sells_before_buys():
 def test_sell_proceeds_fund_later_buys():
     """卖出回款可用于本轮买入（先卖后买执行序的自然结果）；受阻卖出的回款
     不会虚增（受阻不产生回款）。"""
-    snap = _holding(_snap(cash=0.0), "600001", 8000, 10.0)   # 现金 0，减仓 3000 股
+    snap = _holding(_snap(cash=0.0), "600001", 8000, 10.0)   # 现金为零，须先卖出
     snap.prices["600002"] = 10.0
-    plan = plan_round(["600001", "600002"], {}, 50_000.0, snap)
+    plan = plan_round(["600002"], {"600001": "out_of_pool"}, 50_000.0, snap)
     buy = [t for t in plan.trades if t.side == "buy" and t.code == "600002"]
     assert buy and buy[0].qty > 0

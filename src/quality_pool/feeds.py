@@ -15,9 +15,11 @@
 - PE(TTM) = 总市值 / TTM 归母净利，筛选要求PE/PB均为正；
   PB = 总市值 / 期末归母权益；总市值 = 总股本 × 截止日原始收盘。
 
-失败口径（两种合法语义，按用途分，勿互相硬套）：
-- 轮级暂停：信号路径的数据不完整 = 整轮错误——fetch_* 返回空表由调用方
+失败口径（三种合法语义，按用途分，勿互相硬套）：
+- 轮级暂停：持仓资格的数据不完整 = 整轮错误——fetch_* 返回空表由调用方
   （signal）在轮次 try 内 raise，报告记"本轮暂停"；
+- 降级暂停买入：新仓排序的数据异常只暂停新买入，退出与留存照常——signal
+  层捕获后报告记"补位数据异常"，不炸整轮；
 - 执行级按码阻断：执行状态缺行 = 该码 fail-closed——fetch_execution_status
   对缺行/过期/失败返回空表，装配层翻译为 unavailable，不炸整轮。
 
@@ -36,14 +38,13 @@ import pandas as pd
 
 from src.quality_pool.config import (
     FINANCIAL_STATEMENT_TYPE_CONSOL, FINANCIAL_STATEMENT_TYPE_SINGLE,
-    SCORE_CLOSES, VOL_LOOKBACK,
+    SCORE_CLOSES,
 )
 
 logger = logging.getLogger(__name__)
 
 # 253根交易日，额外预留节假日余量
 CLOSES_WINDOW_DAYS = 430
-UNLOCK_EVENT_DAYS = 90
 FUNDAMENTAL_BATCH_SIZE = 32
 # 查最近八个季度至 asof，覆盖正常披露滞后、最新单季、同比与四季 TTM。
 FINANCIAL_LOOKBACK_QUARTERS = 8
@@ -76,11 +77,6 @@ def _raw_balance_sheets(codes: List[str], begin: str, end: str) -> Dict[str, pd.
 def _raw_equity_structure(codes: List[str], begin: str, end: str) -> Dict[str, pd.DataFrame]:
     from data_provider.fetchers.amazingdata.fundamentals import fetch_equity_structure
     return fetch_equity_structure(codes, begin, end)
-
-
-def _raw_restricted(codes: List[str], begin: str, end: str) -> pd.DataFrame:
-    from data_provider.fetchers.amazingdata.fundamentals import fetch_restricted
-    return fetch_restricted(codes, begin, end)
 
 
 def _raw_adj_factors(codes: List[str], begin: str, end: str) -> pd.DataFrame:
@@ -242,6 +238,35 @@ def _execution_now() -> pd.Timestamp:
     return pd.Timestamp.now(tz='Asia/Shanghai').tz_localize(None)
 
 
+def fetch_signal_status(codes: List[str], asof: str, today: str) -> pd.DataFrame:
+    """当天信号取证券信息中的 ST 状态，不依赖停牌股票的实时行情。"""
+    if _execution_now().date().isoformat() != today:
+        return fetch_screening_status(codes, asof)
+    return _code_info_status(codes).to_frame('is_st')
+
+
+def _raw_code_info():
+    from data_provider.fetchers.amazingdata.market import fetch_stock_code_info
+    return fetch_stock_code_info()
+
+
+def _code_info_status(codes: List[str], info=None) -> pd.Series:
+    """当天证券信息的风险警示标志 → index=code 的 is_st 布尔序列。
+
+    info 可传已取回的证券信息表（执行路径与行情快照同包返回，共享单次拉取）；
+    缺省时自行拉取。
+    """
+    if info is None:
+        info = _raw_code_info()
+    if info is None or info.empty or 'security_status' not in info:
+        raise RuntimeError('当天证券风险警示信息不可用')
+    flags = info['security_status'].copy()
+    flags.index = flags.index.astype(str).str.split('.').str[0]
+    if flags.index.has_duplicates:
+        raise RuntimeError('当天证券信息同一股票出现重复记录')
+    return flags.loc[flags.index.intersection(codes)].map(_risk_warning).astype('boolean')
+
+
 def _raw_execution_data(codes, begin, end):
     from data_provider.fetchers.amazingdata.market import fetch_execution_data
     return fetch_execution_data(codes, begin, end)
@@ -309,19 +334,22 @@ def fetch_execution_status(codes: List[str], exec_date: str) -> pd.DataFrame:
     if now.date().isoformat() != exec_date:
         return pd.DataFrame(columns=columns)
     begin = now - pd.Timedelta(seconds=120)
-    if info is None or info.empty or 'security_status' not in info:
+    try:
+        flags = _code_info_status(codes, info)
+    except RuntimeError as error:
+        if '重复记录' in str(error):
+            raise
         return pd.DataFrame(columns=columns)
-    info = info.copy()
-    info.index = info.index.astype(str).str.split('.').str[0]
-    if info.index.has_duplicates:
-        raise RuntimeError('当天证券信息同一股票出现重复记录')
+    # 证券信息原始索引带市场后缀；归一化映射供记名与告警回查原始行。
+    raw_by_code = {str(raw).split('.')[0]: raw for raw in info.index}
     if 'symbol' in info:
         from data_provider.security_names import remember
-        remember({code: info.at[code, 'symbol'] for code in codes if code in info.index})
+        remember({code: info.at[raw_by_code[code], 'symbol']
+                  for code in codes if code in raw_by_code})
     rows = {}
     for code in codes:
         raw = snapshots.get(code)
-        if code not in info.index or raw is None or raw.empty:
+        if code not in flags.index or raw is None or raw.empty:
             continue
         stamps = pd.to_datetime(raw['trade_time'] if 'trade_time' in raw
                                 else raw.index, errors='coerce')
@@ -337,33 +365,18 @@ def fetch_execution_status(codes: List[str], exec_date: str) -> pd.DataFrame:
             continue
         row = raw.iloc[pos]
         rows[code] = {
-            'is_st': _risk_warning(info.at[code, 'security_status']),
+            'is_st': flags.at[code],
             'is_suspended': _snapshot_suspended(code, row.get('trading_phase_code')),
             'high_limit': pd.to_numeric(row.get('high_limited'), errors='coerce'),
             'low_limit': pd.to_numeric(row.get('low_limited'), errors='coerce'),
         }
-        if pd.isna(rows[code]['is_st']):
+        if pd.isna(flags.at[code]):
             logger.warning('[quality_pool] %s 当天风险警示编码未知：%r',
-                           code, info.at[code, 'security_status'])
+                           code, info.at[raw_by_code[code], 'security_status'])
     frame = pd.DataFrame.from_dict(rows, orient='index', columns=columns)
     for col in ('is_st', 'is_suspended'):
         frame[col] = frame[col].astype('boolean')
     return frame
-
-
-def fetch_unlock_codes(codes: List[str], signal_date: str) -> Set[str]:
-    """[信号日, +90 自然日] 内存在任意已知解禁事件的代码集合。"""
-    begin = pd.Timestamp(signal_date)
-    end = begin + pd.Timedelta(days=UNLOCK_EVENT_DAYS)
-    raw = _raw_restricted(codes, begin.strftime("%Y-%m-%d"), end.strftime("%Y-%m-%d"))
-    if raw is None or raw.empty or "LIST_DATE" not in raw.columns:
-        return set()
-    in_window = pd.to_datetime(raw["LIST_DATE"], errors="coerce").between(
-        begin, end)
-    raw = raw[in_window]
-    if "MARKET_CODE" not in raw.columns:
-        return set()
-    return {str(c).split(".")[0] for c in raw["MARKET_CODE"].dropna().unique()}
 
 
 def fetch_fundamentals(codes: List[str], asof: str,

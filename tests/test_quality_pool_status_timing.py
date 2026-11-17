@@ -1,4 +1,4 @@
-"""历史状态用于 T−1 预筛；当天执行必须确认新鲜交易状态。"""
+"""当天信号使用风险警示证券信息；执行还需要新鲜交易状态。"""
 import datetime as dt
 
 import pandas as pd
@@ -9,29 +9,19 @@ from src.quality_pool import config, feeds, signal, state
 from test_quality_pool_state import env, _patch_signal_data, _seed_positions
 
 
-@pytest.mark.parametrize('deferred', [False, True])
-def test_signal_status_uses_previous_trading_day(env, deferred):
+def test_signal_uses_today_st_without_intraday_quotes(env):
     _patch_signal_data(env)
-    if deferred:
-        _seed_positions([('600001', 100, 10.)])
-        st = state.load_state(config.STATE_PATH)
-        st.update(next_signal_date='2026-10-20', deferred_codes=['600001'])
-        state.save_state(st, config.STATE_PATH)
-    original = feeds.fetch_screening_status
-    dates = []
-
-    def historical_only(codes, day):
-        dates.append(day)
-        return original(codes, day) if day == '2026-10-02' else pd.DataFrame()
-
-    env.setattr(feeds, 'fetch_screening_status', historical_only)
+    _seed_positions([('600001', 100, 10.)])
+    env.setattr(feeds, '_execution_now', lambda: pd.Timestamp('2026-10-05 09:30:00'))
+    env.setattr(feeds, 'fetch_screening_status', lambda *a: pytest.fail('当日不得使用昨收 ST'))
+    env.setattr(feeds, '_raw_code_info', lambda: pd.DataFrame(
+        {'security_status': ['4', '']}, index=['600001.SH', '600002.SH']))
     report = signal.run_signal(dt.date(2026, 10, 5))
-    assert dates == ['2026-10-02']
-    assert '本轮暂停' not in report
-    if deferred:
-        assert state.load_state(config.STATE_PATH)['deferred_codes'] == []
-    else:
-        assert state.load_state(config.STATE_PATH)['pending_plan'] is not None
+    plan = state.load_state(config.STATE_PATH)['pending_plan']
+    assert plan['asof'] == '2026-10-02'
+    assert plan['exit_reasons'] == {'600001': config.EXIT_OUT_OF_POOL}
+    assert plan['selected'] == ['600002']
+    assert report.acted
 
 
 def test_execution_status_does_not_use_history_table(monkeypatch):

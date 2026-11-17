@@ -34,15 +34,12 @@ def test_missing_values_defer_holding_without_rebalancing_and_recover_next_day(e
     _patch_signal_data(env)
     signal.run_signal(dt.date(2026, 10, 5))
     saved = state.load_state(pool_config.STATE_PATH)
-    assert saved['deferred_codes'] == [] and saved['pending_plan'] is None
+    assert saved['pending_plan']['deferred'] == [] and '600001' in saved['pending_plan']['kept']
 
 
-def test_deferred_quality_failure_only_adds_exit_without_new_round(env):
+def test_quality_failure_adds_exit_and_allows_fresh_entries(env):
     _patch_signal_data(env)
     _seed_positions([('600001', 100, 10.)])
-    saved = state.load_state(pool_config.STATE_PATH)
-    saved.update(next_signal_date='2026-10-29', deferred_codes=['600001'])
-    state.save_state(saved, pool_config.STATE_PATH)
     original = feeds.fetch_fundamentals
 
     def low_roe(codes, asof, raw_closes=None):
@@ -54,7 +51,7 @@ def test_deferred_quality_failure_only_adds_exit_without_new_round(env):
     signal.run_signal(dt.date(2026, 10, 2))
     saved = state.load_state(pool_config.STATE_PATH)
     assert saved['exit_queue'] == {'600001': 'out_of_pool'}
-    assert saved['pending_plan'] is None and saved['next_signal_date'] == '2026-10-29'
+    assert saved['pending_plan']['selected'] == ['600002']
 
 
 def test_suspended_quality_holding_is_retained_and_execution_blocked(env):
@@ -99,7 +96,7 @@ def test_known_quality_failure_wins_over_missing_valuation():
     fund = pd.DataFrame({'roe_ttm_pct': [5.], 'np_yoy_pct': [20.],
                          'pe_ttm': [np.nan], 'pb': [2.]}, index=[code])
     status = pd.DataFrame({'is_st': [False]}, index=[code])
-    screener.build_pool({code}, fund, status, pd.DataFrame({code: [10.] * 253}), audit=audit)
+    screener.build_pool({code}, fund, status, audit=audit)
     assert audit[code]['pool_state'] == 'failed' and audit[code]['pool_reason'] == 'roe_low'
 
 
@@ -148,6 +145,6 @@ def test_same_day_repeated_signal_and_execution_do_not_rebuy(env):
     _patch_execute_data(env, {'600001': 10., '600002': 10.})
     qp.run_execute(dt.date(2026, 10, 2))
     before = _ledger_snapshot().held_counts()
-    signal.run_signal(dt.date(2026, 10, 2), retry=True)
+    signal.run_signal(dt.date(2026, 10, 2))
     qp.run_execute(dt.date(2026, 10, 2))
     assert _ledger_snapshot().held_counts() == before

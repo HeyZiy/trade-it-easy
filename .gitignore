@@ -2,6 +2,7 @@
 .env
 .env.local
 .env.*.local
+deploy/server_ssh.md
 
 # Python
 __pycache__/
@@ -40,24 +41,8 @@ env/
 *~
 .cursorrules
 
-# 数据目录：仅版本化策略定义（注册表/待办库），运行状态与缓存不入库
-/data/trade_ledger.jsonl
-/data/trade_ledger*.jsonl
-/data/migrations/
-/data/etf_account.json*
-/data/core_account.json*
-/data/position_exit_state.json
-/data/environment.json
-/data/AmazingData_local_data
-/data/timing_reports/*
-!/data/timing_reports/archive/
-/data/timing_reports/archive/**
-!/data/timing_reports/archive/level1/
-!/data/timing_reports/archive/159915/
-!/data/timing_reports/archive/513180/
-!/data/timing_reports/archive/level1/summary.md
-!/data/timing_reports/archive/159915/summary.md
-!/data/timing_reports/archive/513180/summary.md
+# 数据
+/data
 
 logs/
 reports/
@@ -89,10 +74,6 @@ CLAUDE.md
 *.csv
 *.pkl
 *.json
-
-# 研究数据集需入库的元信息（数据体仍忽略）
-!research/data/**/manifest.json
-!research/studies/etf/industry_etf_universe.json
 
 plots/
 

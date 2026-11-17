@@ -9,13 +9,13 @@
 - build_snapshot：台账派生 + 实时行情 + 当日状态。台账一次派生，当天
   证券信息和行情快照组合后供停牌/ST/涨跌停三个消费共享；停牌以沪深
   交易阶段为准，ST 使用当天风险警示标志，不用名称子串推断；状态缺行按
-  suspended=True / st=True 处置——确认不了可交易就不动（fail-closed，
-  规格数据暂停精神）。总权益直接取台账快照 total_assets（现金 + 持仓
-  按现价市值），不在本层重算。
+  suspended=True / st=True 处置——确认不了可交易就不动（fail-closed）。
+  总权益直接取台账快照 total_assets（现金 + 持仓按现价市值），不在本层
+  重算；数据不完整时整轮暂停。
 - run_execution：名单消费、冻结预算、先卖后买与退出队列核对集中于此。
   卖单记账后以实际现金与持仓收敛原买单；退出队列只认台账剩余持仓。
   记账前保存完整退出意图与名单消费，记账后保存核对结果，中断后只重试
-  退出，不用旧名单追补买入或等权调整。报告落盘与推送由入口负责。
+  退出；下一交易日使用新信号。报告落盘与推送由入口负责。
 
 本模块零网络：数据一律经 feeds seam 进入；测试在 feeds 层放假数据
 打真实装配逻辑。路径经 config 运行时读取，测试可单点替换。
@@ -38,13 +38,13 @@ from data_provider.security_names import names_for
 logger = logging.getLogger(__name__)
 
 
-def run_day(today: date, dry_run: bool = False, retry: bool = False) -> SignalReport:
+def run_day(today: date, dry_run: bool = False) -> SignalReport:
     """09:30启动后顺序完成信号与执行；共享本轮状态，只读预览也不丢新名单。
 
-    acted＝信号行动轮或当日有成交；纯"非调仓日且无成交"为 False，入口据此免发日报。
+    acted＝信号行动轮或当日有成交；无交易意图、异常或成交时为 False，入口据此免发日报。
     """
     st = pool_state.load_state(config.STATE_PATH)
-    signal_report = signal.run_signal(today, dry_run=dry_run, retry=retry, state=st)
+    signal_report = signal.run_signal(today, dry_run=dry_run, state=st)
     before = len(load_trades(config.POOL_LEDGER_PATH))
     execution_report = run_execution(today.isoformat(), dry_run=dry_run, state=st)
     acted = (getattr(signal_report, "acted", True)
@@ -59,8 +59,6 @@ def build_snapshot(exec_date: str, selected: List[str], *, account_facts=None) -
 
     状态表缺行 → 该码按停牌/ST 处置（fail-closed，缺数据的品种不参与成交判定）。
     """
-    import datetime as dt
-
     trades = load_trades(config.POOL_LEDGER_PATH) if account_facts is None else []
     # 只对实际持仓与本轮候选取价；台账里已清仓的历史代码不再消耗行情/状态调用。
     open_codes = ({p["code"] for p in derive(trades, as_of=exec_date).positions}
@@ -79,10 +77,7 @@ def build_snapshot(exec_date: str, selected: List[str], *, account_facts=None) -
         avail = {p["code"]: p["avail_count"] for p in account_facts["positions"]}
         cash, equity = account_facts["cash"], account_facts["budget"]
 
-    prev_day = trading_calendar.latest_trading_day_on_or_before(
-        dt.date.fromisoformat(exec_date) - dt.timedelta(days=1))
-    if prev_day is None:
-        raise RuntimeError(f"交易日历无 {exec_date} 之前的数据")
+    prev_day = trading_calendar.previous_trading_day(date.fromisoformat(exec_date))
     prev_close = feeds.raw_closes_at(codes, prev_day.isoformat())
     status = feeds.fetch_execution_status(codes, exec_date)
     limits = feeds.day_limits(codes, exec_date, prev_close, status=status)
@@ -141,7 +136,9 @@ def _settle_trades(plan: execution.ExecPlan, exec_date: str, industries=None) ->
     for t in plan.trades:
         if t.side != "buy":
             continue
-        if t.code not in reserved and len(reserved) >= config.TOP_N:
+        if t.code in reserved:
+            continue
+        if len(reserved) >= config.TOP_N:
             lines.append(f"- ⛔ BUY {t.code} 受阻（{t.reason}）：slot")
             continue
         blocked = execution.industry_buy_block(t.code, reserved, industries)
@@ -163,23 +160,27 @@ def run_execution(exec_date: str, dry_run: bool = False, *, state: dict | None =
     """消费有效名单，执行并按台账核对退出；state 可承接同轮信号的内存状态。"""
     before = load_trades(config.POOL_LEDGER_PATH)
     st = pool_state.load_state(config.STATE_PATH) if state is None else state
-    sig_plan = signal.SignalPlan.from_stored(pool_state.pop_plan(st), exec_date)
+    raw_plan = pool_state.pop_plan(st)
+    sig_plan = signal.SignalPlan.from_stored(raw_plan, exec_date)
 
-    selected = list(sig_plan.selected) if sig_plan is not None else []
-    exits = dict(st.get("exit_queue", {}))
-    if sig_plan is not None:
-        exits.update(sig_plan.exit_reasons)
-        exits = {c: r for c, r in exits.items() if c not in set(selected)}
-    snapshot = build_snapshot(exec_date, selected)
+    entries = sig_plan.entries if sig_plan is not None else []
+    exits = (sig_plan.merge_exit_queue(st.get("exit_queue", {}))
+             if sig_plan is not None else dict(st.get("exit_queue", {})))
+    if not exits and not entries:
+        if raw_plan is not None and not dry_run:
+            st["exit_queue"] = exits
+            pool_state.save_state(st, config.STATE_PATH)
+        return f"# 质量动量执行（{exec_date}）\n- 无交易计划"
+    snapshot = build_snapshot(exec_date, entries)
     per = snapshot.equity / config.TOP_N if sig_plan is not None else None
-    plan = (execution.plan_round(selected, exits, per, snapshot,
+    plan = (execution.plan_round(entries, exits, per, snapshot,
                                  deferred=sig_plan.deferred,
                                  industries=sig_plan.industries)
             if sig_plan is not None else execution.plan_exit_retry(exits, snapshot))
 
     lines = [f"# 质量动量执行（{exec_date}）"]
-    lines.append(f"- 调仓轮：总权益 {snapshot.equity:,.0f}，单只预算 {per:,.0f}"
-                 if per is not None else "- 非调仓轮：仅退出队列重试")
+    lines.append(f"- 总权益 {snapshot.equity:,.0f}，单只新仓预算 {per:,.0f}"
+                 if per is not None else "- 无有效买入计划：仅重试退出队列")
     if dry_run:
         for t in plan.trades:
             lines.append(f"- （dry-run）{t.side.upper()} {t.name}({t.code}) "

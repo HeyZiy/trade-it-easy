@@ -305,14 +305,10 @@ def test_status_normalization(monkeypatch):
     assert bool(status.at["600002", "is_suspended"]) is True
 
 
-def test_unlock_codes_collected(monkeypatch):
-    raw = pd.DataFrame({"MARKET_CODE": ["600001.SS", "600002.SS", "600003.SS"],
-                        "LIST_DATE": ["2026-10-10", "2027-01-05", "2026-10-05"],
-                        "SHARE_RATIO": [1.0, 2.0, 0.5]})
-    monkeypatch.setattr(feeds, "_raw_restricted", lambda codes, b, e: raw)
-    # 90 自然日窗口：2026-10-01 ~ 2026-12-30 → 600001/600003 命中，600002 窗外
-    unlocks = feeds.fetch_unlock_codes(["600001", "600002", "600003"], "2026-10-01")
-    assert unlocks == {"600001", "600003"}
+def test_unlock_fetch_chain_retired():
+    """解禁规则随 v5 退役（新退出只有质量出池），取数链一并删除。"""
+    assert not hasattr(feeds, "fetch_unlock_codes")
+    assert not hasattr(feeds, "_raw_restricted")
 
 
 def test_day_limits_missing_official_values_do_not_invent_ten_percent(monkeypatch):

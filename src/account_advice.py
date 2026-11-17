@@ -208,7 +208,7 @@ def publish_rotation(day, rows, prices, diag, *, path, dry_run=False, error=None
     return rotation_advice.render(suggestions, status)
 
 
-def publish_quality(day, *, path, dry_run=False, retry=False):
+def publish_quality(day, *, path, dry_run=False):
     """质量池使用实际持仓独立生成名单；取数期间释放锁，提交时检查账户版本。"""
     from copy import deepcopy
     from src.quality_pool import account_advice, assembly, signal, state as pool_state
@@ -226,11 +226,11 @@ def publish_quality(day, *, path, dry_run=False, retry=False):
     strategy = strategy_facts(account, snapshot(account, day), "quality")
     if not strategy["budget"]:
         return "请先设置质量动量目标比例"
-    if previous and previous["date"] == day and not previous.get("issues"):
+    if account_advice.is_current(previous, day):
         rows, status = account_advice.advice(previous, strategy, date.fromisoformat(day),
                                              dismissed=account["dismissed"])
         return render(rows, status)
-    state = deepcopy(account.get("quality_state") or pool_state.empty_state())
+    state = pool_state.restore(deepcopy(account.get("quality_state") or pool_state.empty_state()))
 
     def commit(value, published=None):
         nonlocal expected
@@ -246,14 +246,14 @@ def publish_quality(day, *, path, dry_run=False, retry=False):
             expected = revision(current)
 
     try:
-        signal.run_signal(date.fromisoformat(day), dry_run=dry_run, retry=retry,
+        signal.run_signal(date.fromisoformat(day), dry_run=dry_run,
                           state=state, held_codes={p["code"] for p in strategy["positions"]},
                           state_writer=commit)
         if state.get("signal_retry"):
             raise ValueError("质量动量数据不完整，本轮暂停，等待重试")
-        selected = (state.get("pending_plan") or {}).get("selected", [])
-        execution_snapshot = assembly.build_snapshot(day, selected, account_facts=strategy)
-        published = account_advice.make_signal(day, state, execution_snapshot, previous)
+        plan = signal.SignalPlan.from_stored(state.get("pending_plan"), day)
+        execution_snapshot = assembly.build_snapshot(day, plan.entries if plan else [], account_facts=strategy)
+        published = account_advice.make_signal(day, state, execution_snapshot, previous, plan=plan)
     except Exception as error:
         logger.exception("质量动量实际账户建议更新失败")
         published = {"date": day, "issues": str(error)}

@@ -162,13 +162,16 @@ def get_benchmark(benchmark_code="000300.SH", begin_date=None, end_date=None):
         close.index.name = "date"
     return close
 
+def fetch_stock_code_info() -> pd.DataFrame:
+    return client.get_base_data().get_code_info(security_type='EXTRA_STOCK_A_SH_SZ')
+
+
 def fetch_execution_data(codes: List[str], begin: pd.Timestamp, end: pd.Timestamp):
     """当天证券信息和短窗口行情；不查次日才发布的历史信息表。"""
     if not codes:
         return pd.DataFrame(), {}
     try:
-        base = client.get_base_data()
-        info = base.get_code_info(security_type='EXTRA_STOCK_A_SH_SZ')
+        info = fetch_stock_code_info()
         day = int(end.strftime('%Y%m%d'))
 
         frames = {}

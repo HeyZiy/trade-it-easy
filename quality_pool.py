@@ -1,26 +1,8 @@
 # -*- coding: utf-8 -*-
-"""
-===================================
-质量动量 — 09:30 启动，一次完成模拟
-===================================
+"""质量动量任务：每交易日 09:30 检查持仓并补位，先卖后买模拟记账。
 
-规格唯一来源：strategy/roe_quality_pool.md。持仓与资金事实来源是独立名义
-台账（src/quality_pool/config.py POOL_LEDGER_PATH），模拟记账、无真实下单。
-
-默认命令（quality_pool.py，无须子命令；deploy/crontab.server 一条 cron）：
-每交易日09:30启动，先检查调仓周期、生成名单或补判未知旧仓，再以计算完成后
-的实时行情先卖后买、处理退出队列；调仓轮或当日有成交才保存并推送一份报告，
-非调仓且无成交的静默日免发日报（异常走日志告警通道）。全批失败次日
-自动重算，不移动原定20交易日周期。预算 = 执行时总权益/6 冻结。
-成交不固定为09:30或09:31，按实际取价时点模拟记账。实际账户另按分配持仓生成
-质量动量计划，目标预算为账户资产的10%，成交由人工确认记账。
-
-signal / execute 子命令仅保留供手动分阶段排查，不单独配置定时任务。
-
-约定：
-- 6只、ROE_TTM、12-2强弱、行业约束；只按质量池退出，无排名/解禁退出；
-- 停牌只限制交易；未知数据保留旧仓且不增减，确认失败才退出；
-- 买入与等权调整仅在调仓轮执行一次，不追补买入。
+实际账户按自己的持仓和预算生成建议，成交需人工确认。规则见 strategy/quality_pool.md。
+signal / execute 子命令用于分阶段排查。
 """
 
 import argparse
@@ -44,28 +26,28 @@ from src.trade_ledger.performance import render_summary  # noqa: E402
 logger = logging.getLogger(__name__)
 
 
-def run(today: date, dry_run: bool = False, retry: bool = False) -> str:
+def run(today: date, dry_run: bool = False) -> str:
     """完成独立模拟及实际账户建议；两者均无行动的静默日不保存不推送。"""
-    report = assembly.run_day(today, dry_run=dry_run, retry=retry)
-    report, acted = _account_report(report, today, dry_run, retry=retry)
+    report = assembly.run_day(today, dry_run=dry_run)
+    report, acted = _account_report(report, today, dry_run)
     return _finish_report(report, "", today, dry_run, acted=acted)
 
 
-def _account_report(report, today, dry_run, *, retry=False):
+def _account_report(report, today, dry_run):
     from src.etf_account import publish_quality
 
     acted = getattr(report, "acted", True)
     try:
-        advice = publish_quality(today.isoformat(), dry_run=dry_run, retry=retry)
+        advice = publish_quality(today.isoformat(), dry_run=dry_run)
     except Exception:
         logger.exception("质量动量账户建议发布失败")
         advice = "账户建议更新失败，请重新运行"
     return str(report) + "\n\n## 投资账户 · 质量动量计划\n\n" + advice, acted or "- 买入" in advice or "- 卖出" in advice
 
 
-def run_signal(today: date, dry_run: bool = False, retry: bool = False) -> str:
-    """信号周期与恢复由质量池 module 负责；手动分阶段排查始终保存推送。"""
-    return _finish_report(pool_signal.run_signal(today, dry_run=dry_run, retry=retry),
+def run_signal(today: date, dry_run: bool = False) -> str:
+    """信号生成与恢复由质量动量模块负责；手动分阶段排查始终保存推送。"""
+    return _finish_report(pool_signal.run_signal(today, dry_run=dry_run),
                           "signal", today, dry_run, acted=True)
 
 
@@ -89,7 +71,7 @@ def _finish_report(report: str, stage: str, today: date, dry_run: bool,
               + render_summary(POOL_LEDGER_PATH, today=today, label="质量动量")
               + "\n\n" + body)
     if not acted and not dry_run:
-        logger.info(f"{today} 非调仓且无成交，免发日报")
+        logger.info(f"{today} 无操作或异常，免发日报")
         return report
     prefix = REPORT_PREFIX + (f"_{stage}" if stage else "") + ("_dry_run" if dry_run else "")
     path = save_report(report, prefix, report_date=today.isoformat())
@@ -107,11 +89,7 @@ def main() -> int:
                         help="只出报告与计划，不写状态/台账")
     parser.add_argument("--force", action="store_true",
                         help="跳过交易日检查（手动调试用；非交易日一律只读不记账）")
-    parser.add_argument("--retry-signal", action="store_true",
-                        help="手动重试未完成信号，保留原定周期；已成功生成的当日名单不重放")
     args = parser.parse_args()
-    if args.retry_signal and args.command == "execute":
-        parser.error("--retry-signal 不适用于单独 execute")
     setup_logging()
 
     today = date.today()
@@ -124,12 +102,9 @@ def main() -> int:
         logger.info("非交易日 --force：本次只读，不写状态/台账")
 
     if args.command == "run":
-        run(today, dry_run=dry_run, retry=args.retry_signal)
+        run(today, dry_run=dry_run)
     elif args.command == "signal":
-        if args.retry_signal:
-            run_signal(today, dry_run=dry_run, retry=True)
-        else:
-            run_signal(today, dry_run=dry_run)
+        run_signal(today, dry_run=dry_run)
     else:
         run_execute(today, dry_run=dry_run)
     return 0
