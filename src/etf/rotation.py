@@ -7,8 +7,10 @@
 把原15只研究线 `research/studies/rotation/study_etf_fit_jq.py`（聚宽单文件策略）
 移植为本地日频模拟账户的判定核，交易语义保持一致：
 
-  1. 标的池：固定 15 只 ETF，跨国内权益 / 海外权益 / 商品 / 利率四类资产；
-     池是研究版本的一部分，不按回测收益增删（改池须同步策略文档与研究记录）。
+  1. 标的池 rotation.pool（pool_from_config），跨国内权益 /
+     海外权益 / 商品 / 利率等资产类别；新账户初始化以示例配置的 15 只为种子。
+     未配置池子时入口暂停建议；被移出池子的持仓由建议层兜底卖出。
+     改池后的结果与旧池回测不可比，换池前自行回测验证。
   2. 打分：25 根已完成日线收盘 + 当日现价共 26 点，对对数价格做加权线性回归
      （权重 w 从 1 线性升到 2），score = 年化涨幅 × 加权 R²；
      近 3 个日环比任一 < 0.95（单日跳水）则 score 记 0。
@@ -56,27 +58,12 @@ COMMISSION = 0.0002      # 轮动建议预估佣金
 MIN_COMMISSION = 5.0     # 新成交最低佣金5元
 SCORE_HINT = "10:40"     # 研究线的决策时点；部署 cron 应对齐（报告里展示）
 
-# 15 只池成员：(代码, 名称, 资产类别)。名称用短名，报告可读；代码为 6 位裸码。
-POOL_SPECS = (
-    ("510300", "国内权益"),
-    ("159915", "国内权益"),
-    ("515180", "国内权益"),
-    ("512100", "国内权益"),
-    ("588000", "国内权益"),
-    ("513500", "海外权益"),
-    ("513100", "海外权益"),
-    ("159920", "海外权益"),
-    ("513520", "海外权益"),
-    ("513030", "海外权益"),
-    ("518880", "商品"),
-    ("159980", "商品"),
-    ("159985", "商品"),
-    ("511090", "利率"),
-    ("511010", "利率"),
-)
-POOL: Tuple[Tuple[str, str, str], ...] = tuple((code, security_name(code), group) for code, group in POOL_SPECS)
-
-GROUP_BY_CODE: Dict[str, str] = {code: group for code, _, group in POOL}
+def pool_from_config(config) -> Tuple[Tuple[str, str, str], ...]:
+    """生效池唯一来源：账户配置 rotation.pool；未设置时拒绝运行。"""
+    members = (config.get("rotation") or {}).get("pool")
+    if not members:
+        raise ValueError("账户配置缺少轮动标的池 rotation.pool，请在配置页设置")
+    return tuple((m["code"], security_name(m["code"]), m["group"]) for m in members)
 
 
 # ── 数据对象 ──
@@ -164,7 +151,7 @@ def _prepare_bars(df: pd.DataFrame, decision_date: date,
 
 def build_rows(bars: Dict[str, pd.DataFrame], prices: Dict[str, float], *,
                decision_date: date, prev_trading_day: Optional[date] = None,
-               pool: Sequence[Tuple[str, str, str]] = POOL
+               pool: Sequence[Tuple[str, str, str]]
                ) -> Tuple[List[RotationRow], dict]:
     """当日截面：打分 + 合格判定 + 排名（合格候选按 score 降序，1 = 最强）。
 
@@ -337,15 +324,23 @@ def fetch_prices(codes: Sequence[str]) -> Dict[str, float]:
     return realtime_prices(codes)
 
 
-def rotation_snapshot(decision_date: Optional[date] = None
+def rotation_snapshot(decision_date: Optional[date] = None, *,
+                      pool: Sequence[Tuple[str, str, str]],
+                      held_codes: Sequence[str] = ()
                       ) -> Tuple[List[RotationRow], Dict[str, float], dict]:
-    """当日截面 + 现价（取数在编排层，判定核零 I/O）。"""
+    """当日截面 + 现价（取数在编排层，判定核零 I/O）。
+
+    held_codes 为当前轮动持仓：不在池内的持仓不参与打分，但一并取现价，
+    供建议层兜底卖出；缺价时建议层照常暂停。
+    """
     decision_date = decision_date or date.today()
     previous = latest_trading_day_on_or_before(decision_date - timedelta(days=1),
                                                fallback=None)
-    codes = [code for code, _, _ in POOL]
+    codes = [code for code, _, _ in pool]
     bars = fetch_bars(codes, decision_date=decision_date)
-    prices = fetch_prices([code for code in codes if code in bars])
+    price_codes = [code for code in codes if code in bars]
+    extra = [code for code in held_codes if code not in price_codes]
+    prices = fetch_prices(price_codes + extra)
     rows, diag = build_rows(bars, prices, decision_date=decision_date,
-                            prev_trading_day=previous)
+                            prev_trading_day=previous, pool=pool)
     return rows, prices, diag

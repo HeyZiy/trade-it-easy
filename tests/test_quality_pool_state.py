@@ -41,7 +41,7 @@ def _patch_signal_data(monkeypatch, universe={"600001", "600002"},
                                      index=pd.bdate_range(end=asof, periods=rows)))
     monkeypatch.setattr(feeds, "raw_closes_at", lambda codes, asof: {c: 10.0 for c in codes})
     monkeypatch.setattr(feeds, "fetch_fundamentals",
-                        lambda codes, asof, raw_closes=None: pd.DataFrame.from_dict(
+                        lambda codes, asof, raw_closes=None, *, min_profit_yoy=None: pd.DataFrame.from_dict(
                             {c: dict(roe_ttm_pct=16.0, np_yoy_pct=20.0,
                                      pe_ttm=15.0, pb=2.0) for c in codes},
                             orient="index"))
@@ -109,6 +109,28 @@ def test_full_portfolio_reviews_only_holdings_and_skips_entry_data(env):
                       held_codes=held, state_writer=lambda _: None)
     assert set(current["pending_plan"]["kept"]) == held
     assert current["exit_queue"] == {}
+
+
+def test_signal_prefilters_candidate_st_and_missing_status(env):
+    _patch_signal_data(env, universe={"600001", "600002", "600003", "600004", "600005"})
+    env.setattr(feeds, 'fetch_signal_status', lambda *args: pd.DataFrame(
+        {'is_st': pd.array([True, True, False, pd.NA], dtype='boolean')},
+        index=['600001', '600002', '600003', '600004']))
+    original = feeds.fetch_fundamentals
+    calls = []
+
+    def fetch(codes, asof, raw_closes=None, *, min_profit_yoy=None):
+        calls.append((codes, min_profit_yoy))
+        return original(codes, asof, raw_closes, min_profit_yoy=min_profit_yoy)
+
+    env.setattr(feeds, 'fetch_fundamentals', fetch)
+    current = state.empty_state()
+    signal.run_signal(date(2026, 10, 2), state=current,
+                      held_codes={'600001'}, state_writer=lambda _: None)
+
+    assert calls == [(['600001'], None), (['600003'], config.NP_YOY_MIN)]
+    assert current['exit_queue'] == {'600001': 'out_of_pool'}
+    assert current['pending_plan']['selected'] == ['600003']
 
 
 def test_state_rejects_incompatible_version():

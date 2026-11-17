@@ -67,12 +67,35 @@ def _validate_trade_fees(fees):
             raise ValueError("请先设置股票佣金，印花税率须在万分之0至10000之间")
 
 
+def _validate_rotation(rotation):
+    if not isinstance(rotation, dict) or set(rotation) != {"pool"}:
+        raise ValueError("轮动配置只支持 pool 字段")
+    pool = rotation["pool"]
+    if not isinstance(pool, list) or not 1 <= len(pool) <= 50:
+        raise ValueError("轮动池须有1至50只标的")
+    seen = set()
+    for member in pool:
+        if not isinstance(member, dict) or set(member) != {"code", "group"}:
+            raise ValueError("轮动池成员须包含 code 和 group")
+        code = member["code"]
+        if not isinstance(code, str) or not re.fullmatch(r"[0-9]{6}", code):
+            raise ValueError("轮动池代码须为六位数字")
+        if code in seen:
+            raise ValueError("轮动池代码不能重复")
+        seen.add(code)
+        group = member["group"]
+        if not isinstance(group, str) or not group.strip() or len(group) > 8:
+            raise ValueError("资产类别须为1至8个字符")
+
+
 def validate(config):
     required = {"schema_version", "budgets", "core"}
-    if not isinstance(config, dict) or not required <= config.keys() <= required | {"fund_subscription_fee", "trade_fees"}:
+    if not isinstance(config, dict) or not required <= config.keys() <= required | {"fund_subscription_fee", "trade_fees", "rotation"}:
         raise ValueError("配置须包含 schema_version、budgets、core")
     if type(config["schema_version"]) is not int or config["schema_version"] != 1:
         raise ValueError("不支持的配置版本")
+    if "rotation" in config:
+        _validate_rotation(config["rotation"])
     if "fund_subscription_fee" in config:
         validate_subscription_fee(config["fund_subscription_fee"])
     if "trade_fees" in config:
@@ -194,7 +217,8 @@ def example():
 
 def from_legacy(state):
     # 保留实际生效的完整精度，而不是用Markdown显示的四舍五入数字覆盖。
-    metadata = {r["code"]: r for r in example()["core"]}
+    template = example()
+    metadata = {r["code"]: r for r in template["core"]}
     rows = []
     for code, weight in state["targets"].items():
         row = deepcopy(metadata.get(code, {"code": code, "weight": 0, "asset_type": "equity",
@@ -202,7 +226,8 @@ def from_legacy(state):
         row["weight"] = weight
         row["volatility_rank"] = 0  # 旧账户的baseline未设置优先级，迁移保持原排序。
         rows.append(row)
-    return validate({"schema_version": 1, "budgets": state.get("budgets", {}), "core": rows})
+    return validate({"schema_version": 1, "budgets": state.get("budgets", {}),
+                     "rotation": deepcopy(template["rotation"]), "core": rows})
 
 
 def migrate(account):

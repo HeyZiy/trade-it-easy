@@ -83,6 +83,10 @@
         <p class="subtle">每项可填场内产品、场外基金，或两类都填。组内合计金额用于对比目标。</p>
         <div class="table-wrap"><table class="config-table"><thead><tr><th>配置名称与产品</th><th>权重 / %</th><th>设置</th><th></th></tr></thead><tbody id="config-assets"></tbody></table></div>
         <p id="config-total" class="entry-preview"></p>
+        <div class="section-heading"><h3>跨资产动量标的池</h3><button id="config-pool-add" type="button" class="text-button">＋ 添加标的</button></div>
+        <p class="subtle">标的池以本页配置为唯一来源，留空保存则轮动建议暂停。被移出池子的持仓按最新现价兜底卖出；改池前请自行回测。</p>
+        <div class="table-wrap"><table class="config-table"><thead><tr><th>代码</th><th>资产类别</th><th>名称</th><th></th></tr></thead><tbody id="config-pool"></tbody></table></div>
+        <datalist id="pool-groups"><option value="国内权益"><option value="海外权益"><option value="商品"><option value="利率"></datalist>
         <details><summary>历史配置</summary><label>选择版本<select id="config-history"></select></label><button id="config-load-history" type="button" class="text-button">使用此版本</button><p class="subtle">保存后生效。</p></details>
         </fieldset>
         <p id="config-error" class="warning" role="alert" hidden></p><button type="submit" class="primary-button" id="config-save">保存配置</button>

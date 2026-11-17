@@ -16,8 +16,8 @@ def test_missing_values_defer_holding_without_rebalancing_and_recover_next_day(e
     saved = state.empty_state()
     original = feeds.fetch_fundamentals
 
-    def missing(codes, asof, raw_closes=None):
-        frame = original(codes, asof, raw_closes)
+    def missing(codes, asof, raw_closes=None, **kwargs):
+        frame = original(codes, asof, raw_closes, **kwargs)
         frame.loc['600001', 'pe_ttm'] = np.nan
         return frame
 
@@ -38,8 +38,8 @@ def test_quality_failure_adds_exit_and_allows_fresh_entries(env):
     saved = state.empty_state()
     original = feeds.fetch_fundamentals
 
-    def low_roe(codes, asof, raw_closes=None):
-        frame = original(codes, asof, raw_closes)
+    def low_roe(codes, asof, raw_closes=None, **kwargs):
+        frame = original(codes, asof, raw_closes, **kwargs)
         frame.loc['600001', 'roe_ttm_pct'] = 5.
         return frame
 

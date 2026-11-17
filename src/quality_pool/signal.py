@@ -117,10 +117,11 @@ def run_signal(today: date, dry_run: bool = False,
     entry_error = None
     if len(kept) < config.TOP_N:
         try:
-            candidates = universe - held
-            fundamentals = _fundamentals(candidates, asof)
-            if candidates and not fundamentals.notna().any().any():
-                raise RuntimeError('候选财务快照为空或全部未知')
+            is_st = status.get('is_st', pd.Series(dtype='boolean'))
+            non_st = is_st.index[is_st.eq(False).fillna(False)]
+            candidates = (universe - held).intersection(non_st)
+            fundamentals = feeds.fetch_fundamentals(sorted(candidates), asof,
+                                                    min_profit_yoy=config.NP_YOY_MIN)
             eligible = passed | set(screener.build_pool(candidates, fundamentals, status))
             if eligible:
                 closes = feeds.fetch_closes(sorted(eligible), asof, rows=config.SCORE_CLOSES)

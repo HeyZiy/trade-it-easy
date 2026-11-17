@@ -63,12 +63,39 @@ def _cross_section_table(rows) -> List[str]:
     return lines
 
 
+def _pool_and_held(trade_date):
+    """生效池唯一来源是账户配置；持仓代码供池外兜底卖出取价。"""
+    from src import portfolio_config
+    from src.etf import rotation
+    from src.etf_account import ACCOUNT_PATH
+
+    account = Path(ACCOUNT_PATH)
+    config_path = portfolio_config.path_for(account)
+    if not config_path.exists():
+        raise ValueError("账户配置不存在，请先初始化投资账户并设置轮动标的池")
+    pool = rotation.pool_from_config(portfolio_config.load(config_path))
+    held = []
+    if account.exists():
+        from src.account_replay import snapshot
+        from src.account_store import load
+        held = [r["code"] for r in snapshot(load(account), trade_date)["strategy_positions"]
+                if r["strategy"] == "rotation"]
+    return pool, held
+
+
 def run(dry_run: bool = False, trade_date: Optional[str] = None) -> str:
     """获取当日截面，发布投资账户建议并生成报告。"""
     trade_date = trade_date or date.today().isoformat()
     decision_date = date.fromisoformat(trade_date)
     try:
-        rows, prices, diag = rotation_snapshot(decision_date=decision_date)
+        pool, held = _pool_and_held(trade_date)
+    except ValueError as error:
+        if not dry_run:
+            _account_advice(trade_date, [], {}, {}, error=str(error))
+        raise
+    try:
+        rows, prices, diag = rotation_snapshot(decision_date=decision_date,
+                                               pool=pool, held_codes=held)
     except Exception:
         if not dry_run:
             _account_advice(trade_date, [], {}, {}, error="行情更新失败，暂停建议")

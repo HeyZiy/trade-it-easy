@@ -500,6 +500,35 @@ class TestPlanRotation:
         assert any("非目标持仓" in note for note in plan["notes"])
 
 
+class TestConfigurablePool:
+    def test_pool_from_config_requires_explicit_pool(self):
+        with pytest.raises(ValueError, match="rotation.pool"):
+            rot.pool_from_config({})
+        config = {"rotation": {"pool": [{"code": "510300", "group": "国内权益"},
+                                        {"code": "518880", "group": "商品"}]}}
+        pool = rot.pool_from_config(config)
+        assert [(code, group) for code, _, group in pool] == [
+            ("510300", "国内权益"), ("518880", "商品")]
+
+    def test_snapshot_uses_config_pool_and_prices_out_of_pool_holding(self, monkeypatch):
+        """池外持仓不打分但一并取现价（兜底卖出用）；池内持仓不重复取价。"""
+        bars = {"510300": _dt_bars(_geo())}
+        fetched = {}
+        monkeypatch.setattr(rot, "latest_trading_day_on_or_before", lambda *a, **k: PREV)
+        monkeypatch.setattr(rot, "fetch_bars",
+                            lambda codes, **k: fetched.update(bars=list(codes)) or bars)
+        monkeypatch.setattr(rot, "fetch_prices",
+                            lambda codes: fetched.update(prices=list(codes))
+                            or {code: 10.0 for code in codes})
+        rows, prices, diag = rot.rotation_snapshot(
+            DECISION, pool=_pool("510300"), held_codes=["513100", "510300"])
+        assert fetched["bars"] == ["510300"]
+        assert fetched["prices"] == ["510300", "513100"]
+        assert [row.code for row in rows] == ["510300"]
+        assert prices["513100"] == 10.0
+        assert diag["pool"] == 1
+
+
 # ══════════════ 入口集成：独立台账闭环（monkeypatch 取数，禁网络） ══════════════
 
 DECISION_STR = DECISION.isoformat()

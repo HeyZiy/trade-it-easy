@@ -252,6 +252,43 @@ def test_fundamentals_batches_release_raw_frames_and_preserve_old_shares(monkeyp
     assert frame.loc["600001", "pb"] == pytest.approx(2e9 / 20_000.0)
 
 
+def test_candidate_fundamentals_only_fetch_valuations_for_growth_survivors(monkeypatch):
+    codes = ["600001", "600002", "600003", "600004", "600005", "600006"]
+    survivors = ["600001", "600004", "600006"]
+    income = {code: _income_rows(QUARTERS) for code in codes}
+    for code, latest in [("600002", 85.0), ("600003", 88.0), ("600005", np.nan)]:
+        income[code].loc[4, 'NET_PRO_INCL_MIN_INT_INC'] = latest
+    calls = []
+
+    def fetch(kind, batch, values):
+        calls.append((kind, batch))
+        return {code: values[code] for code in batch}
+
+    monkeypatch.setattr(feeds, 'FUNDAMENTAL_BATCH_SIZE', 2)
+    monkeypatch.setattr(feeds, '_raw_income', lambda batch, b, e: fetch('income', batch, income))
+    monkeypatch.setattr(feeds, '_raw_balance_sheets', lambda batch, b, e:
+                        fetch('balance', batch, dict.fromkeys(codes, _balance())))
+    monkeypatch.setattr(feeds, '_raw_equity_structure', lambda batch, b, e:
+                        fetch('shares', batch, dict.fromkeys(codes, _structure())))
+    monkeypatch.setattr(feeds, 'raw_closes_at', lambda batch, day:
+                        fetch('close', batch, dict.fromkeys(codes, 20.0)))
+    full = feeds.fetch_fundamentals(codes, ASOF)
+    calls.clear()
+
+    staged = feeds.fetch_fundamentals(codes, ASOF, min_profit_yoy=10.0)
+
+    pd.testing.assert_frame_equal(staged, full.loc[survivors])
+    assert calls == [('income', codes[:2]), ('income', codes[2:4]), ('income', codes[4:]),
+                     ('close', survivors), ('balance', survivors[:2]), ('shares', survivors[:2]),
+                     ('balance', survivors[2:]), ('shares', survivors[2:])]
+
+    calls.clear()
+    assert feeds.fetch_fundamentals(['600003'], ASOF, min_profit_yoy=10.0).empty
+    with pytest.raises(RuntimeError, match='候选利润同比全部未知'):
+        feeds.fetch_fundamentals(['600005'], ASOF, min_profit_yoy=10.0)
+    assert calls == [('income', ['600003']), ('income', ['600005'])]
+
+
 # ── 前复权收盘 ──
 
 def _kline_fixture(dates, closes):

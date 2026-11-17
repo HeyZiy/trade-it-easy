@@ -1,5 +1,6 @@
 """轮动建议使用共享账户事实，绝不把独立模拟或建议当作成交。"""
 from concurrent.futures import ThreadPoolExecutor
+from copy import deepcopy
 from datetime import date
 from threading import Barrier
 from uuid import uuid4
@@ -99,6 +100,52 @@ def test_no_candidate_sells_old_position_but_missing_price_blocks(account, monke
     assert sell['side'] == 'sell' and sell['qty'] == 500
     publish('2025-01-08', [row], {'510300': 2}, {}, path=account)
     assert not strategy(account)['suggestions']
+
+
+def test_holding_removed_from_pool_is_sold_as_fallback(account, monkeypatch):
+    event(account, 'buy', code='513100', name='旧仓', qty=500, price=2, fee=5)
+    monkeypatch.setattr(wallet, '_today', lambda: date(2025, 1, 8))
+    row = RotationRow('510300', '目标', '股票', 2, 2, 1, True, 1)
+    publish('2025-01-08', [row], {'510300': 2, '513100': 2}, {}, path=account)
+    sell, buy = strategy(account)['suggestions']
+    assert (sell['code'], sell['qty'], sell['reason']) == ('513100', 500, '已移出池子，兜底卖出')
+    assert buy['code'] == '510300'
+    # 池外持仓缺现价时照常暂停，不凭空定价卖出。
+    publish('2025-01-08', [row], {'510300': 2}, {}, path=account)
+    assert not strategy(account)['suggestions']
+    assert '价格缺失' in strategy(account)['advice_status']
+
+
+def test_entry_passes_config_pool_and_held_codes(account, monkeypatch):
+    import etf_rotation as entry
+    from src import portfolio_config
+    current = portfolio_config.data(account)
+    draft = deepcopy(current['config'])
+    draft['rotation'] = {'pool': [{'code': '510300', 'group': '国内权益'}]}
+    portfolio_config.update(account, {'revision': current['revision'], 'config': draft})
+    event(account, 'buy', code='513100', name='旧仓', qty=500, price=2, fee=5)
+    calls = []
+    def quotes(**kwargs):
+        calls.append(kwargs)
+        return [], {}, dict(n=0, pool=1, eligible=0, realtime_missing=0, prev_trading_day='2025-01-06')
+    monkeypatch.setattr(entry, 'rotation_snapshot', quotes)
+    monkeypatch.setattr(wallet, 'ACCOUNT_PATH', account)
+    entry.run(trade_date='2025-01-07')
+    assert [code for code, _, _ in calls[0]['pool']] == ['510300']
+    assert calls[0]['held_codes'] == ['513100']
+
+
+def test_entry_without_pool_pauses_with_config_error(account, monkeypatch):
+    import etf_rotation as entry
+    from src import portfolio_config
+    current = portfolio_config.data(account)
+    draft = deepcopy(current['config'])
+    draft.pop('rotation')
+    portfolio_config.update(account, {'revision': current['revision'], 'config': draft})
+    monkeypatch.setattr(wallet, 'ACCOUNT_PATH', account)
+    with pytest.raises(ValueError, match='rotation.pool'):
+        entry.run(trade_date='2025-01-07')
+    assert strategy(account)['advice_status'] == '账户配置缺少轮动标的池 rotation.pool，请在配置页设置'
 
 
 def test_same_day_shares_do_not_fund_new_purchase(account):

@@ -164,6 +164,42 @@ def test_fund_only_target_remains_in_config_after_position_is_removed(account):
     assert group["weight"] == .5
 
 
+def test_rotation_pool_seeded_on_init_and_editable(account):
+    from src.etf.rotation import pool_from_config
+    current=config.data(account)
+    seeded=pool_from_config(current['config'])
+    assert len(seeded)==15 and seeded[0][0]=='510300'
+    draft=deepcopy(current['config'])
+    draft['rotation']={'pool':[{'code':'510300','group':'国内权益'},{'code':'518880','group':'商品'}]}
+    config.update(account,{'revision':current['revision'],'config':draft})
+    loaded=config.load(config.path_for(account))
+    assert [(code,group) for code,_,group in pool_from_config(loaded)]==[('510300','国内权益'),('518880','商品')]
+
+
+def test_config_without_rotation_pool_is_valid_but_engine_refuses(account):
+    from src.etf.rotation import pool_from_config
+    current=config.data(account)
+    draft=deepcopy(current['config']);draft.pop('rotation')
+    config.update(account,{'revision':current['revision'],'config':draft})
+    with pytest.raises(ValueError,match='rotation.pool'):
+        pool_from_config(config.load(config.path_for(account)))
+
+
+@pytest.mark.parametrize('mutation',[
+    lambda c:c.update(rotation={'pool':[]}),
+    lambda c:c.update(rotation={'pool':[{'code':'51030','group':'国内权益'}]}),
+    lambda c:c.update(rotation={'pool':[{'code':'510300','group':'国内权益'}]*2}),
+    lambda c:c.update(rotation={'pool':[{'code':'510300','group':''}]}),
+    lambda c:c.update(rotation={'pool':[{'code':'510300'}]}),
+    lambda c:c.update(rotation={'pools':[]}),
+])
+def test_invalid_rotation_pool_does_not_replace_valid_config(account,mutation):
+    current=config.data(account);before=config.path_for(account).read_bytes()
+    draft=deepcopy(current['config']);mutation(draft)
+    with pytest.raises(ValueError):config.update(account,{'revision':current['revision'],'config':draft})
+    assert config.path_for(account).read_bytes()==before
+
+
 def test_legacy_migration_is_exact_and_never_overwrites_new_config(tmp_path):
     path=tmp_path/'etf_account.json'
     legacy={'initial':{'date':'2025-01-03','cash':1000,'equity':1200,

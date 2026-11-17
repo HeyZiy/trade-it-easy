@@ -481,39 +481,57 @@ def test_exit_confirmation_counts_consecutive_failures(mc):
     assert w2.sells == []                 # 中间恢复过，重新计数
 
 
-def test_medium_trade_ledger_logs_buy_sell_with_pnl(mc):
-    """买入成交时登记、卖出经 _record_sell_order 登记；on_strategy_end 输出明细行。"""
+def test_medium_sell_ledger_records_fill_and_closed_trade_pnl(mc):
+    """共享台账只记卖出：成交进 sell_fills，清仓合并进 trades；on_strategy_end 输出【台账】汇总。"""
     mc.context.portfolio.available_cash = 300_000.
     mc.context.portfolio.total_value = 300_000.
     mc.ns['execute_buys'](mc.context,
                           [{'code': 'E3', 'name': 'E3', 'score': .3}], set())
-    assert len(mc.g.buy_fills) == 1
-    assert mc.g.buy_fills[0]['code'] == 'E3' and mc.g.buy_fills[0]['side'] == 'buy'
+    bought = mc.context.portfolio.positions['E3'].total_amount
+    assert bought > 0
     # 卖出同日：先买入的 E3 触发退出（-0.5 分连续 3 次评估）
     rows = [{'code': 'E3', 'name': 'E3', 'score': -.5}]
     for _ in range(SCORE_EXIT_CONFIRM_CALLS):
         mc.ns['evaluate_exits'](mc.context, rows, True)
-    assert len(mc.g.sell_fills) == 1
-    assert mc.g.sell_fills[0]['code'] == 'E3'
-    assert isinstance(mc.g.sell_fills[0]['pnl'], float)
-    detail = [l for l in mc.logs if l.startswith('【明细】')]
-    assert detail == [], 'on_strategy_end 未调用前不应输出明细'
+    fill, = mc.g.sell_fills
+    price = mc.quotes['E3'].last_price
+    assert fill['code'] == 'E3' and fill['amount'] == bought
+    # 买卖同价：盈亏只剩卖出佣金（桩 commission=成交额×万一）。
+    assert fill['pnl'] == pytest.approx(-bought * price * .0001)
+    trade, = mc.g.trades
+    assert trade['code'] == 'E3' and trade['pnl'] == pytest.approx(fill['pnl'])
+    assert not [l for l in mc.logs if l.startswith('【台账】')], 'on_strategy_end 未调用前不应输出汇总'
     mc.ns['on_strategy_end'](mc.context)
-    detail = [l for l in mc.logs if l.startswith('【明细】')]
-    assert len(detail) == 2, '应有买、卖两行明细'
-    assert detail[0].split('|')[1] == 'buy' and detail[1].split('|')[1] == 'sell'
-    assert detail[1].endswith('+0.00') or detail[1].rstrip().endswith(('0', '0.00')) or True
-    pnl_cell = detail[1].split('|')[6]
-    assert pnl_cell.startswith(('+', '-'))
+    assert any(l.startswith('【台账】完成平仓 1 笔') for l in mc.logs)
 
 
-def test_medium_sell_ledger_price_recorded(mc):
-    """卖出登记带 price 字段（对照买入台账格式统一，逐笔核对成交价用）。"""
+def test_medium_sell_ledger_reconciles_partial_fills_without_double_count(mc):
+    """部分成交先挂 sell_partial；后续成交按累计对账补差，清仓合并，不重复计已登记份额。"""
     mc.hold('E1', amount=1000)
+    mc.sell_limit = 400
     rows = [{'code': 'E1', 'name': 'E1', 'score': -.5}]
     for _ in range(SCORE_EXIT_CONFIRM_CALLS):
         mc.ns['evaluate_exits'](mc.context, rows, True)
-    assert mc.g.sell_fills[0]['price'] == pytest.approx(mc.quotes['E1'].last_price)
+    first, = mc.g.sell_fills
+    assert first['code'] == 'E1' and first['amount'] == 400
+    assert mc.g.sell_partial['E1'] == pytest.approx(first['pnl'])
+    assert mc.g.trades == []                 # 未清仓不登记完成平仓
+    # 剩余 600 份后续成交：平台原地改委托累计成交量与持仓。
+    order = next(o for o in mc.orders.values() if not o.is_buy)
+    price = mc.quotes['E1'].last_price
+    order.filled = 1000
+    order.commission = 1000 * price * .0001
+    mc.context.portfolio.positions['E1'].total_amount = 0
+    mc.ns['after_trading_end'](mc.context)
+    assert len(mc.g.sell_fills) == 2
+    assert mc.g.sell_fills[1]['amount'] == 600
+    assert 'E1' not in mc.g.sell_partial
+    trade, = mc.g.trades
+    total = sum(f['pnl'] for f in mc.g.sell_fills)
+    assert trade['pnl'] == pytest.approx(total)
+    assert total == pytest.approx(-1000 * price * .0001)
+    mc.ns['after_trading_end'](mc.context)   # 同一累计成交再同步不重复登记
+    assert len(mc.g.sell_fills) == 2
 
 
 # ---------------------------------------------------------------------------

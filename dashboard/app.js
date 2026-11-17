@@ -1371,6 +1371,7 @@ async function openConfiguration() {
   form.reset();error.hidden=true;save.disabled=true;save.textContent='保存配置';fields.disabled=true;
   document.querySelector('#config-history').innerHTML='';
   document.querySelector('#config-assets').innerHTML='';
+  document.querySelector('#config-pool').innerHTML='';
   document.querySelector('#config-total').textContent='正在读取配置…';
   document.querySelector('#config-cancel').onclick=()=>{if(!saving){controller.abort();dialog.close();}};
   dialog.oncancel=event=>{if(saving)event.preventDefault();else controller.abort();};
@@ -1456,6 +1457,35 @@ async function openConfiguration() {
     row.querySelector('[data-remove]').onclick=()=>{row.remove();total();};
     document.querySelector('#config-assets').append(row);update();
   }
+  function validatePool() {
+    const rows=[...document.querySelectorAll('#config-pool tr')];
+    const counts=new Map();
+    rows.forEach(row=>{
+      const code=row.querySelector('[data-field=code]').value.trim();
+      if(code) counts.set(code,(counts.get(code)||0)+1);
+    });
+    rows.forEach(row=>{
+      const codeField=row.querySelector('[data-field=code]'), groupField=row.querySelector('[data-field=group]');
+      const code=codeField.value.trim();
+      codeField.setCustomValidity(!/^[0-9]{6}$/.test(code) ? '代码须为六位数字。' : counts.get(code)>1 ? '池内代码不能重复。' : '');
+      const group=groupField.value.trim();
+      groupField.setCustomValidity(!group ? '请填写资产类别。' : '');
+      row.querySelector('[data-name]').textContent=result.names[code] || '';
+    });
+    document.querySelector('#config-pool-add').disabled=rows.length>=50;
+  }
+  function addPoolRow(member={code:'',group:''}) {
+    const row=document.createElement('tr');
+    row.innerHTML=`
+      <td><input data-field="code" value="${esc(member.code)}" inputmode="numeric" pattern="[0-9]{6}" maxlength="6" required aria-label="标的代码"></td>
+      <td><input data-field="group" value="${esc(member.group)}" list="pool-groups" maxlength="8" required placeholder="如 国内权益" aria-label="资产类别"></td>
+      <td><small data-name></small></td>
+      <td><button type="button" class="text-button" data-remove>删除</button></td>`;
+    row.oninput=validatePool;
+    row.querySelector('[data-remove]').onclick=()=>{row.remove();validatePool();};
+    document.querySelector('#config-pool').append(row);
+    validatePool();
+  }
   function show(config) {
     draft=structuredClone(config);
     for(const key of ['core','rotation','quality']) form.elements.namedItem(key).value=finite(config.budgets[key])?percentInput(config.budgets[key]):'';
@@ -1469,8 +1499,11 @@ async function openConfiguration() {
     updateFeeField();
     document.querySelector('#config-assets').innerHTML='';
     config.core.forEach(addRow);total();
+    document.querySelector('#config-pool').innerHTML='';
+    (config.rotation?.pool ?? []).forEach(addPoolRow);
   }
   document.querySelector('#config-add').onclick=()=>addRow({code:'',weight:0,asset_type:'equity',valuation_kind:'none',tracked_index:null,dividend_style:false,volatility_rank:0});
+  document.querySelector('#config-pool-add').onclick=()=>addPoolRow();
   const history=document.querySelector('#config-history');
   history.innerHTML=result.history.map((version,index)=>`<option value="${index}">${esc(quoteTime(version.saved_at))}${version.revision===result.revision?' · 当前配置':''}</option>`).join('');
   history.value=Math.max(0,result.history.findIndex(version=>version.revision===result.revision));
@@ -1506,6 +1539,11 @@ async function openConfiguration() {
       return asset;
     });
     const config={schema_version:1,budgets,core};
+    const pool=[...document.querySelectorAll('#config-pool tr')].map(row=>({
+      code:row.querySelector('[data-field=code]').value.trim(),
+      group:row.querySelector('[data-field=group]').value.trim(),
+    }));
+    if(pool.length) config.rotation={pool};
     if(feeKind.value) config.fund_subscription_fee={kind:feeKind.value,value:feeKind.value==='none'?0:Number(feeValue.value)};
     const tradeFees={};
     for (const [kind,{rate,minimum}] of Object.entries(commissions)) {

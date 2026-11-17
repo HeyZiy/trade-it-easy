@@ -62,9 +62,12 @@ def advice(signal, strategy, today, *, account_revision, dismissed):
     positions.sort(key=lambda row: row["code"] != (target.code if target else None))
     plan = plan_rotation(rows, positions, prices, strategy["cash"])
     # 人工持仓可能留有不足一手的零股；清仓建议包含全部份额，不留下旧标的再买新标的。
+    # 不在当日截面里的持仓 = 已被移出池子，兜底卖出（能走到这里说明池内行情完整）。
+    pool_codes = {row.code for row in rows}
+    default_reason = "换入第一名" if target else "无合格候选，保持现金"
     plan["sells"] = [EtfOrder(p["code"], p["name"], "sell", p["count"], prices[p["code"]],
                               p["count"] * prices[p["code"]],
-                              "换入第一名" if target else "无合格候选，保持现金")
+                              "已移出池子，兜底卖出" if p["code"] not in pool_codes else default_reason)
                      for p in positions if not target or p["code"] != target.code]
     plan["sells"].sort(key=lambda order: -order.amount)
     if any(order.shares > next(p["avail_count"] for p in positions if p["code"] == order.code)

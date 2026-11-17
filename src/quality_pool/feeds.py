@@ -2,7 +2,7 @@
 """质量池 — 取数 seam（ AmazingData 批量实现 + 规范化装配）。
 
 策略核（screener/execution）只消费本模块产出的规范化 DataFrame/字典；
-本模块只做装配，判定逻辑一概不上。 AmazingData 依赖走函数内懒导入，
+本模块装配数据，按调用方提供的条件缩小取数范围。AmazingData 依赖走函数内懒导入，
 测试经 monkeypatch 替换 *_raw 层注入假数据。
 
 口径（与定稿回测的质量、成长、估值和波动条件对齐）：
@@ -380,46 +380,74 @@ def fetch_execution_status(codes: List[str], exec_date: str) -> pd.DataFrame:
 
 
 def fetch_fundamentals(codes: List[str], asof: str,
-                       raw_closes: Optional[Dict[str, float]] = None) -> pd.DataFrame:
-    """截止 asof 的财务/估值快照 → index=code：
-    roe_ttm_pct / np_yoy_pct / pe_ttm / pb；个别字段未知保留NaN供三态判定。
+                       raw_closes: Optional[Dict[str, float]] = None, *,
+                       min_profit_yoy: Optional[float] = None) -> pd.DataFrame:
+    """按披露截止日计算财务和估值，可先按利润同比筛掉新仓候选。
 
-    每批算完只留下四个比率，不把全市场三类原表同时装入内存。
+    未传入昨收时，只查询进入估值阶段的股票。
     """
-    rows: Dict[str, dict] = {}
+    asof_ts = pd.Timestamp(asof)
+    begin = (asof_ts.to_period("Q") - FINANCIAL_LOOKBACK_QUARTERS).start_time.date().isoformat()
+    profits: Dict[str, Tuple[Optional[float], float]] = {}
     for start in range(0, len(codes), FUNDAMENTAL_BATCH_SIZE):
         batch = codes[start:start + FUNDAMENTAL_BATCH_SIZE]
-        rows.update(_fundamental_batch(batch, asof, raw_closes))
-        logger.info("[quality_pool] 财务快照 %s/%s，累计有效 %s",
-                    start + len(batch), len(codes), len(rows))
+        logger.info("[quality_pool] 利润表 %s/%s", start + len(batch), len(codes))
+        profits.update(_profit_batch(batch, begin, asof, asof_ts))
+
+    if min_profit_yoy is not None:
+        known = {code: profit for code, profit in profits.items() if math.isfinite(profit[1])}
+        if codes and not known:
+            raise RuntimeError("候选利润同比全部未知")
+        profits = {code: profit for code, profit in known.items() if profit[1] > min_profit_yoy}
+        logger.info("[quality_pool] 利润同比通过 %s/%s，继续查询估值", len(profits), len(codes))
+
+    survivors = list(profits)
+    if not survivors:
+        return pd.DataFrame()
+    if raw_closes is None:
+        raw_closes = raw_closes_at(survivors, asof)
+
+    rows: Dict[str, dict] = {}
+    for start in range(0, len(survivors), FUNDAMENTAL_BATCH_SIZE):
+        batch = survivors[start:start + FUNDAMENTAL_BATCH_SIZE]
+        logger.info("[quality_pool] 估值所需权益和股本 %s/%s", start + len(batch), len(survivors))
+        rows.update(_valuation_batch(batch, begin, asof, asof_ts, profits, raw_closes))
     frame = pd.DataFrame.from_dict(rows, orient="index")
     return frame.replace([np.inf, -np.inf], np.nan)
 
 
-def _fundamental_batch(codes: List[str], asof: str,
-                       raw_closes: Optional[Dict[str, float]]) -> Dict[str, dict]:
-    asof_ts = pd.Timestamp(asof)
-    begin = (asof_ts.to_period("Q") - FINANCIAL_LOOKBACK_QUARTERS).start_time
-    income = _raw_income(codes, begin.strftime("%Y-%m-%d"), asof)
-    balances = _raw_balance_sheets(codes, begin.strftime("%Y-%m-%d"), asof)
+def _profit_batch(codes: List[str], begin: str, asof: str,
+                  asof_ts: pd.Timestamp) -> Dict[str, Tuple[Optional[float], float]]:
+    income = _raw_income(codes, begin, asof)
+    profits = {}
+    for code in codes:
+        visible = _visible(income.get(code), FINANCIAL_STATEMENT_TYPE_SINGLE, asof_ts)
+        parent = _quarterly_profit(visible, 'NET_PRO_EXCL_MIN_INT_INC')
+        consolidated = _quarterly_profit(visible, 'NET_PRO_INCL_MIN_INT_INC')
+        profits[code] = (_ttm_np(parent) if parent is not None else None,
+                         _profit_yoy(consolidated))
+    return profits
+
+
+def _valuation_batch(codes: List[str], begin: str, asof: str, asof_ts: pd.Timestamp,
+                     profits: Dict[str, Tuple[Optional[float], float]],
+                     raw_closes: Dict[str, float]) -> Dict[str, dict]:
+    balances = _raw_balance_sheets(codes, begin, asof)
     structures = _raw_equity_structure(codes, EQUITY_HISTORY_BEGIN, asof)
 
     rows: Dict[str, dict] = {}
     for code in codes:
-        np_quarters = _visible_quarterly_np(income.get(code), asof_ts)
-        consolidated_np = _visible_quarterly_profit(
-            income.get(code), asof_ts, 'NET_PRO_INCL_MIN_INT_INC')
+        np_ttm, profit_yoy = profits[code]
         equity = _latest_visible_equity(balances.get(code), asof_ts)
         shares = _latest_total_shares(structures.get(code), asof_ts)
-        close_raw = (raw_closes or {}).get(code)
+        close_raw = raw_closes.get(code)
         total_mv = (shares * 1e4 * close_raw
                     if shares is not None and shares > 0 and close_raw is not None
                     and math.isfinite(close_raw) and close_raw > 0 else None)
-        np_ttm = _ttm_np(np_quarters) if np_quarters is not None else None
         row = {
             "roe_ttm_pct": (np_ttm / equity * 100.0
                             if np_ttm is not None and equity not in (None, 0) else np.nan),
-            "np_yoy_pct": _profit_yoy(consolidated_np),
+            "np_yoy_pct": profit_yoy,
             "pe_ttm": (total_mv / np_ttm
                        if total_mv is not None and np_ttm not in (None, 0) else np.nan),
             "pb": total_mv / equity if total_mv is not None and equity not in (None, 0) else np.nan,
@@ -467,14 +495,7 @@ def _to_dates(column) -> pd.Series:
     return pd.to_datetime(column, errors="coerce")
 
 
-def _visible_quarterly_np(income: Optional[pd.DataFrame],
-                          asof: pd.Timestamp) -> Optional[pd.Series]:
-    return _visible_quarterly_profit(income, asof, 'NET_PRO_EXCL_MIN_INT_INC')
-
-
-def _visible_quarterly_profit(income: Optional[pd.DataFrame],
-                              asof: pd.Timestamp, field: str) -> Optional[pd.Series]:
-    df = _visible(income, FINANCIAL_STATEMENT_TYPE_SINGLE, asof)
+def _quarterly_profit(df: Optional[pd.DataFrame], field: str) -> Optional[pd.Series]:
     if df is None or field not in df.columns:
         return None
     np_series = pd.to_numeric(df[field], errors="coerce")
