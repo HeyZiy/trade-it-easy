@@ -26,7 +26,7 @@ from math import isclose
 from typing import Dict, List, Optional, Tuple
 
 from src.etf.config import (
-    MIN_TRADE_DEVIATION, REBALANCE_RELATIVE_THRESHOLD, REBALANCE_SINGLE_THRESHOLD,
+    MIN_TRADE_AMOUNT, REBALANCE_RELATIVE_THRESHOLD, REBALANCE_SINGLE_THRESHOLD,
     REBALANCE_TOTAL_THRESHOLD,
 )
 from src.mx.executor import floor_lot, round_lot
@@ -55,7 +55,10 @@ class AllocationDeviation:
 
     @property
     def trade_eligible(self) -> bool:
-        return self.absolute is not None and self.absolute >= MIN_TRADE_DEVIATION
+        # 出指令门＝破复核带（5pp 或 25%）且缺口够最小经济交易额；
+        # 带既分级也拦执行，故 trade_eligible 蕴含 absolute_review/relative_review。
+        return (self.absolute_review or self.relative_review) and \
+            self.gap is not None and abs(self.gap) >= MIN_TRADE_AMOUNT
 
 
 def allocation_deviation(current_value: float | None, weight: float,
@@ -239,7 +242,7 @@ class ETFRebalancer:
                           should: bool, trigger_reason: str) -> str:
         """汇总份额指令和偏离复核结论。"""
         if not orders:
-            base = (f"无指令（无单笔偏离 ≥{MIN_TRADE_DEVIATION:.0%}，或标的缺价；"
+            base = (f"无指令（无单类破复核带且缺口≥{MIN_TRADE_AMOUNT:.0f}元，或标的缺价；"
                     f"总偏离 {total_deviation:.1%}）")
             return base if not should else f"{base}；触发层：{trigger_reason}"
         return f"{len(orders)} 笔指令；触发层：{trigger_reason}"

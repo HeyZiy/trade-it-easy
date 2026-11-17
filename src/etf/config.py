@@ -61,13 +61,19 @@ def example_baseline():
 # 000300 代理全样本；近十年 +0.68%，按状态清仓在近十年为负贡献 −1.47% vs 死拿 +1.69%）。
 # 任何以市场状态为条件的仓位动作都不成立。
 
-# 再平衡阈值——两层口径：
-#   复核线：单类偏离达到 5 个百分点或目标权重的 25%，或总偏离超过 15 个百分点。
-#   份额参考：单笔绝对偏离达到 MIN_TRADE_DEVIATION 时尝试换算整手。
-REBALANCE_SINGLE_THRESHOLD = 0.05     # 单类绝对偏离复核线
-REBALANCE_RELATIVE_THRESHOLD = 0.25   # 单类相对偏离复核线
-REBALANCE_TOTAL_THRESHOLD = 0.15      # 所有偏离绝对值之和 > 15% 强制触发（报告分级）
-MIN_TRADE_DEVIATION = 0.02            # 碎股偏差过滤：< 2% 不出指令
+# 再平衡阈值——经典 5/25 带 + 费率最小交易额（2026-11-17 裁决，取代平 2pp 出指令门）：
+#   复核带（既报告分级，也拦执行）：单类绝对偏离 ≥5pp 或相对偏离 ≥25%，先达先触发。
+#   出指令：破复核带 且 缺口 ≥ MIN_TRADE_AMOUNT 且可换算整手（见 rebalancer.trade_eligible）。
+#   总偏离 >15pp 强制触发（报告分级）。
+REBALANCE_SINGLE_THRESHOLD = 0.05     # 单类绝对偏离复核带
+REBALANCE_RELATIVE_THRESHOLD = 0.25   # 单类相对偏离复核带
+REBALANCE_TOTAL_THRESHOLD = 0.15      # 所有偏离绝对值之和 >15% 强制触发（报告分级）
+# 最小经济交易额（元），纯费率推导、不含收益预期：
+#   ETF 佣金万 0.5、最低 0.2 元、无印花税（data/etf_config.json trade_fees.etf），
+#   交易额 A≤4000 元时双边佣金触底 0.4 元，费率 0.4/A；要求双边 ≤10bp → A≥400 元。
+#   A>4000 元后费率恒为 1bp。场外基金申购费 0，当前基准各基金腿复核带缺口均 >400 元，门不绑定。
+#   作用：微仓（w≤2%）破带后缺口够 400 元即可补回，修复平 2pp 造成的买方永久冻结。
+MIN_TRADE_AMOUNT = 400.0              # 缺口低于此值不出指令（碎额噪声过滤）
 
 
 # ── 全市场 PE 分位 → 估值档位（唯一 producer：src/etf/allocation 市场宏观节展示）。

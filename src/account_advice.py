@@ -125,8 +125,8 @@ def strategy_facts(state, view, key):
               else "已分配" if holdings or pending or cash > 0 else "暂无持仓")
     thresholds = None
     if key == "core":
-        from src.etf.config import MIN_TRADE_DEVIATION, REBALANCE_RELATIVE_THRESHOLD, REBALANCE_SINGLE_THRESHOLD
-        thresholds = {"trade": MIN_TRADE_DEVIATION, "single": REBALANCE_SINGLE_THRESHOLD,
+        from src.etf.config import MIN_TRADE_AMOUNT, REBALANCE_RELATIVE_THRESHOLD, REBALANCE_SINGLE_THRESHOLD
+        thresholds = {"trade_amount": MIN_TRADE_AMOUNT, "single": REBALANCE_SINGLE_THRESHOLD,
                       "relative": REBALANCE_RELATIVE_THRESHOLD}
     return {"id": key, "name": name, "account_id": "etf", "positions": positions,
             "budget_pct": weight, "budget": budget, "invested": invested,
