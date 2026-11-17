@@ -199,6 +199,9 @@ footer { padding-top: 25px; font-size: 11px; color: #a0ab98; }
 }
 @media (prefers-reduced-motion: reduce) { * { scroll-behavior: auto !important; } }
 .allocation-table td { vertical-align: top; }
+.allocation-table th.sortable { cursor: pointer; user-select: none; white-space: nowrap; }
+.allocation-table th.sortable:hover { color: var(--green); }
+.allocation-table th.sortable.sorted { color: var(--green); }
 .allocation-table td:nth-last-child(2) { min-width: 175px; }
 .allocation-table .allocation-attention { background: #fdf6e7; }
 .allocation-table .allocation-strong { background: #fdefe6; }

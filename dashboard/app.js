@@ -20,6 +20,7 @@ const ALLOCATION_TOLERANCE = 0.01;
 const allocationToleranceNote = `${ALLOCATION_TOLERANCE*100} 个百分点内视为配平`;
 const isAllocationBalanced = deviation => Math.abs(deviation) <= ALLOCATION_TOLERANCE + Number.EPSILON;
 let data, selected = 0, chartRange = 'all', chartObserver;
+let coreSort = {key: null, dir: 1};
 let selectedReport, reportRequest, configRequest;
 let showAllRecords = false;
 let holdingKind = '';
@@ -401,6 +402,7 @@ function render() {
   document.querySelector('#account').innerHTML = selected===0 ? summaryPage() : fundedStrategyPage(account);
   drawChart(account);
   bindAccountActions(account);
+  bindCoreSort(account);
   document.querySelectorAll('[data-range]').forEach(button => button.onclick=() => {
     chartRange=button.dataset.range;
     document.querySelectorAll('[data-range]').forEach(item => { item.classList.toggle('active',item.dataset.range===chartRange); item.setAttribute('aria-pressed',item.dataset.range===chartRange); });
@@ -912,6 +914,51 @@ function allocationProductRow(row, strategyId) {
   </tr>`;
 }
 
+function sortAllocationGroups(groups, key, dir) {
+  const cash = groups.filter(group => group.id === 'CASH');
+  const rest = groups.filter(group => group.id !== 'CASH');
+  if (key) {
+    const value = group => key === 'name' ? (fundDisplayName(group.name_fund_code) || group.name || '')
+      : key === 'weight' ? group.weight
+      : key === 'actual' ? group.market_value
+      : group.absolute_deviation;
+    const missing = v => v === null || v === undefined || (typeof v === 'number' && !finite(v));
+    rest.sort((a, b) => {
+      const va = value(a), vb = value(b), ma = missing(va), mb = missing(vb);
+      if (ma !== mb) return ma ? 1 : -1;
+      if (ma && mb) return 0;
+      return (key === 'name' ? String(va).localeCompare(String(vb), 'zh') : va - vb) * dir;
+    });
+  }
+  return [...rest, ...cash];
+}
+
+function coreSortTh(label, key) {
+  const active = coreSort.key === key;
+  const arrow = active ? (coreSort.dir > 0 ? ' ▲' : ' ▼') : '';
+  return `<th class="sortable${active ? ' sorted' : ''}" data-sort-key="${key}" title="点击排序">${label}${arrow}</th>`;
+}
+
+function refreshCoreTable(strategy) {
+  const wrap = document.querySelector('.core-allocation-table')?.closest('.table-wrap');
+  if (!wrap) return;
+  const tmp = document.createElement('div');
+  tmp.innerHTML = strategyPositionTable(strategy);
+  wrap.replaceWith(tmp.firstElementChild);
+  bindAccountActions(strategy);
+  bindCoreSort(strategy);
+}
+
+function bindCoreSort(strategy) {
+  document.querySelectorAll('.core-allocation-table th[data-sort-key]').forEach(th => {
+    th.onclick = () => {
+      const key = th.dataset.sortKey;
+      coreSort = coreSort.key === key ? {key, dir: -coreSort.dir} : {key, dir: key === 'deviation' ? -1 : 1};
+      refreshCoreTable(strategy);
+    };
+  });
+}
+
 function strategyPositionTable(strategy) {
   if (!strategy.target_weights) return rotationPositionTable(strategy);
   const budget = strategy.allocation_budget;
@@ -926,7 +973,7 @@ function strategyPositionTable(strategy) {
   } else if (finite(strategy.budget_pct)) {
     basisNote = '账户估值待补齐后计算目标金额。';
   }
-  const rows=strategy.allocation_groups.map(group=>{
+  const rows=sortAllocationGroups(strategy.allocation_groups, coreSort.key, coreSort.dir).map(group=>{
     const {id:code, market_value:actual, weight, products,
       target_value:target, gap_amount:gap, absolute_deviation:deviation,
       relative_deviation:relative, absolute_review:absReview, relative_review:relReview,
@@ -971,7 +1018,7 @@ function strategyPositionTable(strategy) {
     }
     return `<tr data-allocation-code="${esc(code)}"${level ? ` class="allocation-${level}"` : ''}><td>${esc(name)}${group.outside ? '<small>目标外持仓</small>' : ''}${details}</td><td>${shares}</td><td>${mark}</td><td>${money(actual)}<small>配置内 ${pct(assets>0 && finite(actual)?actual/assets:null)}</small></td><td>${money(target)}<small>目标权重 ${pct(weight)}</small></td><td>${difference}<span class="allocation-mobile-values">现 ${money(actual)}<br>目标 ${money(target)}</span>${reference}</td><td>${actions}</td></tr>${productRows}`;
   }).join('');
-  return `<div class="table-wrap"><table class="allocation-table core-allocation-table"><thead><tr><th>产品与配置</th><th>份额</th><th>价格 / 元</th><th>当前金额 / 元</th><th>目标金额 / 元</th><th>配比偏离</th><th>记账</th></tr></thead><tbody>${rows}</tbody></table></div><details class="calculation-note"><summary>配比说明</summary><p>${basisNote}未达到重点高亮阈值时，${allocationToleranceNote}。${thresholdNote} 多产品配置按组内合计金额判断偏离。</p></details>`;
+  return `<div class="table-wrap"><table class="allocation-table core-allocation-table"><thead><tr>${coreSortTh('产品与配置','name')}<th>份额</th><th>价格 / 元</th>${coreSortTh('当前金额 / 元','actual')}${coreSortTh('目标金额 / 元','weight')}${coreSortTh('配比偏离','deviation')}<th>记账</th></tr></thead><tbody>${rows}</tbody></table></div><details class="calculation-note"><summary>配比说明</summary><p>${basisNote}未达到重点高亮阈值时，${allocationToleranceNote}。${thresholdNote} 多产品配置按组内合计金额判断偏离。</p></details>`;
 }
 
 function openFundTrade(account, side, code, edit=null) {

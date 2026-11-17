@@ -42,6 +42,7 @@
 
 # ── 收盘成绩：当日18:30（北京时间）采集投资账户当日收盘估值（ETF 东财优先、
 #    新浪保底，18:30 东财已发布当日收盘），并回补最近5个交易日不完整记录；
-#    部分场外净值晚间才公布，当日记录可能先标待估值、次日晚回补补齐；
-#    缺价保留最近完整成绩；不交易、不推送、不生成日报（成绩看板在 dashboard）──
+#    场外净值取估值日或之前最新已公布值，晚间未公布沿用前一日净值、不阻塞当日成绩；
+#    仅收盘价/净值完全缺失才标待估值（次日晚回补），成绩曲线只取完整记录；
+#    不交易、不推送、不生成日报（成绩看板在 dashboard）──
 30 18 * * 1-5 cd /root/trade-it-easy && flock -n /tmp/portfolio-report.lock /root/miniconda/envs/rt/bin/python portfolio_report.py > /dev/null 2>> logs/cron_error.log
