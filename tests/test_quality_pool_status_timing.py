@@ -6,22 +6,22 @@ import pytest
 
 from data_provider.security_names import names_for
 from src.quality_pool import config, feeds, signal, state
-from test_quality_pool_state import env, _patch_signal_data, _seed_positions
+from test_quality_pool_state import env, _patch_signal_data
 
 
 def test_signal_uses_today_st_without_intraday_quotes(env):
     _patch_signal_data(env)
-    _seed_positions([('600001', 100, 10.)])
     env.setattr(feeds, '_execution_now', lambda: pd.Timestamp('2026-10-05 09:30:00'))
     env.setattr(feeds, 'fetch_screening_status', lambda *a: pytest.fail('当日不得使用昨收 ST'))
     env.setattr(feeds, '_raw_code_info', lambda: pd.DataFrame(
         {'security_status': ['4', '']}, index=['600001.SH', '600002.SH']))
-    report = signal.run_signal(dt.date(2026, 10, 5))
-    plan = state.load_state(config.STATE_PATH)['pending_plan']
+    current = state.empty_state()
+    signal.run_signal(dt.date(2026, 10, 5), state=current,
+                      held_codes={"600001"}, state_writer=lambda _: None)
+    plan = current["pending_plan"]
     assert plan['asof'] == '2026-10-02'
     assert plan['exit_reasons'] == {'600001': config.EXIT_OUT_OF_POOL}
     assert plan['selected'] == ['600002']
-    assert report.acted
 
 
 def test_execution_status_does_not_use_history_table(monkeypatch):

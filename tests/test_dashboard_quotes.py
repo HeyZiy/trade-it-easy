@@ -95,9 +95,7 @@ def test_scheduled_report_collects_targets_and_current_holdings_for_valuation(ac
     buy(account)
     days = [date.fromisoformat(PRICE_DAY), TODAY]
     monkeypatch.setattr(entry, "get_trading_dates", lambda start, end: [d for d in days if start <= d <= end])
-    monkeypatch.setattr("src.account_sources.all_sources", lambda: [
-        SimpleNamespace(ledger_path=str(account), label="投资账户", benchmark={}, is_investment=True),
-    ])
+    monkeypatch.setattr("src.etf_account.ACCOUNT_PATH", account)
     calls = []
 
     def fetch(self, codes, day):

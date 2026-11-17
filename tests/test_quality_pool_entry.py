@@ -1,70 +1,23 @@
-# -*- coding: utf-8 -*-
-"""入口脚本 quality_pool 的只读降级：非交易日 --force 一律不写状态/台账（同 etf_observe 口径）。"""
-import io
+"""质量动量入口的交易日保护。"""
+
 import sys
+
+import pytest
 
 import quality_pool as entry
 
 
-def _stub_main(monkeypatch, trading, argv):
-    seen = {}
-    monkeypatch.setattr(entry, "is_trading_day", lambda day=None: trading)
-    monkeypatch.setattr(entry, "run",
-                        lambda today, dry_run=False:
-                        seen.update(command="run", dry_run=dry_run) or "报告")
-    monkeypatch.setattr(entry, "run_signal",
-                        lambda today, dry_run=False:
-                        seen.update(dry_run=dry_run) or "报告")
-    monkeypatch.setattr(entry, "run_execute",
-                        lambda today, dry_run=False: seen.update(dry_run=dry_run) or "报告")
-    monkeypatch.setattr(entry, "setup_logging", lambda **kw: None)
-    monkeypatch.setattr(entry, "save_report", lambda *a, **kw: None)
-    monkeypatch.setattr(entry, "notify", lambda *a, **kw: None)
-    monkeypatch.setattr(sys, "argv", ["quality_pool.py"] + argv)
-    # main() 开头用 TextIOWrapper(sys.stdout.buffer) 重绑 stdout：旧流被回收会连带关掉
-    # 底层 BytesIO，挂在 seen 上保命，别踩到 pytest 的捕获流。
-    seen["stdout"] = io.TextIOWrapper(io.BytesIO())
-    monkeypatch.setattr(sys, "stdout", seen["stdout"])
-    return seen
-
-
-def test_holiday_force_forces_readonly(monkeypatch):
-    seen = _stub_main(monkeypatch, trading=False, argv=["signal", "--force"])
+@pytest.mark.parametrize(("trading", "args", "calls"), [
+    (False, [], []),
+    (False, ["--force"], [True]),
+    (True, ["--force"], [False]),
+    (True, ["--dry-run"], [True]),
+])
+def test_main_runs_only_when_allowed(monkeypatch, trading, args, calls):
+    seen = []
+    monkeypatch.setattr(entry, "is_trading_day", lambda _: trading)
+    monkeypatch.setattr(entry, "setup_logging", lambda **_: None)
+    monkeypatch.setattr(entry, "run", lambda today, *, dry_run, no_notify: seen.append(dry_run))
+    monkeypatch.setattr(sys, "argv", ["quality_pool.py", *args])
     assert entry.main() == 0
-    assert seen["dry_run"] is True
-
-
-def test_holiday_force_readonly_execute(monkeypatch):
-    seen = _stub_main(monkeypatch, trading=False, argv=["execute", "--force"])
-    assert entry.main() == 0
-    assert seen["dry_run"] is True
-
-
-def test_trading_day_force_keeps_ledger_write(monkeypatch):
-    seen = _stub_main(monkeypatch, trading=True, argv=["signal", "--force"])
-    assert entry.main() == 0
-    assert seen["dry_run"] is False
-
-
-def test_trading_day_explicit_dry_run(monkeypatch):
-    seen = _stub_main(monkeypatch, trading=True, argv=["execute", "--dry-run"])
-    assert entry.main() == 0
-    assert seen["dry_run"] is True
-
-
-def test_holiday_without_force_skips(monkeypatch):
-    seen = _stub_main(monkeypatch, trading=False, argv=["signal"])
-    assert entry.main() == 0
-    assert "dry_run" not in seen
-
-
-def test_default_command_runs_full_simulation(monkeypatch):
-    seen = _stub_main(monkeypatch, trading=True, argv=[])
-    assert entry.main() == 0
-    assert seen["command"] == "run" and seen["dry_run"] is False
-
-
-def test_default_holiday_force_is_readonly(monkeypatch):
-    seen = _stub_main(monkeypatch, trading=False, argv=["--force"])
-    assert entry.main() == 0
-    assert seen["command"] == "run" and seen["dry_run"] is True
+    assert seen == calls

@@ -223,15 +223,13 @@ class AmazingDataFetcher(BaseFetcher):
         """AmazingData 未提供市场统计接口，返回 None。"""
         return None
 
-    # ---------- 指数数据（市场状态判定专用，单源无回退） ----------
+    # ---------- 指数数据（单源无回退） ----------
 
     def get_index_daily(self, code: str = "sh000001", days: int = 120) -> Optional[pd.DataFrame]:
         """
-        指数日线（query_kline，市场状态判定唯一数据源，无回退源）。
+        指数日线（query_kline，单源无回退）。
 
         指数码族与个股独立转换（见 _index_code_to_tgw_format）。
-        当日 bar 收盘后何时入库手册未写，由 market_gate 层用指数快照
-        补当日 bar + 数据日期断言兜底。
 
         Returns:
             DataFrame(date/open/high/low/close/volume/amount，按日期升序)；取不到返回 None

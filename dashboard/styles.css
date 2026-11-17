@@ -154,9 +154,6 @@ td small { display: block; color: #93a098; font-size: 11px; margin-top: 4px; }
 .report-actions { text-align: center; padding-top: 9px; border-top: 1px solid #edf1ed; }
 .text-button { border: 0; background: transparent; color: var(--green); padding: 7px 8px; font-size: 12px; border-radius: 6px; transition: background-color .15s ease, color .15s ease; }
 .text-button:hover { background: var(--green-soft); color: var(--green-deep); }
-.state-section { margin: 22px 4px 0; padding: 0; color: #7c8b82; font-size: 12px; line-height: 1.7; }
-.state-section summary { cursor: pointer; }
-.state-section p { padding-left: 14px; }
 footer { padding-top: 25px; font-size: 11px; color: #a0ab98; }
 @media (max-width: 680px) {
   .masthead-inner { padding: 25px 18px; }

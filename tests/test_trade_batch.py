@@ -278,25 +278,6 @@ class TestStrategyCallers:
         report = etf_allocation._recommendation_section(allocation)
         assert "本次建议" in report and load_trades(path) == before
 
-    def test_etf_batch_writes_and_reconciles_using_ledger(self, tmp_path):
-        from src.etf.execution import execute_orders
-        from src.etf.momentum import EtfOrder
-
-        path = tmp_path / "ledger.jsonl"
-        before = _seed(path, {"510300": 100}, cash=0)
-        orders = [EtfOrder("510300", "ETF", "sell", 100, 4, 400, "exit"),
-                  EtfOrder("512880", "ETF", "buy", 400, 1, 400, "entry")]
-        result = execute_orders(orders, account="etf_rotation", trade_date="2026-09-27",
-                                ledger_path=path, before=before, prices={})
-
-        assert result.batch.abort is None and len(result.batch.outcomes) == 2
-        assert "已记账 2 笔（买入 1，卖出 1）" in result.summary
-        assert [(p["code"], p["count"], p["market_value"]) for p in result.positions] == [
-            ("512880", 400, 400.0),
-            ("600999", 100, 0.0),
-        ]
-        assert _snapshot(path).cash == 0
-
 
 class TestOutcomeLine:
     def test_ok_line(self, tmp_path):

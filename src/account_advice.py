@@ -245,15 +245,16 @@ def publish_quality(day, *, path, dry_run=False):
             save(path, current)
             expected = revision(current)
 
+    signal_report = None
     try:
-        signal.run_signal(date.fromisoformat(day), dry_run=dry_run,
+        signal_report = signal.run_signal(date.fromisoformat(day), dry_run=dry_run,
                           state=state, held_codes={p["code"] for p in strategy["positions"]},
                           state_writer=commit)
         if state.get("signal_retry"):
             raise ValueError("质量动量数据不完整，本轮暂停，等待重试")
         plan = signal.SignalPlan.from_stored(state.get("pending_plan"), day)
         execution_snapshot = assembly.build_snapshot(day, plan.entries if plan else [], account_facts=strategy)
-        published = account_advice.make_signal(day, state, execution_snapshot, previous, plan=plan)
+        published = account_advice.make_signal(day, state, execution_snapshot, plan=plan)
     except Exception as error:
         logger.exception("质量动量实际账户建议更新失败")
         published = {"date": day, "issues": str(error)}
@@ -261,7 +262,10 @@ def publish_quality(day, *, path, dry_run=False):
     commit(state, published)
     rows, status = account_advice.advice(published, strategy, date.fromisoformat(day),
                                          dismissed=account["dismissed"])
-    return render(rows, status)
+    advice_report = render(rows, status)
+    if signal_report:
+        return f"## 持有资格与候选\n\n{signal_report}\n\n## 投资账户建议\n\n{advice_report}"
+    return advice_report
 
 
 def on_event(state, view, event, today):

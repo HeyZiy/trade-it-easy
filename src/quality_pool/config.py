@@ -1,8 +1,6 @@
 # -*- coding: utf-8 -*-
 """质量动量策略参数，规则见 strategy/quality_pool.md。"""
 
-from src.account_sources import AccountSource
-
 # ── 池与轮转（规则见 strategy/quality_pool.md：策略概述、持有资格） ──
 STRATEGY_VERSION = 6
 TOP_N = 6
@@ -27,13 +25,7 @@ MIN_COMMISSION = 5.0                 # 最低佣金（资金检查用）
 SLIPPAGE_SPREAD = 0.002              # 价差参数，买/卖各一半（资金检查用）
 LIMIT_PAD = 0.001                    # 元，涨跌停价比较容差
 
-# ── 台账与状态 ──
-ACCOUNT = "quality_pool"  # 独立策略流水隔离资金池
-# 台账是单池设计（NOMINAL_EQUITY 一本账），规格要求独立策略账户——用独立流水文件，
-# 与主台账（core）互不可见。
-POOL_LEDGER_PATH = "data/trade_ledger_quality_pool.jsonl"
-STATE_PATH = "data/quality_pool_state.json"
-REPORT_PREFIX = "quality_pool"
+REPORT_PREFIX = "quality_pool_advice"
 
 # 新退出只有质量出池；旧名次退出不再产生。
 EXIT_OUT_OF_POOL = "out_of_pool"          # 附 pool_reason：全部已确认失败条件
@@ -41,9 +33,3 @@ EXIT_OUT_OF_POOL = "out_of_pool"          # 附 pool_reason：全部已确认失
 # 财务可见性：报告期有效且披露日不晚于截止日（T−1）
 FINANCIAL_STATEMENT_TYPE_SINGLE = 2   # 合并报表(单季度)
 FINANCIAL_STATEMENT_TYPE_CONSOL = 1   # 合并报表
-
-# ── 模拟账户描述符（收盘成绩等消费方经 src/account_sources 枚举）──
-
-ACCOUNT_SOURCE = AccountSource(
-    ledger_path=POOL_LEDGER_PATH, label="质量动量",
-    benchmark={"name": "中证800价格指数", "index": "000906"})

@@ -5,6 +5,7 @@ import json
 
 from src.advice_identity import short_digest
 from src.quality_pool import config, execution
+from src.quality_pool.signal import SignalPlan
 
 
 def is_current(signal, day):
@@ -12,17 +13,9 @@ def is_current(signal, day):
             and signal.get("strategy_version") == config.STRATEGY_VERSION)
 
 
-def make_signal(day, state, snapshot, previous=None, *, plan=None):
-    """同日目标冻结；下一交易日根据实际持仓重新评估。
-
-    plan 可传调用方已解析的持久化名单，避免同字典二次校验；缺省时自行读回。
-    """
-    from src.quality_pool.signal import SignalPlan
-
-    if is_current(previous, day):
-        return previous
-    if plan is None:
-        plan = SignalPlan.from_stored(state.get("pending_plan"), day)
+def make_signal(day: str, state: dict, snapshot: execution.ExecSnapshot, *,
+                plan: SignalPlan | None) -> dict:
+    """将已校验的名单和账户快照转换为份额固定的当日建议。"""
     exits = {c: r for c, r in state.get("exit_queue", {}).items()
              if snapshot.counts.get(c, 0) > 0}
     if plan:
@@ -30,11 +23,13 @@ def make_signal(day, state, snapshot, previous=None, *, plan=None):
     state["exit_queue"] = exits
     if any(c not in snapshot.prices for c in snapshot.counts):
         raise ValueError("质量动量实际持仓价格缺失，暂停建议")
-    # 先形成预算内的目标，实际可买数量由 advice 按已分配现金收紧。
-    planning = replace(snapshot, cash=max(snapshot.cash, snapshot.equity))
-    result = (execution.plan_round(plan.entries, exits, snapshot.equity / config.TOP_N,
-                                   planning, deferred=plan.deferred, industries=plan.industries)
-              if plan else execution.plan_exit_retry(exits, snapshot))
+    if plan:
+        # 先形成预算内的目标，实际可买数量由 advice 按已分配现金收紧。
+        planning = replace(snapshot, cash=max(snapshot.cash, snapshot.equity))
+        result = execution.plan_round(plan.entries, exits, snapshot.equity / config.TOP_N,
+                                      planning, deferred=plan.deferred, industries=plan.industries)
+    else:
+        result = execution.plan_exit_retry(exits, snapshot)
     counts = dict(snapshot.counts)
     orders = []
     for trade in result.trades:

@@ -41,7 +41,6 @@ import pandas as pd
 from src.etf.momentum import (DIVE_RATIO, SCORE_DAYS, EtfOrder,
                               momentum_score)
 from src.mx.executor import floor_lot
-from src.account_sources import AccountSource
 from data_provider.security_names import security_name
 from src.trading_calendar import latest_trading_day_on_or_before
 
@@ -52,14 +51,8 @@ SCORE_LOW = 0.0          # 合格下限（严格大于）
 SCORE_HIGH = 5.0         # 合格上限（严格小于）
 STALE_DAYS = 10          # 交易日历不可用时：最后日线距今 > N 自然日 → 剔除
 
-# ── 模拟账户与执行口径 ──
-
-ACCOUNT = "etf_rotation"                       # 台账归因标签（独立策略账户）
-LEDGER_PATH = "data/trade_ledger_etf_rotation.jsonl"   # 独立流水，与主台账互不可见
-ACCOUNT_SOURCE = AccountSource(                      # 收盘成绩消费方经 src/account_sources 枚举
-    ledger_path=LEDGER_PATH, label="跨资产动量",
-    benchmark={"name": "沪深300价格指数", "index": "000300"})
-COMMISSION = 0.0002      # 新成交佣金万二，规划与台账执行使用同一口径
+ACCOUNT = "etf_rotation"
+COMMISSION = 0.0002      # 轮动建议预估佣金
 MIN_COMMISSION = 5.0     # 新成交最低佣金5元
 SCORE_HINT = "10:40"     # 研究线的决策时点；部署 cron 应对齐（报告里展示）
 
@@ -329,7 +322,6 @@ def fetch_bars(codes: Sequence[str], decision_date: Optional[date] = None) -> Di
             frame = frame.dropna(subset=["date"]).sort_values("date").set_index("date")
             frame["close"] = adjusted_close(frame["close"], events, decision_date)
             frame = frame.loc[frame.index <= pd.Timestamp(decision_date)]
-            frame.attrs["dividends"] = [e for e in events if e["cash_per_share"] > 0]
             frames[code] = frame
         except Exception:
             import logging
@@ -356,36 +348,4 @@ def rotation_snapshot(decision_date: Optional[date] = None
     prices = fetch_prices([code for code in codes if code in bars])
     rows, diag = build_rows(bars, prices, decision_date=decision_date,
                             prev_trading_day=previous)
-    diag["dividends"] = {code: frame.attrs.get("dividends", []) for code, frame in bars.items()}
     return rows, prices, diag
-
-
-def dividend_records(trades, events_by_code, as_of):
-    """登记日收盘份额确定权益；除息日记应收，发放日才转为可用现金。"""
-    from src.trade_ledger import TradeRecord, derive
-
-    existing = {t.event_id: t for t in trades if t.event_id}
-    records = []
-    for code, events in events_by_code.items():
-        for event in events:
-            if event["date"] > as_of:
-                continue
-            amount = float(event["cash_per_share"])
-            if amount <= 0:
-                continue
-            registered = event["record_date"]
-            entitled = derive(trades, registered).held_counts().get(code, 0)
-            if not entitled:
-                continue
-            event_id = f"fund-dividend:{code}:{event['date']}"
-            record = TradeRecord(event["date"], code, security_name(code),
-                                 "dividend", entitled, amount, account=ACCOUNT,
-                                 event_id=event_id, pay_date=event["pay_date"],
-                                 reasons=[f"权益登记日 {registered}，红利发放日 {event['pay_date']}"])
-            if event_id in existing:
-                if existing[event_id] != record:
-                    raise ValueError(f"{code}分红公告与已记权益不一致，须核对")
-                continue
-            existing[event_id] = record
-            records.append(record)
-    return records

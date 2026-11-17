@@ -1,14 +1,14 @@
-"""收盘采集的次日回补：补齐旧洞、不重写有效记录、单账户失败隔离。"""
+"""盘前收盘补采限于投资账户。"""
 
 from datetime import datetime, timedelta, timezone
 
 import pytest
 
-from src.etf.config import example_baseline
-CORE_BASELINE = example_baseline()
+import portfolio_report as entry
+from src import etf_account as wallet, fund_plans
 from src.trade_ledger.closing_prices import ClosingPrices
-from src.trade_ledger.ledger import TradeRecord, append_trade
-from src.trade_ledger.performance import collect_close, load_performance, performance_path
+
+NOW = datetime(2026, 9, 24, 8, 30, tzinfo=timezone(timedelta(hours=8)))
 
 
 def calendar(start, end):
@@ -16,120 +16,44 @@ def calendar(start, end):
             if (start + timedelta(days=i)).weekday() < 5]
 
 
-NOW = datetime(2026, 9, 24, 8, 30, tzinfo=timezone(timedelta(hours=8)))  # 目标日 = 09-23
-BENCHMARK = {"name": "ETF期初权重买入持有（现金零收益，不再平衡）",
-             "weights": {a.code: a.neutral_weight for a in CORE_BASELINE}}
-
-
 @pytest.fixture
-def accounts(tmp_path, monkeypatch):
-    import portfolio_report as entry
-    main, pool, rotation = (tmp_path / name for name in
-                            ("main.jsonl", "pool.jsonl", "rotation.jsonl"))
-    append_trade(TradeRecord("2026-09-22", "510300", "测试ETF", "buy", 100, 10), main)
-    # 账户事实的缝＝模拟账户描述符（src/account_sources 各家单点），不再逐家戳源模块常量。
-    monkeypatch.setattr("src.etf.config.ACCOUNT_SOURCE.ledger_path", str(main))
-    monkeypatch.setattr("src.etf.config.ACCOUNT_SOURCE.benchmark", BENCHMARK)
-    monkeypatch.setattr("src.etf.config.ACCOUNT_SOURCE.is_investment", False)
-    monkeypatch.setattr("src.quality_pool.config.ACCOUNT_SOURCE.ledger_path", str(pool))
-    monkeypatch.setattr("src.etf.rotation.ACCOUNT_SOURCE.ledger_path", str(rotation))
+def account(tmp_path, monkeypatch):
+    path = tmp_path / "etf_account.json"
+    wallet.initialize(path, asof="2026-09-21", cash=1000,
+                      positions=[{"code": "510300", "count": 100, "price": 10, "strategy": "core"}])
+    monkeypatch.setattr(wallet, "ACCOUNT_PATH", path)
     monkeypatch.setattr(entry, "get_trading_dates", calendar)
-    return main, pool, rotation
+    monkeypatch.setattr(wallet, "refresh_fund_navs", lambda *args: {"updated": 0, "failed": 0})
+    monkeypatch.setattr(fund_plans, "record_due_subscriptions", lambda *args: 0)
+    monkeypatch.setattr(wallet, "refresh_close_prices", lambda *args: [])
+    monkeypatch.setattr(ClosingPrices, "close_prices", lambda _, codes, day: {c: 10. for c in codes})
+    return path
 
 
-def patch_feed(monkeypatch, missing=(), calls=None):
-    def close_prices(self, codes, asof):
-        if calls is not None:
-            calls.append(asof)
-        if asof in missing:
-            return {}
-        return {c: 10.0 for c in codes}
+def test_next_morning_repairs_previous_gap_and_keeps_old_simulation_results(account):
+    wallet.collect_close(account, "2026-09-22", lambda codes, day: {})
+    old_ledger = account.with_name("trade_ledger_etf_rotation.jsonl")
+    old_ledger.write_text('retired simulation', encoding="utf-8")
 
-    monkeypatch.setattr(ClosingPrices, "close_prices", close_prices)
-    monkeypatch.setattr(ClosingPrices, "index_prices",
-                        lambda self, codes, asof: {c: 100.0 for c in codes})
-
-
-def seed_gap(ledger):
-    """先写一条缺价的 09-22 记录，模拟当晚源没给数。"""
-    collect_close(ledger, "2026-09-22", BENCHMARK,
-                  close_prices=lambda codes, asof: {},
-                  index_prices=lambda codes, asof: {},
-                  trading_dates=calendar)
-    row = load_performance(ledger)["records"][-1]
-    assert row["date"] == "2026-09-22" and row["nav"] is None and row["issues"]
-
-
-def test_next_morning_heals_previous_gap(accounts, monkeypatch):
-    import portfolio_report as entry
-    main, _, _ = accounts
-    seed_gap(main)
-    patch_feed(monkeypatch)
     report, errors = entry.run(now=NOW, backfill=True)
-    state = load_performance(main)
-    row = next(r for r in state["records"] if r["date"] == "2026-09-22")
-    assert row["nav"] == pytest.approx(1.0) and not row["issues"]
-    assert "本次回补" in report and "2026-09-22" in report
-    assert errors == 0
+
+    saved = wallet.load(account)
+    recent = [r for r in saved["records"] if r["date"] > "2026-09-21"]
+    assert [(r["date"], r["nav"]) for r in recent] == [
+        ("2026-09-22", pytest.approx(1.0)), ("2026-09-23", pytest.approx(1.0))]
+    assert errors == 0 and "已补齐" in report
+    assert old_ledger.read_text(encoding="utf-8") == 'retired simulation'
+    assert not old_ledger.with_suffix(".performance.json").exists()
 
 
-def test_valid_records_are_not_refetched(accounts, monkeypatch):
-    import portfolio_report as entry
-    main, _, _ = accounts
-    patch_feed(monkeypatch)
+def test_only_target_day_is_refetched_when_backfill_is_complete(account, monkeypatch):
     entry.run(now=NOW, backfill=True)
-    saved = performance_path(main).read_bytes()
     calls = []
 
-    def no_fetch(self, codes, asof):
+    def fetch(_, codes, asof):
         calls.append(asof)
-        raise AssertionError("有效记录不应重新取价")
+        return {c: 10. for c in codes}
 
-    monkeypatch.setattr(ClosingPrices, "close_prices", no_fetch)
+    monkeypatch.setattr(ClosingPrices, "close_prices", fetch)
     _, errors = entry.run(now=NOW, backfill=True)
-    assert calls == [] and errors == 0
-    assert performance_path(main).read_bytes() == saved
-
-
-def test_backdated_trade_refreshes_complete_history_and_target(accounts, monkeypatch):
-    import portfolio_report as entry
-    main, _, _ = accounts
-    patch_feed(monkeypatch)
-    entry.run(now=NOW, backfill=True)
-    before = load_performance(main)["records"]
-    append_trade(TradeRecord("2026-09-22", "510300", "测试ETF", "buy", 100, 9), main)
-
-    report, errors = entry.run(now=NOW, backfill=True)
-
-    after = load_performance(main)["records"]
-    assert errors == 0 and "已补齐：2026-09-22" in report
-    assert [row["nav"] for row in after] == pytest.approx([1.0001, 1.0001])
-    assert all(new["fingerprint"] != old["fingerprint"] for old, new in zip(before, after))
-
-
-def test_missing_rows_are_created(accounts, monkeypatch):
-    import portfolio_report as entry
-    main, _, _ = accounts
-    patch_feed(monkeypatch)
-    report, errors = entry.run(now=NOW, backfill=True)
-    assert [r["date"] for r in load_performance(main)["records"]] == ["2026-09-22", "2026-09-23"]
-    assert "已补齐：2026-09-22" in report
-    assert errors == 0
-
-
-def test_one_account_failure_does_not_block_others(accounts, monkeypatch):
-    import portfolio_report as entry
-    main, pool, _ = accounts
-    append_trade(TradeRecord("2026-09-22", "600001", "测试股", "buy", 100, 10), pool)
-    patch_feed(monkeypatch)
-    real_collect = entry.collect_close
-
-    def flaky(path, *args, **kwargs):
-        if str(path) == str(pool):
-            raise RuntimeError("boom")
-        return real_collect(path, *args, **kwargs)
-
-    monkeypatch.setattr(entry, "collect_close", flaky)
-    report, errors = entry.run(now=NOW, backfill=True)
-    assert errors == 1 and "本次收盘采集失败" in report
-    assert performance_path(main).exists()
+    assert calls == ["2026-09-23"] and errors == 0

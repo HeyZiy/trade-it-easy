@@ -5,17 +5,15 @@ import numpy as np
 import pandas as pd
 import pytest
 
-import quality_pool as qp
-from src.quality_pool import config as pool_config
 from src.quality_pool import feeds, screener, signal, state, execution
 from test_quality_pool_state import (
-    env, _patch_signal_data, _patch_execute_data, _seed_positions, _ledger_snapshot,
+    env, _patch_signal_data,
 )
 
 
 def test_missing_values_defer_holding_without_rebalancing_and_recover_next_day(env):
     _patch_signal_data(env)
-    _seed_positions([('600001', 25000, 10.0)])
+    saved = state.empty_state()
     original = feeds.fetch_fundamentals
 
     def missing(codes, asof, raw_closes=None):
@@ -24,22 +22,20 @@ def test_missing_values_defer_holding_without_rebalancing_and_recover_next_day(e
         return frame
 
     env.setattr(feeds, 'fetch_fundamentals', missing)
-    signal.run_signal(dt.date(2026, 10, 2))
-    plan = state.load_state(pool_config.STATE_PATH)['pending_plan']
+    signal.run_signal(dt.date(2026, 10, 2), state=saved,
+                      held_codes={"600001"}, state_writer=lambda _: None)
+    plan = saved['pending_plan']
     assert '600001' in plan['selected'] and '600001' in plan['deferred']
     assert '600001' not in plan['exit_reasons']
-    _patch_execute_data(env, {'600001': 10., '600002': 10.})
-    qp.run_execute(dt.date(2026, 10, 2))
-    assert _ledger_snapshot().held_counts()['600001'] == 25000
     _patch_signal_data(env)
-    signal.run_signal(dt.date(2026, 10, 5))
-    saved = state.load_state(pool_config.STATE_PATH)
+    signal.run_signal(dt.date(2026, 10, 5), state=saved,
+                      held_codes={"600001"}, state_writer=lambda _: None)
     assert saved['pending_plan']['deferred'] == [] and '600001' in saved['pending_plan']['kept']
 
 
 def test_quality_failure_adds_exit_and_allows_fresh_entries(env):
     _patch_signal_data(env)
-    _seed_positions([('600001', 100, 10.)])
+    saved = state.empty_state()
     original = feeds.fetch_fundamentals
 
     def low_roe(codes, asof, raw_closes=None):
@@ -48,15 +44,15 @@ def test_quality_failure_adds_exit_and_allows_fresh_entries(env):
         return frame
 
     env.setattr(feeds, 'fetch_fundamentals', low_roe)
-    signal.run_signal(dt.date(2026, 10, 2))
-    saved = state.load_state(pool_config.STATE_PATH)
+    signal.run_signal(dt.date(2026, 10, 2), state=saved,
+                      held_codes={"600001"}, state_writer=lambda _: None)
     assert saved['exit_queue'] == {'600001': 'out_of_pool'}
     assert saved['pending_plan']['selected'] == ['600002']
 
 
-def test_suspended_quality_holding_is_retained_and_execution_blocked(env):
+def test_suspended_quality_holding_is_retained(env):
     _patch_signal_data(env)
-    _seed_positions([('600001', 100, 10.)])
+    saved = state.empty_state()
     original = feeds.fetch_screening_status
 
     def suspended(codes, day):
@@ -65,18 +61,13 @@ def test_suspended_quality_holding_is_retained_and_execution_blocked(env):
         return frame
 
     env.setattr(feeds, 'fetch_screening_status', suspended)
-    signal.run_signal(dt.date(2026, 10, 2))
-    plan = state.load_state(pool_config.STATE_PATH)['pending_plan']
+    signal.run_signal(dt.date(2026, 10, 2), state=saved,
+                      held_codes={"600001"}, state_writer=lambda _: None)
+    plan = saved['pending_plan']
     assert '600001' in plan['kept'] and plan['exit_reasons'] == {}
-    _patch_execute_data(env, {'600001': 10., '600002': 10.}, suspended={'600001'})
-    qp.run_execute(dt.date(2026, 10, 2))
-    assert _ledger_snapshot().held_counts()['600001'] == 100
-    assert state.load_state(pool_config.STATE_PATH)['exit_queue'] == {}
-
-
 def test_old_holding_missing_momentum_does_not_pause_round(env):
     _patch_signal_data(env)
-    _seed_positions([('600001', 100, 10.)])
+    saved = state.empty_state()
     original = feeds.fetch_closes
 
     def missing(codes, asof, rows=253):
@@ -85,8 +76,9 @@ def test_old_holding_missing_momentum_does_not_pause_round(env):
         return frame
 
     env.setattr(feeds, 'fetch_closes', missing)
-    signal.run_signal(dt.date(2026, 10, 2))
-    plan = state.load_state(pool_config.STATE_PATH)['pending_plan']
+    signal.run_signal(dt.date(2026, 10, 2), state=saved,
+                      held_codes={"600001"}, state_writer=lambda _: None)
+    plan = saved['pending_plan']
     assert plan is not None and '600001' in plan['kept'] and '600002' in plan['selected']
 
 
@@ -137,14 +129,3 @@ def test_blocked_exit_still_counts_toward_industry_limit():
         10000., snap, industries={c: 'A' for c in ['600001', '600002', '600003']})
     assert not any(t.side == 'buy' and t.code == '600003' for t in plan.trades)
     assert any(b.code == '600003' and b.blocked_by == 'industry_cap' for b in plan.blocked)
-
-
-def test_same_day_repeated_signal_and_execution_do_not_rebuy(env):
-    _patch_signal_data(env)
-    signal.run_signal(dt.date(2026, 10, 2))
-    _patch_execute_data(env, {'600001': 10., '600002': 10.})
-    qp.run_execute(dt.date(2026, 10, 2))
-    before = _ledger_snapshot().held_counts()
-    signal.run_signal(dt.date(2026, 10, 2))
-    qp.run_execute(dt.date(2026, 10, 2))
-    assert _ledger_snapshot().held_counts() == before

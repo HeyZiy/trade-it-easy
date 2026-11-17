@@ -1,8 +1,7 @@
-"""Private dashboard with actual core bookkeeping and independent strategy accounts."""
+"""投资账户、策略建议与研究报告看板。"""
 
 import argparse
 import base64
-from dataclasses import asdict
 from datetime import date, datetime
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from html import escape
@@ -15,9 +14,6 @@ from pathlib import Path
 import re
 import time
 
-from src.trade_ledger.ledger import derive, load_trades
-from data_provider.security_names import security_name
-from src.trade_ledger.performance import load_performance, valid_records
 from src import fund_plans
 from src.etf_account import FILENAME as ETF_FILENAME, SHANGHAI, account_data as etf_account_data
 from src.dashboard_quotes import QuoteRefresh
@@ -26,15 +22,6 @@ from src.portfolio_config import STRATEGY_NAMES
 
 APP_ROOT = Path(__file__).resolve().parent
 ROOT = Path(os.environ.get("TRADE_DASHBOARD_ROOT", APP_ROOT)).resolve()
-# 展示元数据（台账文件名, id, 显示名），顺序即 accounts 数组顺序。账户存在性归
-# account_sources 注册表（join key = 台账文件名，即「单池」的账户身份）；
-# 新增账户 = 家里定义描述符 + account_sources 加一行 + 此处补一行展示元数据
-# （test_display_table_covers_registry_accounts 强制两侧对齐）。
-DISPLAY = (
-    (ETF_FILENAME, "etf", "投资账户"),
-    ("trade_ledger_etf_rotation.jsonl", "rotation", "跨资产动量"),
-    ("trade_ledger_quality_pool.jsonl", "quality", "质量动量"),
-)
 AUTH_REALM = 'Basic realm="trade-dashboard", charset="UTF-8"'
 AUTH_DELAY = 0.5
 QUOTES = QuoteRefresh()
@@ -109,84 +96,13 @@ def authorized(header, user, password):
     return user_ok and pass_ok
 
 
-def account_data(root, filename):
-    if filename == ETF_FILENAME:
-        path = root / "data" / filename
-        refresh = QUOTES.read(path)
-        account = etf_account_data(path)
-        account["quote_refresh"] = refresh if refresh and refresh["date"] == account["valuation_date"] else None
-        account["dca"] = fund_plans.dca_status(path)
-        return account
-    path = root / "data" / filename
-    if not path.exists():
-        return {"error": "台账文件不存在", "positions": [], "trades": []}
-    trades = load_trades(path)
-    today = date.today().isoformat()
-    snapshot = derive(trades, today)
-    performance = load_performance(path)
-    rows, valid = valid_records(trades, performance.get("records", []), today)
-    rows = sorted(rows, key=lambda r: r["date"])
-    valid = sorted(valid, key=lambda r: r["date"])
-    valid_dates = {row["date"] for row in valid}
-    history = [{"date": row["date"],
-                "nav": row["nav"] if row["date"] in valid_dates else None,
-                "benchmark_nav": row.get("benchmark_nav") if row["date"] in valid_dates else None}
-               for row in rows]
-    baseline = performance.get("baseline_date")
-    if valid and baseline and baseline < history[0]["date"]:
-        history.insert(0, {"date": baseline, "nav": 1.0, "benchmark_nav": 1.0})
-    latest = valid[-1] if valid else None
-    warnings = list(rows[-1].get("issues", [])) if rows else []
-    if rows and (not latest or latest["date"] != rows[-1]["date"]):
-        warnings.append("最近收盘成绩不完整或流水已变更，显示最近有效成绩。")
-    return {
-        "positions": [{**p, "name": security_name(p["code"])} for p in snapshot.positions], "cash": snapshot.cash,
-        "receivables": snapshot.receivables,
-        "trades": [{**asdict(t), "name": security_name(t.code)} for t in reversed(trades)],
-        "performance": latest, "warnings": warnings,
-        "history": history,
-        "benchmark_name": performance.get("benchmark", {}).get("name", "同期基准"),
-        "last_trade_date": trades[-1].date if trades else None,
-    }
-
-
-def strategy_view(key, name, account, tag):
-    """按账户标签切分展示；现金与成绩属于整本账，拆分页只给比例与合计口径。"""
-    account = account or {}
-    performance = account.get("performance")
-    # 收盘价只来自成绩快照，老记录没有该字段时保持空值。
-    closes = {row.get("code"): row.get("close")
-              for row in (performance or {}).get("positions") or []}
-    positions = [{**p, "close": closes.get(p.get("code"))}
-                 for p in account.get("positions", [])]
-    trades = account.get("trades", [])
-    if tag is not None:
-        positions = [p for p in positions if p.get("account") == tag]
-        trades = [t for t in trades if t.get("account") == tag]
-    return {"id": key, "name": name, "ledger": account.get("id"),
-            "positions": positions, "trades": trades[:20],
-            "performance": performance,
-            "history": account.get("history", []),
-            "benchmark_name": account.get("benchmark_name", "同期基准"),
-            "warnings": account.get("warnings", []),
-            "error": account.get("error"),
-            "last_trade_date": account.get("last_trade_date"),
-            "shared": tag is not None}
-
-
-def _display_accounts():
-    """枚举展示账户：存在性归 account_sources 注册表，元数据与顺序归 DISPLAY。"""
-    from src.account_sources import all_sources
-
-    registry = {Path(sa.ledger_path).name for sa in all_sources()}
-    listed = {filename for filename, _, _ in DISPLAY}
-    for filename in sorted(listed - registry):
-        logging.warning("展示元数据指向的台账已不在注册表: %s", filename)
-    for filename in sorted(registry - listed):
-        logging.warning("注册表账户缺展示元数据，未展示: %s", filename)
-    for filename, key, name in DISPLAY:
-        if filename in registry:
-            yield filename, key, name
+def account_data(root):
+    path = root / "data" / ETF_FILENAME
+    refresh = QUOTES.read(path)
+    account = etf_account_data(path)
+    account["quote_refresh"] = refresh if refresh and refresh["date"] == account["valuation_date"] else None
+    account["dca"] = fund_plans.dca_status(path)
+    return account
 
 
 def _report_files(root) -> list:
@@ -194,7 +110,7 @@ def _report_files(root) -> list:
     report_dir = root / "reports"
     reports = []
     for prefix, label in (("etf_weekly", "多资产配置"),
-                          ("etf_rotation", "跨资产动量"), ("quality_pool", "质量动量")):
+                          ("etf_rotation_advice", "跨资产动量"), ("quality_pool_advice", "质量动量")):
         files = sorted(report_dir.glob(prefix + "_????????.md"), reverse=True)
         if files:
             reports.append({"name": label, "file": files[0].name,
@@ -202,51 +118,22 @@ def _report_files(root) -> list:
     return reports
 
 
-def _state_detail(filename: str, state) -> str:
-    """状态文件摘要行：质量池给信号节奏。"""
-    if filename.startswith("quality"):
-        return (f"上次信号：{state.get('last_signal_date') or '暂无'}；"
-                "每个交易日检查；"
-                f"待退出：{len(state.get('exit_queue') or {})} 只；"
-                f"重试：{'是' if state.get('signal_retry') else '否'}")
-    return f"池更新：{state.get('rebuilt_on') or '暂无'}；成员：{len(state.get('members') or [])} 只"
-
-
 def dashboard_data(root=ROOT):
-    ledgers = []
-    for filename, key, name in _display_accounts():
-        try:
-            data = account_data(root, filename)
-        except FileNotFoundError:
-            data = {"error": "投资账户尚未初始化", "positions": [], "trades": []}
-        except Exception:
-            logging.exception("读取账户失败: %s", key)
-            data = {"error": "账户数据读取失败，请检查服务器日志。", "positions": [], "trades": []}
-        ledgers.append({"id": key, "name": name, **data})
-    by_id = {account["id"]: account for account in ledgers}
-    account = by_id.get("etf", {"id": "etf", "name": "投资账户", "error": "投资账户数据源未配置",
-                                "positions": [], "trades": []})
+    try:
+        account = account_data(root)
+    except FileNotFoundError:
+        account = {"error": "投资账户尚未初始化", "positions": [], "trades": []}
+    except Exception:
+        logging.exception("读取投资账户失败")
+        account = {"error": "账户数据读取失败，请检查服务器日志。", "positions": [], "trades": []}
     strategies = account.pop("strategies", [
         {"id": key, "name": name, "account_id": "etf", "positions": [], "trades": [],
          "budget": None, "budget_pct": None, "invested": 0, "buying_power": None,
          "suggestions": [], "status": "账户未初始化", "history": [], "performance": None}
         for key, name in STRATEGY_NAMES.items()])
-    for strategy in strategies:
-        if strategy["id"] in {"rotation", "quality"}:
-            strategy["observation"] = strategy_view(
-                strategy["id"], strategy["name"] + " · 独立模拟", by_id.get(strategy["id"]), None)
-    reports = _report_files(root)
-    states = []
-    for filename, label in (("quality_pool_state.json", "质量动量状态"),):
-        path = root / "data" / filename
-        try:
-            detail = _state_detail(filename, json.loads(path.read_text(encoding="utf-8")))
-        except (OSError, ValueError, TypeError):
-            detail = "状态文件不存在或无法读取"
-        states.append({"name": label, "detail": detail})
-    return {"generated_at": datetime.now().astimezone().isoformat(timespec="seconds"),
-            "accounts": [account], "strategies": strategies, "observations": [],
-            "reports": reports, "states": states}
+    account.update(id="etf", name="投资账户")
+    return {"generated_at": datetime.now().astimezone().isoformat(),
+            "accounts": [account], "strategies": strategies, "reports": _report_files(root)}
 
 
 class Handler(BaseHTTPRequestHandler):

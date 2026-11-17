@@ -1,35 +1,29 @@
-# -*- coding: utf-8 -*-
-"""质量池信号与执行场景：跨日恢复、计划冻结、模拟记账与退出重试。"""
+"""质量动量在独立测试数据上的持仓资格、重试和状态检查。"""
 
-import datetime as dt
+from copy import deepcopy
+from datetime import date
 
 import pandas as pd
 import pytest
 
-import quality_pool as qp
-import src.quality_pool.config as pool_config
-from src.quality_pool import feeds, signal, state as pool_state
+from src.quality_pool import config, feeds, signal, state
 
 
 @pytest.fixture
-def env(tmp_path, monkeypatch):
-    """隔离的状态/台账文件 + 固定交易日历（2026-10 起的连续工作日）。"""
-    state_path = tmp_path / "quality_pool_state.json"
-    ledger_path = tmp_path / "pool_ledger.jsonl"
-    # 信号与执行都经 config 运行时读取路径，单点替换。
-    monkeypatch.setattr(pool_config, "POOL_LEDGER_PATH", str(ledger_path))
-    monkeypatch.setattr(pool_config, "STATE_PATH", str(state_path))
-    monkeypatch.setattr(qp, "save_report", lambda report, prefix, **kw: str(tmp_path / "r.md"))
-    monkeypatch.setattr(qp, "notify", lambda report: True)
-
-    cal = [dt.date(2026, 9, 1) + dt.timedelta(days=i) for i in range(150)]
-    cal = [d for d in cal if d.weekday() < 5]
-    monkeypatch.setattr(qp, "is_trading_day", lambda day=None: day in cal)
+def env(monkeypatch):
+    from datetime import timedelta
     import src.trading_calendar as tc
+    import quality_pool as entry
+
+    cal = [date(2026, 9, 1) + timedelta(days=i) for i in range(150)]
+    cal = [d for d in cal if d.weekday() < 5]
+    monkeypatch.setattr(entry, "is_trading_day", lambda day=None: day in cal)
     monkeypatch.setattr(tc, "get_trading_dates",
                         lambda start, end: [d for d in cal if start <= d <= end])
     monkeypatch.setattr(tc, "latest_trading_day_on_or_before",
                         lambda d, **kw: max((x for x in cal if x <= d), default=None))
+    monkeypatch.setattr(entry, "save_report", lambda *args, **kwargs: "report.md")
+    monkeypatch.setattr(entry, "notify", lambda report: True)
     return monkeypatch
 
 
@@ -78,160 +72,32 @@ def _patch_execute_data(monkeypatch, prices, names=None,
                         lambda cs, d: status.loc[[c for c in cs if c in status.index]])
 
 
-# ── state ──
+def test_failed_signal_can_retry_from_saved_checkpoint(env):
+    checkpoints = []
+    current = state.empty_state()
 
-def test_state_roundtrip_and_defaults(tmp_path):
-    p = tmp_path / "s.json"
-    assert pool_state.load_state(p)["pending_plan"] is None
-    st = pool_state.load_state(p)
-    pool_state.put_plan(st, {"signal_day": "2026-10-01"})
-    st["exit_queue"] = {"600001": "out_of_pool"}
-    pool_state.save_state(st, p)
-    reloaded = pool_state.load_state(p)
-    assert reloaded["pending_plan"]["signal_day"] == "2026-10-01"
-    assert reloaded["exit_queue"] == {"600001": "out_of_pool"}
+    def persist(value):
+        checkpoints.append(deepcopy(value))
 
+    def fail(day):
+        raise RuntimeError("data down")
 
-# ── signal ──
-
-def test_signal_first_run_writes_daily_plan(env):
+    env.setattr(feeds, "fetch_universe", fail)
+    assert "数据异常" in signal.run_signal(date(2026, 10, 2), state=current,
+                                           held_codes=set(), state_writer=persist)
+    assert checkpoints[-1]["signal_retry"] and checkpoints[-1]["pending_plan"] is None
     _patch_signal_data(env)
-    today = dt.date(2026, 10, 1)
-    report = signal.run_signal(today)
-    st = pool_state.load_state(pool_config.STATE_PATH)
-    assert st["pending_plan"]["selected"] == ["600001", "600002"]
-    assert "next_signal_date" not in st
-    assert "目标 2" in report
-
-
-def test_signal_interruption_retries_failed_signal_without_replaying_completed_round(env):
-    def interrupted(day):
-        raise SystemExit("simulated SDK crash")
-
-    env.setattr(feeds, "fetch_universe", interrupted)
-    with pytest.raises(SystemExit, match="simulated SDK crash"):
-        signal.run_signal(dt.date(2026, 10, 1))
-    st = pool_state.load_state(pool_config.STATE_PATH)
-    assert "next_signal_date" not in st
-    assert st["pending_plan"] is None
-    assert st['signal_retry'] is True
-    _patch_signal_data(env)
-    assert '目标 2' in signal.run_signal(dt.date(2026, 10, 2))
-
-
-def test_signal_logging_failure_preserves_retry_marker(env):
-    _patch_signal_data(env, fail=True)
-
-    def disk_full(*args, **kwargs):
-        raise OSError("logging disk full")
-
-    env.setattr(signal.logger, "exception", disk_full)
-    with pytest.raises(OSError, match="logging disk full"):
-        signal.run_signal(dt.date(2026, 10, 1))
-    st = pool_state.load_state(pool_config.STATE_PATH)
-    assert "next_signal_date" not in st
-    assert st["pending_plan"] is None
-
-
-def test_signal_unwritable_state_stops_before_data_fetch(env):
-    fetched = []
-    env.setattr(feeds, "fetch_universe", lambda d: fetched.append(d))
-
-    def disk_full(*args, **kwargs):
-        raise OSError("state disk full")
-
-    env.setattr(pool_state, "save_state", disk_full)
-    with pytest.raises(OSError, match="state disk full"):
-        signal.run_signal(dt.date(2026, 10, 1))
-    assert fetched == []
-
-
-def test_signal_retry_after_recovery_creates_plan(env):
-    _patch_signal_data(env, fail=True)
-    signal.run_signal(dt.date(2026, 10, 1))
-    _patch_signal_data(env)
-    assert "目标 2" in signal.run_signal(dt.date(2026, 10, 2))
-    assert '不重复' in signal.run_signal(dt.date(2026, 10, 2))
-    st = pool_state.load_state(pool_config.STATE_PATH)
-    assert st["pending_plan"]["signal_day"] == "2026-10-02"
-    assert "next_signal_date" not in st
-
-
-def test_signal_dry_run_does_not_checkpoint_state(env):
-    from pathlib import Path
-    _patch_signal_data(env)
-    st = pool_state.load_state(pool_config.STATE_PATH)
-    pool_state.save_state(st, pool_config.STATE_PATH)
-    before = Path(pool_config.STATE_PATH).read_bytes()
-    signal.run_signal(dt.date(2026, 10, 1), dry_run=True)
-    assert Path(pool_config.STATE_PATH).read_bytes() == before
-
-
-def test_signal_data_pause_leaves_no_new_plan(env):
-    _patch_signal_data(env, fail=True)
-    today = dt.date(2026, 10, 1)
-    report = signal.run_signal(today)
-    st = pool_state.load_state(pool_config.STATE_PATH)
-    assert st["pending_plan"] is None
-    assert "next_signal_date" not in st
-    assert "数据异常" in report
-
-
-def test_signal_commit_failure_recovers_with_fresh_cutoff(env):
-    _patch_signal_data(env)
-    original = pool_state.save_state
-    saves = 0
-
-    def fail_commit(state, path):
-        nonlocal saves
-        saves += 1
-        if saves == 2:
-            raise OSError("signal commit failed")
-        return original(state, path)
-
-    with env.context() as faults:
-        faults.setattr(pool_state, "save_state", fail_commit)
-        with pytest.raises(OSError, match="signal commit failed"):
-            signal.run_signal(dt.date(2026, 10, 1))
-    saved = pool_state.load_state(pool_config.STATE_PATH)
-    assert saved["signal_retry"] is True and saved["pending_plan"] is None
-
-    signal.run_signal(dt.date(2026, 10, 2))
-    recovered = pool_state.load_state(pool_config.STATE_PATH)
-    assert recovered["signal_retry"] is False
-    assert recovered["pending_plan"]["asof"] == "2026-10-01"
-    assert recovered["pending_plan"]["execute_day"] == "2026-10-02"
-
-
-@pytest.mark.parametrize("report_stage", ["save_report", "notify"])
-def test_report_failure_after_signal_commit_does_not_rebuild_plan(env, report_stage):
-    _patch_signal_data(env)
-    today = dt.date(2026, 10, 1)
-
-    def report_failure(*args, **kwargs):
-        raise OSError("report failed")
-
-    with env.context() as faults:
-        faults.setattr(qp, report_stage, report_failure)
-        with pytest.raises(OSError, match="report failed"):
-            qp.run_signal(today)
-    committed = pool_state.load_state(pool_config.STATE_PATH)
-    assert committed["last_signal_date"] == "2026-10-01"
-    assert committed["signal_retry"] is False
-    assert committed["pending_plan"]["selected"] == ["600001", "600002"]
-
-    def unexpected_fetch(*args, **kwargs):
-        pytest.fail("A report failure must not cause the committed signal to be rebuilt")
-
-    env.setattr(feeds, "fetch_universe", unexpected_fetch)
-    assert "不重复" in qp.run_signal(today)
-    assert pool_state.load_state(pool_config.STATE_PATH) == committed
+    signal.run_signal(date(2026, 10, 2), state=current,
+                      held_codes=set(), state_writer=persist)
+    assert not checkpoints[-1]["signal_retry"]
+    assert checkpoints[-1]["pending_plan"]["selected"] == ["600001", "600002"]
 
 
 def test_full_portfolio_reviews_only_holdings_and_skips_entry_data(env):
-    held = {str(600001 + i) for i in range(pool_config.TOP_N)}
+    held = {str(600001 + i) for i in range(config.TOP_N)}
     _patch_signal_data(env, universe=held | {"600099"})
     original = feeds.fetch_fundamentals
+    current = state.empty_state()
 
     def holdings_only(codes, asof, raw_closes=None):
         assert set(codes) == held
@@ -239,289 +105,12 @@ def test_full_portfolio_reviews_only_holdings_and_skips_entry_data(env):
 
     env.setattr(feeds, "fetch_fundamentals", holdings_only)
     env.setattr(feeds, "fetch_closes", lambda *a, **kw: pytest.fail("满仓不拉排名行情"))
-    report = signal.run_signal(dt.date(2026, 10, 2), held_codes=held)
-    saved = pool_state.load_state(pool_config.STATE_PATH)
-    assert set(saved["pending_plan"]["kept"]) == held
-    assert not report.acted and saved["exit_queue"] == {}
+    signal.run_signal(date(2026, 10, 2), state=current,
+                      held_codes=held, state_writer=lambda _: None)
+    assert set(current["pending_plan"]["kept"]) == held
+    assert current["exit_queue"] == {}
 
 
-def test_incompatible_state_is_rejected_without_overwriting_it(tmp_path):
-    import json
-
-    path = tmp_path / "quality_pool_state.json"
-    old = json.dumps({"version": 2, "exit_queue": {"600001": "out_of_pool"}})
-    path.write_text(old, encoding="utf-8")
-
+def test_state_rejects_incompatible_version():
     with pytest.raises(ValueError, match="策略状态文件版本不兼容"):
-        pool_state.load_state(path)
-    assert path.read_text(encoding="utf-8") == old
-
-
-# ── execute ──
-
-def test_execute_round_buys_and_records(env):
-    _patch_signal_data(env)
-    signal.run_signal(dt.date(2026, 10, 1))
-
-    _patch_execute_data(env, {"600001": 10.0, "600002": 20.0})
-    qp.run_execute(dt.date(2026, 10, 1))
-
-    from src.trade_ledger import load_trades
-    trades = load_trades(pool_config.POOL_LEDGER_PATH)
-    assert {t.code for t in trades} == {"600001", "600002"}
-    buys = {t.code: t.qty for t in trades if t.side == "buy"}
-    assert buys["600001"] == 16600
-    assert buys["600002"] == 8300
-    st = pool_state.load_state(pool_config.STATE_PATH)
-    assert st["pending_plan"] is None and st["exit_queue"] == {}
-
-
-def test_execute_retry_exit_queue_daily(env):
-    # 先建仓（台账落账）→ 落退出队列：停牌日受阻 → 复牌日卖出完成
-    _patch_signal_data(env)
-    signal.run_signal(dt.date(2026, 10, 1))
-    _patch_execute_data(env, {"600001": 10.0, "600002": 20.0})
-    qp.run_execute(dt.date(2026, 10, 1))
-
-    st = pool_state.load_state(pool_config.STATE_PATH)
-    st["exit_queue"] = {"600001": "out_of_pool"}
-    pool_state.save_state(st, pool_config.STATE_PATH)
-
-    # 停牌日：受阻 → 队列留存；复牌日：卖出完成 → 队列清空
-    _patch_execute_data(env, {"600001": 10.0}, suspended={"600001"})
-    qp.run_execute(dt.date(2026, 10, 5))
-    assert pool_state.load_state(pool_config.STATE_PATH)["exit_queue"] == \
-        {"600001": "out_of_pool"}
-
-    _patch_execute_data(env, {"600001": 10.0})
-    qp.run_execute(dt.date(2026, 10, 6))
-    assert pool_state.load_state(pool_config.STATE_PATH)["exit_queue"] == {}
-
-    from src.trade_ledger import load_trades
-    sells = [t for t in load_trades(pool_config.POOL_LEDGER_PATH)
-             if t.side == "sell" and t.code == "600001"]
-    assert len(sells) == 1 and sells[0].qty == 16600
-
-
-def test_execute_stale_plan_discarded(env):
-    _patch_signal_data(env)
-    signal.run_signal(dt.date(2026, 10, 1))
-    # 跳过 10-02，直接 10-05 执行：计划已陈旧应丢弃、零记账
-    _patch_execute_data(env, {})
-    report = qp.run_execute(dt.date(2026, 10, 5))
-    st = pool_state.load_state(pool_config.STATE_PATH)
-    assert st["pending_plan"] is None
-    from src.trade_ledger import load_trades
-    assert load_trades(pool_config.POOL_LEDGER_PATH) == []
-
-
-def _seed_positions(positions):
-    from src.trade_ledger import TradeRecord, append_trade
-    for code, qty, price in positions:
-        append_trade(TradeRecord(date="2026-10-01", code=code, name=code,
-                                 side="buy", qty=qty, price=price,
-                                 account=pool_config.ACCOUNT), pool_config.POOL_LEDGER_PATH)
-
-
-def _pending(selected, exits, queue=None):
-    pool_state.save_state({
-        "pending_plan": {'strategy_version': pool_config.STRATEGY_VERSION, 'execute_day': '2026-10-02',
-                         'asof': '2026-10-01', "signal_day": "2026-10-02", "selected": selected,
-                         "exit_reasons": exits,
-                         'industries': {c: c for c in set(selected) | set(exits)
-                                        | set(_ledger_snapshot().held_counts())}},
-        "exit_queue": queue or {},
-    }, pool_config.STATE_PATH)
-
-
-def _fail_sell(monkeypatch, code):
-    import src.trade_ledger.batch as batch
-    original = batch.append_trade
-
-    def append(record, path):
-        if record.side == "sell" and record.code == code:
-            raise OSError("simulated sell failure")
-        return original(record, path=path)
-
-    monkeypatch.setattr(batch, "append_trade", append)
-
-
-def _ledger_snapshot(day="2026-10-02"):
-    from src.trade_ledger import derive, load_trades
-    return derive(load_trades(pool_config.POOL_LEDGER_PATH), day)
-
-
-def test_failed_exit_keeps_actual_remainder_and_retries(env):
-    _seed_positions([("600001", 100, 10.0), ("600002", 100, 10.0)])
-    _pending([], {"600001": "out_of_pool", "600002": "rank_below_buffer"})
-    _patch_execute_data(env, {"600001": 10.0, "600002": 10.0})
-    with env.context() as faults:
-        _fail_sell(faults, "600001")
-        report = qp.run_execute(dt.date(2026, 10, 2))
-
-    st = pool_state.load_state(pool_config.STATE_PATH)
-    assert "simulated sell failure" in report
-    assert st["exit_queue"] == {"600001": "out_of_pool"}
-    assert st["pending_plan"] is None
-    assert "next_signal_date" not in st
-    assert _ledger_snapshot().held_counts() == {"600001": 100}
-    qp.run_execute(dt.date(2026, 10, 5))
-    assert pool_state.load_state(pool_config.STATE_PATH)["exit_queue"] == {}
-    assert _ledger_snapshot("2026-10-05").held_counts() == {}
-
-
-def test_failed_sale_cannot_fund_original_buy_quantity(env):
-    _seed_positions([("600001", 99000, 10.0)])  # 剩余现金 10000
-    _pending(["600002"], {"600001": "out_of_pool"})
-    _patch_execute_data(env, {"600001": 10.0, "600002": 10.0})
-    _fail_sell(env, "600001")
-    report = qp.run_execute(dt.date(2026, 10, 2))
-    snap = _ledger_snapshot()
-    assert snap.held_counts() == {"600001": 99000, "600002": 900}
-    assert snap.cash == 1000.0
-    assert "900股" in report
-    assert pool_state.load_state(pool_config.STATE_PATH)["exit_queue"] == {"600001": "out_of_pool"}
-
-
-def test_failed_exit_does_not_release_holding_slot(env):
-    codes = [f"{600001 + i}" for i in range(pool_config.TOP_N)]
-    _seed_positions([(c, 100, 1.0) for c in codes])
-    _pending(codes[1:] + ["600099"], {codes[0]: "out_of_pool"})
-    _patch_execute_data(env, {c: 1.0 for c in codes + ["600099"]})
-    _fail_sell(env, codes[0])
-    report = qp.run_execute(dt.date(2026, 10, 2))
-    snap = _ledger_snapshot()
-    assert set(snap.held_counts()) == set(codes)
-    assert snap.cash >= 0
-    assert "600099 受阻（entry）：slot" in report
-
-
-def test_failed_buy_is_consumed_and_not_retried_next_day(env):
-    import src.trade_ledger.batch as batch
-    _pending(["600001"], {})
-    _patch_execute_data(env, {"600001": 10.0})
-
-    def fail_buy(*args, **kwargs):
-        raise OSError("simulated buy failure")
-
-    with env.context() as faults:
-        faults.setattr(batch, "append_trade", fail_buy)
-        report = qp.run_execute(dt.date(2026, 10, 2))
-    assert "simulated buy failure" in report
-    assert pool_state.load_state(pool_config.STATE_PATH)["pending_plan"] is None
-    qp.run_execute(dt.date(2026, 10, 5))
-    assert _ledger_snapshot("2026-10-05").held_counts() == {}
-
-
-def test_new_selection_cancels_existing_exit(env):
-    _seed_positions([("600001", 5000, 10.0)])
-    _pending(["600001"], {}, queue={"600001": "out_of_pool"})
-    _patch_execute_data(env, {"600001": 10.0})
-    qp.run_execute(dt.date(2026, 10, 2))
-    assert _ledger_snapshot().held_counts() == {"600001": 5000}
-    assert pool_state.load_state(pool_config.STATE_PATH)["exit_queue"] == {}
-
-
-def test_safety_abort_preserves_exits_and_stops_buys(env):
-    _seed_positions([("600001", 1000, 10.0), ("600002", 1000, 10.0)])
-    _pending(["600003"], {"600001": "out_of_pool", "600002": "out_of_pool"})
-    _patch_execute_data(env, {c: 10.0 for c in ["600001", "600002", "600003"]})
-    original = qp.assembly.build_snapshot
-
-    def changed_after_snapshot(*args):
-        from src.trade_ledger import TradeRecord, append_trade
-        snap = original(*args)
-        append_trade(TradeRecord("2026-10-02", "600001", "600001", "sell",
-                                 100, 10.0, account=pool_config.ACCOUNT), pool_config.POOL_LEDGER_PATH)
-        return snap
-
-    env.setattr(qp.assembly, "build_snapshot", changed_after_snapshot)
-    report = qp.run_execute(dt.date(2026, 10, 2))
-    assert "批次安全校验未过" in report
-    assert _ledger_snapshot().held_counts() == {"600001": 900, "600002": 1000}
-    assert pool_state.load_state(pool_config.STATE_PATH)["exit_queue"] == {
-        "600001": "out_of_pool", "600002": "out_of_pool"}
-
-
-@pytest.mark.parametrize("fail_on", [1, 2])
-def test_state_save_failure_does_not_replay_buys(env, fail_on):
-    _seed_positions([("600001", 100, 10.0)])
-    _pending(["600002"], {"600001": "out_of_pool"})
-    _patch_execute_data(env, {"600001": 10.0, "600002": 10.0})
-    original = pool_state.save_state
-    calls = 0
-
-    def fail_save(st, path):
-        nonlocal calls
-        calls += 1
-        if calls == fail_on:
-            raise OSError("simulated state failure")
-        return original(st, path)
-
-    with env.context() as faults:
-        faults.setattr(pool_state, "save_state", fail_save)
-        with pytest.raises(OSError, match="simulated state failure"):
-            qp.run_execute(dt.date(2026, 10, 2))
-    st = pool_state.load_state(pool_config.STATE_PATH)
-    if fail_on == 1:
-        assert _ledger_snapshot().held_counts() == {"600001": 100}
-        assert st["pending_plan"] is not None
-    else:
-        assert st["pending_plan"] is None
-        assert st["exit_queue"] == {"600001": "out_of_pool"}
-        before = _ledger_snapshot().held_counts()
-        qp.run_execute(dt.date(2026, 10, 2))
-        assert _ledger_snapshot().held_counts() == before
-        assert pool_state.load_state(pool_config.STATE_PATH)["exit_queue"] == {}
-
-
-def test_dry_run_leaves_state_and_ledger_unchanged(env):
-    from pathlib import Path
-    _seed_positions([("600001", 100, 10.0)])
-    _pending(["600002"], {"600001": "out_of_pool"})
-    _patch_execute_data(env, {"600001": 10.0, "600002": 10.0})
-    state_before = Path(pool_config.STATE_PATH).read_bytes()
-    ledger_before = Path(pool_config.POOL_LEDGER_PATH).read_bytes()
-    assert "dry-run" in qp.run_execute(dt.date(2026, 10, 2), dry_run=True)
-    assert Path(pool_config.STATE_PATH).read_bytes() == state_before
-    assert Path(pool_config.POOL_LEDGER_PATH).read_bytes() == ledger_before
-
-
-def test_interrupted_selling_recovers_exits_without_replaying_round(env):
-    import src.trade_ledger.batch as batch
-    _seed_positions([("600001", 100, 10.0), ("600002", 100, 10.0)])
-    _pending(["600003"], {"600001": "out_of_pool", "600002": "out_of_pool"})
-    _patch_execute_data(env, {c: 10.0 for c in ["600001", "600002", "600003"]})
-    original = batch.append_trade
-
-    def interrupt(record, path):
-        if record.code == "600002":
-            raise RuntimeError("simulated interruption")
-        return original(record, path=path)
-
-    with env.context() as faults:
-        faults.setattr(batch, "append_trade", interrupt)
-        with pytest.raises(RuntimeError, match="simulated interruption"):
-            qp.run_execute(dt.date(2026, 10, 2))
-    assert _ledger_snapshot().held_counts() == {"600002": 100}
-    st = pool_state.load_state(pool_config.STATE_PATH)
-    assert st["pending_plan"] is None
-    assert set(st["exit_queue"]) == {"600001", "600002"}
-    qp.run_execute(dt.date(2026, 10, 2))
-    assert _ledger_snapshot().held_counts() == {}
-    assert pool_state.load_state(pool_config.STATE_PATH)["exit_queue"] == {}
-
-
-def test_atomic_state_replace_failure_preserves_old_file(env):
-    from pathlib import Path
-    _pending(["600001"], {})
-    before = Path(pool_config.STATE_PATH).read_bytes()
-
-    def fail_replace(*args):
-        raise OSError("simulated replace failure")
-
-    env.setattr(pool_state.os, "replace", fail_replace)
-    with pytest.raises(OSError, match="simulated replace failure"):
-        pool_state.save_state({"exit_queue": {"600001": "out_of_pool"}}, pool_config.STATE_PATH)
-    assert Path(pool_config.STATE_PATH).read_bytes() == before
-    assert not list(Path(pool_config.STATE_PATH).parent.glob("*.tmp"))
+        state.restore({"version": 2, "exit_queue": {"600001": "out_of_pool"}})

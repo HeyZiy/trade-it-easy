@@ -1,16 +1,5 @@
 # -*- coding: utf-8 -*-
-"""执行计划 — 纯判定核（规则见 strategy/quality_pool.md：持有资格、补位与成交）。
-
-输入是执行时点快照（价格/涨跌停/状态/台账持仓），输出成台的交易意图与
-受阻事件；记账交给 trade_ledger.execute_batch（通用批次安全校验单点）。
-本模块零 I/O：真实下单不存在，成交价 = 执行时实时价（按判定价模拟记账）。
-
-资金口径两层关系（勿混）：affordable_shares 是计划侧费用感知预检
-（佣金+滑点，从严），execute_batch 安全校验 2 是记账侧费用盲检
-（买入 ≤ 现金+卖出回款）——计划量必然通过记账校验，严口径在前。
-
-先退出，再按实际剩余的持仓名额和行业额度补新仓；留存仓的份额不调整。
-"""
+"""根据实时价格、持仓及交易限制生成退出和补位意图。"""
 
 from __future__ import annotations
 
@@ -22,9 +11,6 @@ from src.quality_pool.config import (
     LIMIT_PAD, MIN_COMMISSION, FEE_COMMISSION, SLIPPAGE_SPREAD, TOP_N,
 )
 from src.quality_pool.screener import industry_buy_block_reason
-
-SELL_TAX_NOTE = ""  # 台账不记费用；滑点/佣金只用于资金可行性检查
-
 
 @dataclass
 class ExecSnapshot:

@@ -1,81 +1,25 @@
-# -*- coding: utf-8 -*-
-"""
-===================================
-质量池单次运行闭环 — 信号、快照、模拟记账与跨日状态
-===================================
-
-根入口（编排）与判定核（execution / screener）之间的合并点：
-
-- build_snapshot：台账派生 + 实时行情 + 当日状态。台账一次派生，当天
-  证券信息和行情快照组合后供停牌/ST/涨跌停三个消费共享；停牌以沪深
-  交易阶段为准，ST 使用当天风险警示标志，不用名称子串推断；状态缺行按
-  suspended=True / st=True 处置——确认不了可交易就不动（fail-closed）。
-  总权益直接取台账快照 total_assets（现金 + 持仓按现价市值），不在本层
-  重算；数据不完整时整轮暂停。
-- run_execution：名单消费、冻结预算、先卖后买与退出队列核对集中于此。
-  卖单记账后以实际现金与持仓收敛原买单；退出队列只认台账剩余持仓。
-  记账前保存完整退出意图与名单消费，记账后保存核对结果，中断后只重试
-  退出；下一交易日使用新信号。报告落盘与推送由入口负责。
-
-本模块零网络：数据一律经 feeds seam 进入；测试在 feeds 层放假数据
-打真实装配逻辑。路径经 config 运行时读取，测试可单点替换。
-"""
+"""实际账户持仓、预算与实时行情组成的执行检查快照。"""
 
 import logging
-import pandas as pd
-from dataclasses import replace
 from datetime import date
-from typing import List
 
-from src.quality_pool import config, execution, feeds, signal, state as pool_state
-from src.quality_pool.signal import SignalReport
-from src.trade_ledger.batch import BatchOrder, BatchResult, execute_batch
-from src.trade_ledger.ledger import derive, load_trades
-from src.trade_ledger.performance import execution_summary
+import pandas as pd
+
 import src.trading_calendar as trading_calendar
 from data_provider.security_names import names_for
+from src.quality_pool import execution, feeds
 
 logger = logging.getLogger(__name__)
 
 
-def run_day(today: date, dry_run: bool = False) -> SignalReport:
-    """09:30启动后顺序完成信号与执行；共享本轮状态，只读预览也不丢新名单。
-
-    acted＝信号行动轮或当日有成交；无交易意图、异常或成交时为 False，入口据此免发日报。
-    """
-    st = pool_state.load_state(config.STATE_PATH)
-    signal_report = signal.run_signal(today, dry_run=dry_run, state=st)
-    before = len(load_trades(config.POOL_LEDGER_PATH))
-    execution_report = run_execution(today.isoformat(), dry_run=dry_run, state=st)
-    acted = (getattr(signal_report, "acted", True)
-             or len(load_trades(config.POOL_LEDGER_PATH)) > before)
-    return SignalReport(f"# 质量动量模拟（{today.isoformat()}）\n\n"
-                        + signal_report.replace("# ", "## ", 1) + "\n\n"
-                        + execution_report.replace("# ", "## ", 1), acted)
-
-
-def build_snapshot(exec_date: str, selected: List[str], *, account_facts=None) -> execution.ExecSnapshot:
-    """计算完成后的执行时点快照：台账派生 + 实时价 + 当天证券信息/行情交易阶段。
-
-    状态表缺行 → 该码按停牌/ST 处置（fail-closed，缺数据的品种不参与成交判定）。
-    """
-    trades = load_trades(config.POOL_LEDGER_PATH) if account_facts is None else []
-    # 只对实际持仓与本轮候选取价；台账里已清仓的历史代码不再消耗行情/状态调用。
-    open_codes = ({p["code"] for p in derive(trades, as_of=exec_date).positions}
-                  if account_facts is None else
-                  {p["code"] for p in account_facts["positions"]})
-    codes = sorted(open_codes | set(selected))
+def build_snapshot(exec_date: str, selected: list[str], *, account_facts) -> execution.ExecSnapshot:
+    """按实际持仓和候选取价，交易状态缺失时暂停对应建议。"""
+    positions = account_facts["positions"]
+    counts = {p["code"]: p["count"] for p in positions}
+    avail = {p["code"]: p["avail_count"] for p in positions}
+    cash, equity = account_facts["cash"], account_facts["budget"]
+    codes = sorted(counts.keys() | set(selected))
     prices = feeds.fetch_realtime_prices(codes)
-
-    if account_facts is None:
-        snap0 = derive(trades, as_of=exec_date, prices=prices)
-        counts = snap0.held_counts()
-        avail = {p["code"]: int(p["avail_count"]) for p in snap0.positions}
-        cash, equity = snap0.cash, snap0.total_assets
-    else:
-        counts = {p["code"]: p["count"] for p in account_facts["positions"]}
-        avail = {p["code"]: p["avail_count"] for p in account_facts["positions"]}
-        cash, equity = account_facts["cash"], account_facts["budget"]
 
     prev_day = trading_calendar.previous_trading_day(date.fromisoformat(exec_date))
     prev_close = feeds.raw_closes_at(codes, prev_day.isoformat())
@@ -102,103 +46,3 @@ def build_snapshot(exec_date: str, selected: List[str], *, account_facts=None) -
         trade_date=exec_date, counts=counts, avail=avail, cash=cash,
         equity=equity, prices=prices, names=names_for(codes),
         suspended=suspended, st=st, limits=limits, unavailable=unavailable)
-
-
-def _record_trades(trades: List[execution.TradeIntent], exec_date: str) -> BatchResult:
-    """映射原指令，事实供料与校验由批次 module 负责。"""
-    if not trades:
-        return BatchResult(abort=None)
-    orders = [BatchOrder(code=t.code, name=t.name, side=t.side, qty=t.qty,
-                         price=t.price, reason=t.reason)
-              for t in trades]
-    return execute_batch(orders, account=config.ACCOUNT, trade_date=exec_date,
-                         path=config.POOL_LEDGER_PATH)
-
-
-def _result_lines(result: BatchResult) -> List[str]:
-    if result.abort:
-        return [f"❌ 批次安全校验未过，本阶段零记账：{result.abort}"]
-    return [oc.outcome_line for oc in result.outcomes]
-
-
-def _settle_trades(plan: execution.ExecPlan, exec_date: str, industries=None) -> List[str]:
-    """先记账卖单，按实际现金与名额缩减原买单，禁止使用预计回款。"""
-    sells = [t for t in plan.trades if t.side == "sell"]
-    result = _record_trades(sells, exec_date)
-    lines = _result_lines(result)
-    if result.abort:
-        return lines
-
-    snap = derive(load_trades(config.POOL_LEDGER_PATH), as_of=exec_date)
-    cash = snap.cash
-    reserved = set(snap.held_counts())
-    buys = []
-    for t in plan.trades:
-        if t.side != "buy":
-            continue
-        if t.code in reserved:
-            continue
-        if len(reserved) >= config.TOP_N:
-            lines.append(f"- ⛔ BUY {t.code} 受阻（{t.reason}）：slot")
-            continue
-        blocked = execution.industry_buy_block(t.code, reserved, industries)
-        if blocked:
-            lines.append(f'- ⛔ BUY {t.code} 受阻（{t.reason}）：{blocked}')
-            continue
-        qty = min(t.qty, execution.affordable_shares(cash, t.price))
-        if qty < 100:
-            lines.append(f"- ⛔ BUY {t.code} 受阻（{t.reason}）：cash/lot")
-            continue
-        buys.append(replace(t, qty=qty))
-        cash -= qty * t.price
-        reserved.add(t.code)
-    lines += _result_lines(_record_trades(buys, exec_date))
-    return lines
-
-
-def run_execution(exec_date: str, dry_run: bool = False, *, state: dict | None = None) -> str:
-    """消费有效名单，执行并按台账核对退出；state 可承接同轮信号的内存状态。"""
-    before = load_trades(config.POOL_LEDGER_PATH)
-    st = pool_state.load_state(config.STATE_PATH) if state is None else state
-    raw_plan = pool_state.pop_plan(st)
-    sig_plan = signal.SignalPlan.from_stored(raw_plan, exec_date)
-
-    entries = sig_plan.entries if sig_plan is not None else []
-    exits = (sig_plan.merge_exit_queue(st.get("exit_queue", {}))
-             if sig_plan is not None else dict(st.get("exit_queue", {})))
-    if not exits and not entries:
-        if raw_plan is not None and not dry_run:
-            st["exit_queue"] = exits
-            pool_state.save_state(st, config.STATE_PATH)
-        return f"# 质量动量执行（{exec_date}）\n- 无交易计划"
-    snapshot = build_snapshot(exec_date, entries)
-    per = snapshot.equity / config.TOP_N if sig_plan is not None else None
-    plan = (execution.plan_round(entries, exits, per, snapshot,
-                                 deferred=sig_plan.deferred,
-                                 industries=sig_plan.industries)
-            if sig_plan is not None else execution.plan_exit_retry(exits, snapshot))
-
-    lines = [f"# 质量动量执行（{exec_date}）"]
-    lines.append(f"- 总权益 {snapshot.equity:,.0f}，单只新仓预算 {per:,.0f}"
-                 if per is not None else "- 无有效买入计划：仅重试退出队列")
-    if dry_run:
-        for t in plan.trades:
-            lines.append(f"- （dry-run）{t.side.upper()} {t.name}({t.code}) "
-                         f"{t.qty}股 @ {t.price}（{t.reason}）")
-    else:
-        # 先消费名单并存完整退出意图；失败则零记账，重启也不重复整轮买入。
-        held = derive(load_trades(config.POOL_LEDGER_PATH), as_of=exec_date).held_counts()
-        st["exit_queue"] = {c: r for c, r in exits.items() if held.get(c, 0) > 0}
-        pool_state.save_state(st, config.STATE_PATH)
-        lines += _settle_trades(plan, exec_date,
-                               industries=(sig_plan.industries
-                                           if sig_plan is not None else None)) or ["- 无成台交易"]
-        held = derive(load_trades(config.POOL_LEDGER_PATH), as_of=exec_date).held_counts()
-        st["exit_queue"] = {c: r for c, r in exits.items() if held.get(c, 0) > 0}
-        pool_state.save_state(st, config.STATE_PATH)
-    for b in plan.blocked:
-        lines.append(f"- ⛔ {b.action.upper()} {b.code} 受阻（{b.reason}）：{b.blocked_by}")
-    lines.insert(1, "\n" + execution_summary(
-        before, load_trades(config.POOL_LEDGER_PATH), dry_run=dry_run,
-        planned=len(plan.trades) + len(plan.blocked), blocked=len(plan.blocked)) + "\n")
-    return "\n".join(lines)

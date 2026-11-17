@@ -1,131 +1,26 @@
-# -*- coding: utf-8 -*-
-"""质量池装配层测试 — 执行时快照合并点（真实 assembly，feeds 层假数据）。
-
-钉死三条口径：
-- ST/停牌以状态表官方标志为准（名称子串不参与判定）；
-- 状态表缺行按停牌/ST 处置（fail-closed）；
-- 状态表单次拉取，停牌/ST/涨跌停三消费共享；
-- equity = 台账快照 total_assets（与手算 现金+Σ持仓×现价 恒等）。
-"""
-
-import datetime as dt
+"""执行检查只读取实际账户持仓及当日候选。"""
 
 import pandas as pd
-import pytest
 
-import src.trading_calendar as tc
-from src.quality_pool import assembly
-from src.quality_pool import config as pool_config
-from src.quality_pool import state as pool_state
-from src.trade_ledger.batch import BatchOrder, execute_batch
-from src.trade_ledger.ledger import load_trades
+from src.quality_pool import assembly, feeds
+from test_quality_pool_state import env, _patch_execute_data
 
 
-@pytest.fixture
-def env(tmp_path, monkeypatch):
-    """隔离台账文件 + 固定日历（2026-09 起连续工作日）+ 单次状态表计数器。"""
-    monkeypatch.setattr(pool_config, "POOL_LEDGER_PATH",
-                        str(tmp_path / "pool_ledger.jsonl"))
-    monkeypatch.setattr(pool_config, "STATE_PATH", str(tmp_path / "state.json"))
-    cal = [dt.date(2026, 9, 1) + dt.timedelta(days=i) for i in range(150)]
-    cal = [d for d in cal if d.weekday() < 5]
-    monkeypatch.setattr(tc, "latest_trading_day_on_or_before",
-                        lambda d, **kw: max((x for x in cal if x <= d), default=None))
-    calls = {"fetch_execution_status": 0}
+def test_snapshot_uses_account_cash_budget_and_only_current_codes(env):
+    px = {"600001": 10., "600002": 20., "600099": 99.}
+    _patch_execute_data(env, px, suspended={"600001"})
+    requested = []
 
-    def _count_status(codes, date):
-        calls["fetch_execution_status"] += 1
-        return pd.DataFrame(
-            {"is_st": [c == "600002" for c in codes],
-             "is_suspended": [False] * len(codes),
-             "high_limit": [12.0 * 1.1 for _ in codes],
-             "low_limit": [12.0 * 0.9 for _ in codes]},
-            index=pd.Index(list(codes), name="code"))
+    def prices(codes):
+        requested.extend(codes)
+        return {c: px[c] for c in codes}
 
-    import src.quality_pool.feeds as feeds
-    monkeypatch.setattr(feeds, "fetch_execution_status", _count_status)
-    monkeypatch.setattr(feeds, "fetch_realtime_prices", lambda cs: {c: 12.0 for c in cs})
-    monkeypatch.setattr(assembly, "names_for", lambda cs: {c: f"股{c}" for c in cs})
-    monkeypatch.setattr(feeds, "raw_closes_at",
-                        lambda cs, asof: {c: 12.0 for c in cs})
-    monkeypatch.calls = calls
-    return monkeypatch
+    env.setattr(feeds, "fetch_realtime_prices", prices)
+    facts = {"positions": [{"code": "600001", "count": 500, "avail_count": 300}],
+             "cash": 1000., "budget": 20000.}
+    snap = assembly.build_snapshot("2026-10-02", ["600002"], account_facts=facts)
 
-
-def _seed_holding(trade_date="2026-10-01", qty=5000, price=10.0):
-    execute_batch([BatchOrder(code="600001", name="股600001", side="buy",
-                              qty=qty, price=price, reason="entry")],
-                  account=pool_config.ACCOUNT, trade_date=trade_date,
-                  path=pool_config.POOL_LEDGER_PATH)
-
-
-def test_snapshot_merges_ledger_quotes_status_once(env):
-    """合并点全链：台账派生 + 实时价 + 状态表单次三消费。"""
-    _seed_holding()
-    snap = assembly.build_snapshot("2026-10-02", ["600002"])
-
-    assert snap.counts == {"600001": 5000}
-    assert snap.avail == {"600001": 5000}          # T+1 已结算
-    assert snap.cash == 950_000.0
-    assert snap.prices == {"600001": 12.0, "600002": 12.0}
-    # equity = total_assets ≡ 现金 + Σ持仓×现价（台账口径单点，不重算）
-    hand = snap.cash + sum(snap.counts[c] * snap.prices.get(c, 0.0)
-                           for c in snap.counts)
-    assert snap.equity == hand == 1_010_000.0
-    # ST 以状态表为准：600002 无 "ST" 字样但官方标志为真
-    assert snap.st == {"600001": False, "600002": True}
-    assert not any(snap.suspended.values())
-    assert snap.limits["600001"] == (12.0 * 1.1, 12.0 * 0.9)
-    # 状态表只拉一次（停牌/ST/涨跌停共享）
-    assert env.calls["fetch_execution_status"] == 1
-
-
-def test_snapshot_missing_status_row_fail_closed(env):
-    """状态表缺行 → 按停牌/ST 处置，不当作可交易。"""
-    import src.quality_pool.feeds as feeds
-    env.setattr(feeds, "fetch_execution_status",
-                lambda codes, date: pd.DataFrame(
-                    {"is_st": [False], "is_suspended": [False],
-                     "high_limit": [13.2], "low_limit": [10.8]},
-                    index=pd.Index(["600001"], name="code")))
-    snap = assembly.build_snapshot("2026-10-02", ["600001", "600002"])
-    assert snap.suspended["600002"] is True
-    assert snap.st["600002"] is True
-    assert snap.st["600001"] is False  # 在表中的码不受缺行影响
-
-
-def test_snapshot_quotes_open_positions_only(env):
-    """台账里已清仓的历史代码不再进入行情/状态取数。"""
-    import src.quality_pool.feeds as feeds
-    _seed_holding()
-    execute_batch([BatchOrder(code="600001", name="股600001", side="sell",
-                              qty=5000, price=10.5, reason="out_of_pool")],
-                  account=pool_config.ACCOUNT, trade_date="2026-10-02",
-                  path=pool_config.POOL_LEDGER_PATH)
-    asked = {}
-
-    def _quotes(codes):
-        asked["codes"] = list(codes)
-        return {c: 12.0 for c in codes}
-
-    env.setattr(feeds, "fetch_realtime_prices", _quotes)
-    snap = assembly.build_snapshot("2026-10-03", ["600002"])
-    assert asked["codes"] == ["600002"]
-    assert snap.counts == {}
-    assert snap.st == {"600002": True}  # 该码在状态表里被标为 ST
-
-
-def test_execution_records_exit_and_updates_state(env):
-    """通过执行 interface 验证真实记账与跨日队列，不测试内部映射。"""
-    assembly.run_execution("2026-10-02")
-    assert load_trades(pool_config.POOL_LEDGER_PATH) == []
-
-    _seed_holding()
-    pool_state.save_state({"exit_queue": {"600001": "out_of_pool"}},
-                          pool_config.STATE_PATH)
-    report = assembly.run_execution("2026-10-02")
-    assert "600001" in report and "已记账" in report
-    trades = load_trades(pool_config.POOL_LEDGER_PATH)
-    assert [t.side for t in trades] == ["buy", "sell"]
-    assert trades[-1].qty == 5000 and trades[-1].price == 12.0
-    assert pool_state.load_state(pool_config.STATE_PATH)["exit_queue"] == {}
+    assert requested == ["600001", "600002"]
+    assert snap.counts == {"600001": 500} and snap.avail == {"600001": 300}
+    assert snap.cash == 1000. and snap.equity == 20000.
+    assert snap.suspended["600001"] and not snap.suspended["600002"]

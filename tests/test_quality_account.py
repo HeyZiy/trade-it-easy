@@ -38,13 +38,13 @@ def event(path, side, **fields):
                                           date=DAY.isoformat(), strategy="quality", side=side) | fields)
 
 
-def test_plan_uses_ten_percent_budget_and_never_imports_simulated_positions(account, env):
+def test_plan_uses_ten_percent_budget_and_ignores_old_simulated_positions(account):
     from dashboard import dashboard_data
 
-    env.setattr(config, "POOL_LEDGER_PATH", str(account.with_name("trade_ledger_quality_pool.jsonl")))
-    append_trade(TradeRecord("2026-10-01", "600003", "模拟旧仓", "buy", 100, 10, account=config.ACCOUNT),
-                 config.POOL_LEDGER_PATH)
-    simulated = Path(config.POOL_LEDGER_PATH).read_bytes()
+    old_ledger = account.with_name("trade_ledger_quality_pool.jsonl")
+    append_trade(TradeRecord("2026-10-01", "600003", "模拟旧仓", "buy", 100, 10, account="quality_pool"),
+                 old_ledger)
+    simulated = old_ledger.read_bytes()
     initial = wallet.account_data(account)
     wallet.publish_quality(DAY.isoformat(), path=account)
     row = quality(account)
@@ -53,10 +53,9 @@ def test_plan_uses_ten_percent_budget_and_never_imports_simulated_positions(acco
     assert not row["positions"] and not row["trades"]
     after = wallet.account_data(account)
     assert (after["equity"], after["cash"], after["history"]) == (initial["equity"], initial["cash"], initial["history"])
-    assert Path(config.POOL_LEDGER_PATH).read_bytes() == simulated
-    assert not Path(config.STATE_PATH).exists()
+    assert old_ledger.read_bytes() == simulated
     displayed = next(s for s in dashboard_data(account.parent.parent)["strategies"] if s["id"] == "quality")
-    assert displayed["account_id"] == "etf" and displayed["observation"]["positions"][0]["code"] == "600003"
+    assert displayed["account_id"] == "etf" and not displayed["positions"] and "observation" not in displayed
 
 
 def test_partial_fill_consumes_only_remaining_plan_and_keeps_realized_pnl(account):
@@ -90,12 +89,11 @@ def test_actual_old_position_drives_exit_and_next_day_rechecks_entries(account, 
     assert wallet.load(account)["quality_state"]["last_signal_date"] == "2026-10-06"
 
 
-def test_dry_run_does_not_write_account_or_simulation(account):
+def test_dry_run_does_not_write_account(account):
     before = account.read_bytes()
     report = wallet.publish_quality(DAY.isoformat(), path=account, dry_run=True)
     assert "买入" in report
     assert account.read_bytes() == before
-    assert not Path(config.STATE_PATH).exists() and not Path(config.POOL_LEDGER_PATH).exists()
 
 
 def test_old_same_day_advice_is_hidden_and_rebuilt(account):
@@ -177,14 +175,14 @@ def test_same_day_cash_assignment_activates_budget_plan_without_new_round(accoun
     assert {o["code"]: o["qty"] for o in quality(account)["suggestions"]} == {"600001": 200, "600002": 100}
 
 
-def test_entry_runs_simulation_and_actual_plan_but_only_manual_trades_enter_account(account, env):
+def test_entry_publishes_account_advice_and_reports_candidates(account, env):
     import quality_pool as entry
 
     env.setattr(wallet, "ACCOUNT_PATH", account)
     report = entry.run(DAY)
-    assert "投资账户 · 质量动量计划" in report and "买入" in report
+    assert "持有资格与候选" in report and "投资账户建议" in report and "买入" in report
     assert not quality(account)["positions"] and not wallet.load(account)["events"]
-    assert Path(config.POOL_LEDGER_PATH).exists() and Path(config.STATE_PATH).exists()
+    assert not account.with_name("trade_ledger_quality_pool.jsonl").exists()
     assert wallet.load(account)["quality_state"]["pending_plan"] is None
 
 

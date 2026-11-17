@@ -9,54 +9,8 @@ import urllib.request
 import pytest
 
 import dashboard
-from dashboard import account_data, dashboard_data
+from dashboard import dashboard_data
 from src.trade_ledger.ledger import TradeRecord, append_trade
-from src.trade_ledger.performance import _fingerprint
-
-
-def test_account_shows_ledger_and_only_valid_performance(tmp_path):
-    data = tmp_path / "data"
-    data.mkdir()
-    path = data / "trade_ledger.jsonl"
-    trade = TradeRecord(date="2025-01-02", code="510300", name="ETF", side="buy",
-                        qty=100, price=3.0)
-    append_trade(trade, path)
-    rows = [{"date": "2025-01-02", "nav": 1.1, "fingerprint": _fingerprint([trade], "2025-01-02"), "issues": []},
-            {"date": "2025-01-03", "nav": None, "fingerprint": "bad", "issues": ["缺价格"]}]
-    path.with_suffix(".performance.json").write_text(json.dumps({"records": rows}), encoding="utf-8")
-    result = account_data(tmp_path, path.name)
-    assert result["positions"][0]["count"] == 100
-    assert result["cash"] == 999700
-    assert result["performance"]["date"] == "2025-01-02"
-    assert "缺价格" in result["warnings"]
-
-
-def test_curve_keeps_missing_days_as_gaps_and_excludes_future_records(tmp_path):
-    path = tmp_path / "data" / "trade_ledger_etf_rotation.jsonl"
-    trade = TradeRecord("2025-01-02", "510300", "ETF", "buy", 100, 3.0)
-    append_trade(trade, path)
-    rows = [
-        {"date": "2025-01-02", "nav": 1.01, "benchmark_nav": 1.005,
-         "fingerprint": _fingerprint([trade], "2025-01-02"), "issues": []},
-        {"date": "2025-01-03", "nav": 1.2, "benchmark_nav": 1.1,
-         "fingerprint": "old-ledger", "issues": []},
-        {"date": "2025-01-06", "nav": 1.02, "benchmark_nav": None,
-         "fingerprint": _fingerprint([trade], "2025-01-06"), "issues": []},
-        {"date": "2099-01-01", "nav": 2, "fingerprint": "future", "issues": []},
-    ]
-    state = {"start_date": "2025-01-02", "baseline_date": "2024-12-31",
-             "benchmark": {"name": "测试基准"}, "records": rows}
-    path.with_suffix(".performance.json").write_text(json.dumps(state), encoding="utf-8")
-    account = account_data(tmp_path, path.name)
-    assert account["history"] == [
-        {"date": "2024-12-31", "nav": 1.0, "benchmark_nav": 1.0},
-        {"date": "2025-01-02", "nav": 1.01, "benchmark_nav": 1.005},
-        {"date": "2025-01-03", "nav": None, "benchmark_nav": None},
-        {"date": "2025-01-06", "nav": 1.02, "benchmark_nav": None},
-    ]
-    assert account["benchmark_name"] == "测试基准"
-    strategies = {s["id"]: s for s in dashboard_data(tmp_path)["strategies"]}
-    assert strategies["rotation"]["observation"]["history"] == account["history"]
 
 
 def test_report_retains_readable_formatting_without_active_html(tmp_path):
@@ -87,20 +41,11 @@ def test_missing_and_corrupt_accounts_are_isolated(tmp_path):
     assert overview["reports"] == []
 
 
-def test_display_table_covers_registry_accounts():
-    """注册表与展示表强制对齐：新账户漏补 DISPLAY 展示元数据时在此失败。"""
-    from src.account_sources import all_sources
-
-    registered = {Path(sa.ledger_path).name for sa in all_sources()}
-    listed = {filename for filename, _, _ in dashboard.DISPLAY}
-    assert registered == listed
-
-
 def basic(user, password):
     return "Basic " + base64.b64encode(f"{user}:{password}".encode()).decode()
 
 
-def test_core_and_rotation_use_independent_ledgers(tmp_path):
+def test_old_simulation_files_stay_out_of_the_dashboard(tmp_path):
     from src.etf_account import initialize
     data = tmp_path / "data"
     initialize(data / "etf_account.json", asof="2025-01-02", cash=1000,
@@ -110,14 +55,11 @@ def test_core_and_rotation_use_independent_ledgers(tmp_path):
                  data / "trade_ledger_etf_rotation.jsonl")
     overview = dashboard_data(tmp_path)
     strategies = {s["id"]: s for s in overview["strategies"]}
-    rot_obs = strategies["rotation"]["observation"]
     assert [p["code"] for p in strategies["core"]["positions"]] == ["510300"]
-    assert [p["code"] for p in rot_obs["positions"]] == ["512500"]
+    assert not strategies["rotation"]["positions"] and "observation" not in strategies["rotation"]
     assert strategies["core"]["trades"] == []
-    assert [t["code"] for t in rot_obs["trades"]] == ["512500"]
     assert overview["accounts"][0]["cash"] == 1000
     assert strategies["core"]["account_id"] == "etf"
-    assert not rot_obs["shared"]
 
 
 
@@ -135,7 +77,6 @@ def test_strategy_positions_carry_t1_close(tmp_path, monkeypatch):
     overview = dashboard_data(tmp_path)
     strategies = {s["id"]: s for s in overview["strategies"]}
     assert strategies["core"]["positions"][0]["close"] == 3.3
-    assert strategies["rotation"]["observation"]["positions"][0]["close"] is None
 
 
 
@@ -213,7 +154,7 @@ def test_serve_identity_replaces_password_for_reads_and_writes(monkeypatch):
 def test_report_api_requires_auth_and_returns_inline_content(tmp_path, monkeypatch):
     reports = tmp_path / "reports"
     reports.mkdir()
-    name = "quality_pool_20250102.md"
+    name = "quality_pool_advice_20250102.md"
     (reports / name).write_text("## 本次执行\n\n无调仓指令。", encoding="utf-8")
     monkeypatch.setattr(dashboard, "ROOT", tmp_path)
     monkeypatch.setenv("TRADE_DASHBOARD_PASSWORD", "secret")

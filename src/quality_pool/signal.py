@@ -13,7 +13,6 @@ import pandas as pd
 import src.trading_calendar as trading_calendar
 from data_provider.security_names import names_for
 from src.quality_pool import config, feeds, screener, state as pool_state
-from src.trade_ledger.ledger import derive, load_trades
 
 logger = logging.getLogger(__name__)
 
@@ -28,23 +27,19 @@ class SignalPlan:
     signal_day: str
     execute_day: str
     asof: str
-    selected: List[str]
-    deferred: List[str]
+    selected: Listate[str]
+    deferred: Listate[str]
     industries: Dict[str, str]
-    kept: List[str]
+    kept: Listate[str]
     exit_reasons: Dict[str, str]
 
     @property
-    def entries(self) -> list[str]:
+    def entries(self) -> listate[str]:
         kept = set(self.kept)
         return [code for code in self.selected if code not in kept]
 
     def merge_exit_queue(self, queue: dict) -> dict:
-        """退出队列叠加本轮退出意图；本轮入选的新股撤销排队退出。
-
-        各调用方按自身语义过滤非持仓项（模拟盘在记账后按台账过滤，
-        实际账户在读时按当前持仓过滤）。
-        """
+        """叠加本轮退出意图，撤销已恢复持有资格的退出。"""
         exits = dict(queue)
         exits.update(self.exit_reasons)
         return {c: r for c, r in exits.items() if c not in self.selected}
@@ -77,16 +72,6 @@ class SignalPlan:
                    exit_reasons=dict(raw.get("exit_reasons", {})))
 
 
-class SignalReport(str):
-    """有交易意图或运行异常时，acted 为真。"""
-    acted: bool
-
-    def __new__(cls, text: str, acted: bool):
-        self = super().__new__(cls, text)
-        self.acted = acted
-        return self
-
-
 def _fundamentals(codes: set[str], asof: str) -> pd.DataFrame:
     if not codes:
         return pd.DataFrame()
@@ -96,23 +81,20 @@ def _fundamentals(codes: set[str], asof: str) -> pd.DataFrame:
 
 
 def run_signal(today: date, dry_run: bool = False,
-               *, state: dict | None = None, held_codes=None, state_writer=None) -> SignalReport:
+               *, state: dict, held_codes: set[str], state_writer) -> str:
     """同日成功名单不因手动重试重建；失败在原日或下一交易日重算。"""
     day = today.isoformat()
-    st = pool_state.load_state(config.STATE_PATH) if state is None else state
-    write_state = state_writer or (lambda value: pool_state.save_state(value, config.STATE_PATH))
-    if st.get('last_signal_date') == day and not st.get('signal_retry'):
-        return SignalReport(f'# 质量动量信号（{day}）\n\n- 今日名单已生成，不重复本轮。\n', False)
+    if state.get('last_signal_date') == day and not state.get('signal_retry'):
+        return '- 今日名单已生成，不重复本轮。'
 
     asof = trading_calendar.previous_trading_day(today).isoformat()
-    lines = [f"# 质量动量信号（{day}）", f"- 财务/估值/波动/强弱截至 T−1：{asof}"]
-    st['signal_retry'] = True
-    pool_state.put_plan(st, None)
+    lines = [f"- 财务/估值/波动/强弱截至 T−1：{asof}"]
+    state['signal_retry'] = True
+    pool_state.put_plan(state, None)
     if not dry_run:
-        write_state(st)
+        state_writer(state)
     try:
-        held = (set(held_codes) if held_codes is not None else
-                set(derive(load_trades(config.POOL_LEDGER_PATH), as_of=day).held_counts()))
+        held = set(held_codes)
         universe = feeds.fetch_universe(asof)
         status = feeds.fetch_signal_status(sorted(universe | held), asof, day)
         if status.empty:
@@ -123,11 +105,11 @@ def run_signal(today: date, dry_run: bool = False,
                                          status, audit=audit))
     except Exception as exc:
         logger.exception("持仓资格检查失败")
-        return SignalReport("\n".join(lines + [f"- ⚠️ 数据异常，暂停生成新名单：{exc}"]), True)
+        return "\n".join(lines + ["- 数据异常，暂停生成新名单。"])
 
     unknown = {c for c in held if audit[c]['pool_state'] == 'unknown'}
     exits = {c: config.EXIT_OUT_OF_POOL for c in held if audit[c]['pool_state'] == 'failed'}
-    exits.update({c: reason for c, reason in st['exit_queue'].items() if c in unknown})
+    exits.update({c: reason for c, reason in state['exit_queue'].items() if c in unknown})
     # 无有效补位时：目标名单 = 留存名单（entry 分支会分别重建两者）。
     kept = sorted(held - exits.keys())
     selected = list(kept)
@@ -157,10 +139,10 @@ def run_signal(today: date, dry_run: bool = False,
 
     plan = SignalPlan(signal_day=day, execute_day=day, asof=asof, selected=selected,
                       deferred=sorted(unknown), industries=industries, kept=kept, exit_reasons=exits)
-    pool_state.put_plan(st, plan.to_dict())
-    st.update(last_signal_date=day, signal_retry=False, exit_queue=exits)
+    pool_state.put_plan(state, plan.to_dict())
+    state.update(last_signal_date=day, signal_retry=False, exit_queue=exits)
     if not dry_run:
-        write_state(st)
+        state_writer(state)
 
     rank = {c: i + 1 for i, c in enumerate(ranked)}
     decisions = []
@@ -179,21 +161,19 @@ def run_signal(today: date, dry_run: bool = False,
                  f"计划退出 {len(exits)} | 暂缓判断 {len(unknown)}")
     if entry_error is not None:
         lines.append(f"- ⚠️ 补位数据异常，暂停新买入：{entry_error}")
-    acted = bool(len(selected) > len(kept) or exits or entry_error)
-    if acted or dry_run:
-        names = names_for([d["code"] for d in decisions] + ranked)
-        lines += render_decision_table(decisions, ranked, rank, scores, names)
-    return SignalReport("\n".join(lines), acted)
+    names = names_for([d["code"] for d in decisions] + ranked)
+    lines += render_decision_table(decisions, ranked, rank, scores, names)
+    return "\n".join(lines)
 
 
-def render_decision_table(decisions: List[dict], ranked: List[str],
+def render_decision_table(decisions: Listate[dict], ranked: Listate[str],
                           rank: Dict[str, int], scores: Dict[str, float],
-                          names: Dict[str, str]) -> List[str]:
+                          names: Dict[str, str]) -> Listate[str]:
     """轮次报告的决策表与梯队段（纯渲染、零 I/O；名单与排序事实由轮次核算好）。"""
     # 展示按排名升序（未知排名的退出/暂缓置底）；执行计划仍按原 decisions 提交。
     ordered = sorted(decisions,
                      key=lambda d: (d["rank"] is None, d["rank"] or 0, d["code"]))
-    lines: List[str] = []
+    lines: Listate[str] = []
     for d in ordered:
         mark = {"keep": "🟢", "entry": "🛒", "exit": "🔴", 'defer': '⏸️'}.get(d["action"], "·")
         name = names.get(d["code"], "")

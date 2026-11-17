@@ -16,7 +16,6 @@
 from dataclasses import dataclass
 from typing import Dict, FrozenSet, List
 
-from src.account_sources import AccountSource
 from data_provider.security_names import security_name
 from src.etf_account import FILENAME
 
@@ -84,14 +83,3 @@ def pe_level(pe_pct: float) -> str:
     if pe_pct < 80:
         return "偏贵"
     return "高估"
-
-
-# ── 账户数据源描述符（收盘成绩等消费方经 src/account_sources 枚举）──
-
-ACCOUNT_SOURCE = AccountSource(
-    ledger_path=f"data/{FILENAME}",
-    label="投资账户",
-    is_investment=True,
-    benchmark={"name": "ETF期初权重买入持有（现金零收益，不再平衡）",
-               "account": "etf"},
-)

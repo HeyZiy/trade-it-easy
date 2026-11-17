@@ -19,7 +19,7 @@ from src.config import setup_env
 from src.logging_config import setup_logging
 from src.mx.executor import round_lot
 from src.trade_ledger.ledger import (
-    ACCOUNTS, NOMINAL_EQUITY, DEFAULT_LEDGER_PATH, TradeRecord,
+    ACCOUNTS, NOMINAL_EQUITY, TradeRecord,
     append_trade, derive, load_trades,
 )
 
@@ -30,19 +30,13 @@ logger = logging.getLogger(__name__)
 def _ledger_path(args):
     if args.path is not None:
         return args.path
-    if args.account == "quality_pool":
-        from src.quality_pool.config import ACCOUNT_SOURCE
-        return ACCOUNT_SOURCE.ledger_path
-    if args.account == "etf_rotation":
-        from src.etf.rotation import ACCOUNT_SOURCE
-        return ACCOUNT_SOURCE.ledger_path
     from src.etf_account import ACCOUNT_PATH
     return ACCOUNT_PATH
 
 
 def cmd_open(args) -> int:
     from src.etf_account import ACCOUNT_PATH
-    if (args.path is None and args.account == "core") or (args.path is not None and Path(args.path).resolve() == ACCOUNT_PATH.resolve()):
+    if args.path is None or Path(args.path).resolve() == ACCOUNT_PATH.resolve():
         print("ETF账户请在网页使用手动记账。")
         return 1
     weight_pct = args.weight
@@ -67,7 +61,7 @@ def cmd_open(args) -> int:
 
 def cmd_view(args) -> int:
     from src.etf_account import ACCOUNT_PATH, render_summary
-    if args.path is None and args.account in (None, "core"):
+    if args.path is None:
         try:
             print(render_summary(ACCOUNT_PATH))
             return 0

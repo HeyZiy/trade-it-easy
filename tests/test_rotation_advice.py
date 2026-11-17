@@ -138,10 +138,8 @@ def test_repeated_publication_without_fill_does_not_duplicate_or_change_suggesti
     assert not wallet.load(account)['events']
 
 
-def test_entry_uses_same_snapshot_for_independent_fills_and_account_advice(account, monkeypatch, tmp_path):
+def test_entry_publishes_account_advice_from_one_snapshot(account, monkeypatch):
     import etf_rotation as entry
-    from src.trade_ledger import derive, load_trades
-    ledger = tmp_path / 'observation.jsonl'
     row = RotationRow('510300', '目标', '股票', 2, 2, 1, True, 1)
     diag = dict(n=1, pool=15, eligible=1, realtime_missing=0, prev_trading_day='2025-01-06')
     calls = []
@@ -149,7 +147,6 @@ def test_entry_uses_same_snapshot_for_independent_fills_and_account_advice(accou
         calls.append(kwargs)
         return [row], {'510300': 2}, diag
     monkeypatch.setattr(entry, 'rotation_snapshot', quotes)
-    monkeypatch.setattr(entry, 'LEDGER_PATH', ledger)
     monkeypatch.setattr(wallet, 'ACCOUNT_PATH', account)
     before = wallet.account_data(account)
     report = entry.run(trade_date='2025-01-07')
@@ -158,11 +155,10 @@ def test_entry_uses_same_snapshot_for_independent_fills_and_account_advice(accou
     assert strategy(account)['suggestions'][0]['qty'] == 900
     assert wallet.account_data(account)['positions'] == before['positions']
     assert wallet.account_data(account)['cash'] == before['cash']
-    sim = derive(load_trades(ledger), '2025-01-07')
-    assert sim.positions[0]['count'] > 900
-    old_state, old_sim = account.read_bytes(), ledger.read_bytes()
+    assert not account.with_name("trade_ledger_etf_rotation.jsonl").exists()
+    old_state = account.read_bytes()
     entry.run(dry_run=True, trade_date='2025-01-07')
-    assert account.read_bytes() == old_state and ledger.read_bytes() == old_sim
+    assert account.read_bytes() == old_state
 
 
 def test_entry_fetch_exception_invalidates_old_advice(account, monkeypatch):

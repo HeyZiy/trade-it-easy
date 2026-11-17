@@ -1,38 +1,5 @@
 # -*- coding: utf-8 -*-
-"""
-===================================
-跨资产动量 — 账户建议与独立模拟入口
-===================================
-
-把研究线 `research/studies/rotation/unified_coverage.py`（聚宽日频策略）
-接到本项目的名义成交台账上，每个交易日运行一次：
-
-1. 读独立流水（data/trade_ledger_etf_rotation.jsonl）推导策略账户持仓与现金
-   —— 台账是持仓与资金的唯一事实来源；
-2. `src.etf.rotation` 出当日截面：15 只 ETF 的 25 日加权动量分，
-   合格候选按分数降序，第一名即目标（0 < score < 5，跳水记 0）；
-3. 规则：无合格候选清仓；持仓不是第一名则先卖后买换入新第一名；
-   仍是第一名则不动（单只全仓，无止损/止盈/再平衡）；
-4. 同一行情为投资账户的轮动持仓与已分配现金生成建议，不写成交；
-5. 独立模拟指令经 `trade_ledger.execute_batch` 记入本策略台账（account=etf_rotation，
-   信号当日现价模拟成交），与投资账户的人工成交记录分开；
-6. 渲染报告 → reports/ 落盘 + 推送。
-
-执行约定：
-- 决策时点与聚宽研究线一致为 10:40（cron 对齐）；现价缺失时收盘价只供展示，
-  本次不调仓。运行时刻不同只影响当次决策价，不改变规则；
-- 独立策略账户 = 独立流水文件（单池名义期初 100 万），与投资账户资金和成交记录
-  互不合并；account 标签只做复盘归因；
-- 通用批次安全校验（卖出 ≤ 台账持仓、买入额 ≤ 现金 + 卖出回款）单点在
-  execute_batch；策略模拟执行额外 fail-closed：无截面数据或持仓缺价时整次不调仓，
-  避免把取数故障记成"清仓"；
-- 买侧股数由引擎按万二佣金/最低 5 元做资金可行性预检，新成交台账按相同口径
-  扣费；现金分红按登记日份额确认，发放日前记应收。
-
-运行：
-    python etf_rotation.py            # 更新账户建议 + 独立模拟记账 + 推送
-    python etf_rotation.py --dry-run  # 预览建议和模拟指令，不保存账户或模拟流水
-"""
+"""按实际账户持仓生成跨资产动量建议和日报。"""
 
 import argparse
 import io
@@ -42,15 +9,13 @@ from datetime import date, datetime
 from pathlib import Path
 from typing import List, Optional
 
-from data_provider.security_names import security_name
 from src.config import setup_env
 from src.cron_entry import add_standard_flags, hard_exit, resolve_run_gate
 from src.logging_config import setup_logging
 
 setup_env()
 
-from src.etf.execution import run_simulation     # noqa: E402
-from src.etf.rotation import LEDGER_PATH, rotation_snapshot  # noqa: E402
+from src.etf.rotation import rotation_snapshot  # noqa: E402
 from src.task_io import notify, save_report       # noqa: E402
 
 logger = logging.getLogger(__name__)
@@ -99,7 +64,7 @@ def _cross_section_table(rows) -> List[str]:
 
 
 def run(dry_run: bool = False, trade_date: Optional[str] = None) -> str:
-    """获取当日截面，发布投资账户建议，运行独立模拟并生成报告。"""
+    """获取当日截面，发布投资账户建议并生成报告。"""
     trade_date = trade_date or date.today().isoformat()
     decision_date = date.fromisoformat(trade_date)
     try:
@@ -109,10 +74,8 @@ def run(dry_run: bool = False, trade_date: Optional[str] = None) -> str:
             _account_advice(trade_date, [], {}, {}, error="行情更新失败，暂停建议")
         raise
     account_advice = _account_advice(trade_date, rows, prices, diag, dry_run=dry_run)
-    simulation = run_simulation(rows, prices, diag, trade_date=trade_date,
-                                ledger_path=LEDGER_PATH, dry_run=dry_run)
     lines = [
-        f"# {LABEL} — {datetime.now().strftime('%Y-%m-%d')}",
+        f"# {LABEL} — {trade_date}",
         "",
         f"**生成时间**: {datetime.now().strftime('%Y-%m-%d %H:%M')}",
         "",
@@ -120,78 +83,15 @@ def run(dry_run: bool = False, trade_date: Optional[str] = None) -> str:
         f"池内可用 {diag['n']}/{diag['pool']} 只，合格候选 {diag['eligible']} 只",
     ]
     if diag["realtime_missing"]:
-        lines.append(f"- 实时价缺失 {diag['realtime_missing']}/{diag['n']} 只，收盘价仅供展示，本次不执行")
-    if simulation.dividend_count:
-        lines.append(f"- {'拟登记' if dry_run else '已登记'}分红权益 "
-                     f"{simulation.dividend_count} 项，按公告发放日转为可用现金")
-    if simulation.before.receivables:
-        lines.append(f"- 尚未到账的应收红利：{simulation.before.receivables:,.2f}元（不用于买入）")
-    lines += ["", "## 今日截面", ""]
-    lines += _cross_section_table(rows)
-    lines += [""]
-
-    result = simulation.execution
-    if result is None:
-        lines += ["## ⛔ 本次不执行", "", f"- {simulation.guard}", ""]
-        return "\n".join(lines)
-
-    plan = simulation.plan
-    orders = plan["orders"]
-    target = plan["target"]
-    holding = plan["holding"]
-    lines += ["## 决策", ""]
-    advice_lines = account_advice.splitlines()
-    lines.append(f"- 账户建议：{advice_lines[0]}")
-    lines.extend(f"  {extra}" for extra in advice_lines[1:])
-    if target is not None:
-        target_text = (f"目标 **{target.name}({target.code})** "
-                       f"score {_fmt_score(target)}（合格候选第 {target.rank} 名）")
-    else:
-        target_text = "目标：无合格候选 → 空仓"
-    if holding is not None:
-        lines.append(f"- 模拟：{target_text}；当前持有 "
-                     f"{holding.get('name', '')}({holding.get('code', '')}) {holding.get('count', 0)}股")
-    else:
-        lines.append(f"- 模拟：{target_text}；当前空仓")
-    # “继续持有 X：仍为合格候选第一名”已被上面合并行表达，不重复渲染
-    lines += [f"  - {note}" for note in plan["notes"]
-              if not (note.startswith("继续持有 ") and note.endswith("仍为合格候选第一名"))]
-    lines += [""]
-
-    lines += [result.summary, ""]
-
-    if not orders:
-        return "\n".join(lines)
-
-    if dry_run:
-        lines.append("**dry-run：以下指令未记账**")
-        for order in orders:
-            lines.append(f"- [DRY] {order.action.upper()} {order.name}({order.code})"
-                         f" {order.shares}股 ≈ {order.amount:,.0f}元（{order.reason}）")
-        lines += [""]
-        return "\n".join(lines)
-
-    if result.batch.abort:
-        lines.append(f"⛔ 安全校验未通过，本次不执行：{result.batch.abort}")
-        return "\n".join(lines)
-    lines.extend(outcome.outcome_line for outcome in result.batch.outcomes)
-
-    if result.positions:
-        total_assets = simulation.before.total_assets
-        lines += ["", "**执行后持仓**："]
-        for pos in result.positions:
-            mv = float(pos.get("market_value", 0) or 0)
-            pct = mv / total_assets * 100 if total_assets > 0 else 0
-            lines.append(f"- {security_name(pos['code'])}({pos.get('code', '')}) "
-                         f"{pos.get('count', 0)}股 ≈ {mv:,.0f}元（{pct:.1f}%）")
-    else:
-        lines += ["", "**执行后持仓**：空仓（现金）"]
+        lines.append(f"- 实时价缺失 {diag['realtime_missing']}/{diag['n']} 只，收盘价仅供展示，本次暂停建议")
+    lines += ["", "## 今日截面", "", *_cross_section_table(rows),
+              "", "## 投资账户建议", "", account_advice, ""]
     return "\n".join(lines)
 
 
 def parse_arguments() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description='跨资产动量 — 账户建议、独立模拟与报告',
+        description='跨资产动量 — 账户建议与报告',
     )
     add_standard_flags(parser)
     return parser.parse_args()
@@ -202,7 +102,7 @@ def main() -> int:
     setup_logging(log_prefix="etf_rotation", debug=args.debug)
 
     logger.info("=" * 60)
-    logger.info("跨资产动量 — 账户建议与独立模拟启动")
+    logger.info("跨资产动量 — 账户建议任务启动")
     logger.info(f"运行时间: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
     logger.info("=" * 60)
 
@@ -211,7 +111,7 @@ def main() -> int:
         logger.info("今天不是 A 股交易日，跳过执行")
         return 0
     if dry_run and not args.dry_run:
-        logger.info("非交易日 --force：本次只读，不写台账")
+        logger.info("非交易日 --force：本次只读，不保存建议")
 
     try:
         report = run(dry_run=dry_run)
@@ -221,7 +121,7 @@ def main() -> int:
 
     sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8')
     print("\n" + report)
-    save_report(report, "etf_rotation")
+    save_report(report, "etf_rotation_advice_dry_run" if dry_run else "etf_rotation_advice")
 
     if not args.no_notify:
         notify(report)

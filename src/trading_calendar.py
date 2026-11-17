@@ -74,7 +74,7 @@ def latest_trading_day_on_or_before(
 
     日历不可用（拉取失败/区间无数据）时的降级方向由 fallback 决定：
     - "weekday"：按周一~周五回退——数据缺失宁可放行也不误杀（daily 新鲜度断言口径）。
-    - None：返回 None，调用方跳过断言（market_gate 指数数据日期断言口径）。
+    - None：返回 None，调用方跳过断言（rotation / 账户估值等新鲜度断言口径）。
     """
     days = get_trading_dates(d - timedelta(days=lookback_days), d)
     if days:

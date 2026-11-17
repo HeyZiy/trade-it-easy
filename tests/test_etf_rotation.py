@@ -15,19 +15,16 @@
 """
 import math
 from datetime import date
-from types import SimpleNamespace
 
 import pandas as pd
 import pytest
 
-import etf_rotation as entry
 from src.etf import rotation as rot
 from src.etf.rotation import (
     ACCOUNT, RotationRow,
     affordable_shares, build_rows, is_eligible, momentum_score,
     plan_rotation, top_candidate,
 )
-from src.trade_ledger import TradeRecord, append_trade, load_trades
 
 # ══════════════ 造数助手 ══════════════
 
@@ -506,125 +503,3 @@ class TestPlanRotation:
 # ══════════════ 入口集成：独立台账闭环（monkeypatch 取数，禁网络） ══════════════
 
 DECISION_STR = DECISION.isoformat()
-ENTRY_DIAG = {
-    "decision_date": DECISION_STR,
-    "prev_trading_day": PREV.isoformat(),
-    "pool": 15, "n": 2, "eligible": 2, "realtime_missing": 0,
-    "skipped": {"no_bars": 0, "short": 0, "stale": 0,
-                "bad_close": 0, "duplicate": 0},
-}
-
-
-def _entry_rows():
-    return [
-        RotationRow(code="510300", name="沪深300", group="国内权益",
-                    close=4.0, price=4.0, score=0.40, eligible=True, rank=1),
-        RotationRow(code="513100", name="纳指100", group="海外权益",
-                    close=2.0, price=2.0, score=0.30, eligible=True, rank=2),
-    ]
-
-
-@pytest.fixture
-def entry_env(monkeypatch, tmp_path):
-    """入口运行环境：独立 tmp 台账 + 固定截面（不触网）。"""
-    ledger = tmp_path / "trade_ledger_etf_rotation.jsonl"
-    monkeypatch.setattr(entry, "LEDGER_PATH", ledger)
-
-    state = {"rows": _entry_rows(),
-             "prices": {"510300": 4.0, "513100": 2.0}}
-    calls = []
-
-    def fake_snapshot(decision_date=None):
-        calls.append(decision_date)
-        diag = dict(ENTRY_DIAG,
-                    n=len(state["rows"]),
-                    eligible=sum(1 for r in state["rows"] if r.eligible))
-        return state["rows"], dict(state["prices"]), diag
-
-    monkeypatch.setattr(entry, "rotation_snapshot", fake_snapshot)
-    return SimpleNamespace(ledger=ledger, state=state, calls=calls)
-
-
-class TestEntryIntegration:
-    def test_dry_run_reports_plan_without_touching_ledger(self, entry_env):
-        report = entry.run(dry_run=True, trade_date=DECISION_STR)
-
-        assert entry_env.calls == [DECISION]              # 决策日按 trade_date 传递
-        assert not entry_env.ledger.exists()              # 台账零写入
-        assert "dry-run" in report
-        assert "试运行，未记账" in report
-        assert "## 执行明细" not in report and "## 决策" in report
-        assert "[DRY] BUY 沪深300(510300) 249900股" in report
-        assert "已记账" not in report
-
-    def test_real_run_records_one_buy_into_strategy_ledger(self, entry_env):
-        report = entry.run(dry_run=False, trade_date=DECISION_STR)
-
-        trades = load_trades(entry_env.ledger)
-        assert len(trades) == 1
-        trade = trades[0]
-        assert trade.date == DECISION_STR
-        assert trade.side == "buy"
-        assert trade.code == "510300"
-        assert trade.name == "沪深300"
-        assert trade.account == ACCOUNT
-        assert trade.qty == affordable_shares(1_000_000.0, 4.0) == 249_900
-        assert trade.price == 4.0
-        assert trade.fee == 199.92
-
-        assert "## 执行明细" not in report and "## 决策" in report
-        assert "✅ BUY 沪深300(510300) 249900股" in report
-        assert "已记账 1 笔（买入 1，卖出 0）" in report
-        assert "执行后持仓" in report
-        assert "沪深300(510300) 249900股" in report
-
-    def test_repeat_run_same_day_does_not_buy_again(self, entry_env):
-        entry.run(dry_run=False, trade_date=DECISION_STR)
-        before = load_trades(entry_env.ledger)
-        assert len(before) == 1
-
-        report = entry.run(dry_run=False, trade_date=DECISION_STR)
-
-        assert load_trades(entry_env.ledger) == before    # 无新增流水
-        assert "合格候选第 1 名" in report          # 持仓=目标，合并行即"继续持有"
-        assert "已记账 0 笔（买入 0，卖出 0）" in report
-
-    def test_no_eligible_candidate_flat_account_writes_nothing(self, entry_env):
-        entry_env.state["rows"] = [
-            RotationRow(code="510300", name="沪深300", group="国内权益",
-                        close=4.0, price=4.0, score=0.0,
-                        eligible=False, rank=0),
-        ]
-        report = entry.run(dry_run=False, trade_date=DECISION_STR)
-
-        assert not entry_env.ledger.exists()              # 空仓无指令 → 零写入
-        assert "无合格候选 → 空仓" in report
-        assert "保持空仓" in report
-
-    def test_no_rows_fail_closed_keeps_existing_ledger(self, entry_env):
-        old = TradeRecord(date="2026-09-18", code="513100", name="纳指100",
-                          side="buy", qty=1000, price=2.0, account=ACCOUNT)
-        append_trade(old, path=entry_env.ledger)
-        before = load_trades(entry_env.ledger)
-
-        entry_env.state["rows"] = []
-        entry_env.state["prices"] = {"513100": 2.0}
-        report = entry.run(dry_run=False, trade_date=DECISION_STR)
-
-        assert load_trades(entry_env.ledger) == before    # 不清仓、不记账
-        assert "## ⛔ 本次不执行" in report
-        assert "fail-closed" in report
-
-    def test_holding_missing_price_fail_closed_keeps_ledger(self, entry_env):
-        old = TradeRecord(date="2026-09-18", code="513100", name="纳指100",
-                          side="buy", qty=1000, price=2.0, account=ACCOUNT)
-        append_trade(old, path=entry_env.ledger)
-        before = load_trades(entry_env.ledger)
-
-        # 持仓没有实时报价，入口不允许用收盘价代替成交价。
-        entry_env.state["prices"] = {}
-        report = entry.run(dry_run=False, trade_date=DECISION_STR)
-
-        assert load_trades(entry_env.ledger) == before
-        assert "## ⛔ 本次不执行" in report
-        assert "持仓现价缺失" in report
