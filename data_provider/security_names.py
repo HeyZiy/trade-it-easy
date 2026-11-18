@@ -6,7 +6,7 @@ from pathlib import Path
 import re
 import sqlite3
 
-from .codes import normalize_stock_code
+from .codes import is_a_stock_code, is_etf_code, normalize_stock_code
 
 CACHE_PATH = Path("data/security_names.sqlite3")
 logger = logging.getLogger(__name__)
@@ -43,24 +43,71 @@ def names_for(codes, *, path=None):
     return {code: known[plain] for code, plain in normalized.items() if plain in known}
 
 
-def remember(values, *, path=None):
+def _valid_name(code, name):
+    if isinstance(name, str):
+        name = name.strip()
+        if name and name != code and name.lower() not in {"nan", "none", "<na>"} and len(name) <= 80:
+            return name
+    return None
+
+
+def remember(values, *, path=None, overwrite=True):
     """保存已取到的简称；失败不影响原数据和旧缓存。"""
     rows = []
     for code, name in values.items():
         code = normalize_stock_code(code)
-        if not isinstance(name, str):
-            continue
-        name = name.strip()
-        if re.fullmatch(r"\d{6}", code) and name and name != code and len(name) <= 80:
+        name = _valid_name(code, name)
+        if re.fullmatch(r"\d{6}", code) and name:
             rows.append((code, name))
     if not rows:
         return
     path = path or CACHE_PATH
+    on_conflict = "DO UPDATE SET name=excluded.name" if overwrite else "DO NOTHING"
     try:
         path.parent.mkdir(parents=True, exist_ok=True)
         with sqlite3.connect(path, timeout=2) as connection:
             connection.execute("CREATE TABLE IF NOT EXISTS securities (code TEXT PRIMARY KEY, name TEXT NOT NULL)")
-            connection.executemany("INSERT INTO securities VALUES (?,?) ON CONFLICT(code) DO UPDATE SET name=excluded.name", rows)
+            connection.executemany(f"INSERT INTO securities VALUES (?,?) ON CONFLICT(code) {on_conflict}", rows)
         _read.cache_clear()
     except (OSError, sqlite3.Error):
         logger.warning("证券名称缓存更新失败，不影响行情", exc_info=True)
+
+
+def is_listed_code(code):
+    return (isinstance(code, str) and re.fullmatch(r"[0-9]{6}", code)
+            and (is_etf_code(code) or is_a_stock_code(code)))
+
+
+def lookup(codes):
+    """按需补查场内简称，ETF 优先用新浪目录中的展示简称。"""
+    from .bars import get_etf_universe
+    from .fetchers.amazingdata.basics import fetch_security_names
+
+    codes = set(codes)
+    known = names_for(codes)
+    pending = codes - known.keys()
+    if not pending:
+        return known
+
+    etfs = {code for code in pending if is_etf_code(code)}
+    stocks = pending - etfs
+    found = {}
+    if etfs:
+        try:
+            directory = get_etf_universe()
+            if directory is not None:
+                found.update((code, name) for code, name in zip(directory["code"], directory["name"])
+                             if code in etfs and _valid_name(code, name))
+        except Exception:
+            logger.warning("新浪 ETF 简称查询失败", exc_info=True)
+
+    for security_type, needed in (("EXTRA_ETF", etfs - found.keys()), ("EXTRA_STOCK_A", stocks)):
+        if needed:
+            try:
+                directory = fetch_security_names(security_type)
+                found.update((code, name) for code, name in directory.items() if code in needed)
+            except (Exception, SystemExit):
+                logger.warning("AmazingData %s 简称查询失败", security_type, exc_info=True)
+
+    remember(found, overwrite=False)
+    return names_for(codes)

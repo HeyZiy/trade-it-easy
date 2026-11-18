@@ -219,12 +219,13 @@ class Handler(BaseHTTPRequestHandler):
             return
         from src.etf_account import (
             FILENAME, cash_rebalance, dismiss, edit_event, event_context, lookup_fund_names, lookup_fund_nav,
-            record_event, set_budgets,
+            lookup_security_names, record_event, set_budgets,
         )
         handlers = {"/api/etf/event": record_event, "/api/etf/dismiss": dismiss,
                     "/api/etf/budgets": set_budgets, "/api/etf/event/edit": edit_event,
                     "/api/etf/event/context": event_context, "/api/etf/fund/nav": lookup_fund_nav,
-                    "/api/etf/cash/rebalance": cash_rebalance, "/api/etf/fund/names": lookup_fund_names}
+                    "/api/etf/cash/rebalance": cash_rebalance, "/api/etf/fund/names": lookup_fund_names,
+                    "/api/etf/security/names": lookup_security_names}
         from src.portfolio_config import update
         handlers["/api/etf/config"] = update
         handlers["/api/etf/dca/save"] = fund_plans.save_plan
@@ -262,7 +263,7 @@ class Handler(BaseHTTPRequestHandler):
                          "application/json; charset=utf-8", status=500)
             return
         self.respond(json.dumps(result if self.path in {"/api/etf/event/context", "/api/etf/cash/rebalance", "/api/etf/fund/nav",
-                                                            "/api/etf/fund/names"} else {"ok": True},
+                                                            "/api/etf/fund/names", "/api/etf/security/names"} else {"ok": True},
                                 ensure_ascii=False).encode(), "application/json; charset=utf-8")
 
     def do_GET(self):

@@ -7,8 +7,8 @@ import math
 from pathlib import Path
 from uuid import uuid4
 
-from data_provider import canonical_stock_code, fund_names
-from data_provider.codes import A_STOCK_PREFIXES, ETF_PREFIXES
+from data_provider import canonical_stock_code, fund_names, security_names
+from data_provider.codes import A_STOCK_PREFIXES, ETF_PREFIXES, normalize_stock_code
 from data_provider.security_names import security_name
 from src import account_advice, account_valuation, portfolio_config
 from src.account_advice import baseline, strategy_views, suggestions
@@ -77,6 +77,15 @@ def initialize(path, *, asof, cash, positions, targets=None, budgets=None, cash_
         state.update(_config=config, _config_revision=portfolio_config.revision(config))
         _save(path, state)
     return state
+
+
+def lookup_security_names(_path, payload):
+    codes = payload.get("codes")
+    if not isinstance(codes, list) or not 1 <= len(codes) <= 100:
+        raise ValueError("请提供一至一百个证券代码")
+    if not all(security_names.is_listed_code(code) for code in codes):
+        raise ValueError("请输入六位股票或 ETF 代码")
+    return {"names": security_names.lookup(set(codes))}
 
 
 def lookup_fund_names(_path, payload):
@@ -431,6 +440,19 @@ def subscription_fees(state):
             if event["side"] in {"fund_buy", "fund_pending"} and "subscription_fee" in event}
 
 
+def _missing_security_names(state, positions, strategies):
+    codes = {row["code"] for row in positions}
+    codes.update(event["code"] for event in state["events"] if event.get("code") and event["side"] not in FUND_TRADES)
+    codes.update(row["code"] for strategy in strategies for row in strategy["suggestions"] if row.get("code"))
+    config = state["_config"]
+    for asset in config["core"]:
+        codes.update((asset["code"], *asset.get("etf_codes", ())))
+    codes.update(row["code"] for row in config.get("rotation", {}).get("pool", ()))
+    codes = {normalize_stock_code(code) for code in codes}
+    listed = {code for code in codes if security_names.is_listed_code(code)}
+    return sorted(listed - security_names.names_for(listed).keys())
+
+
 def account_data(path):
     state = load(path)
     day = _today()
@@ -473,6 +495,7 @@ def account_data(path):
             "fund_subscription_fees": fund_subscription_fees,
             "trade_fees": state["_config"].get("trade_fees", {}),
             "trade_fee_code_prefixes": {"stock": A_STOCK_PREFIXES, "etf": ETF_HOLDING_PREFIXES},
+            "missing_security_names": _missing_security_names(state, view["positions"], strategies),
             "fund_names": {code: names.get(code) for code in sorted(fund_codes)},
             "performance": latest, "trades": [{**{k: v for k, v in e.items() if k != "request"},
                          **({"name": names.get(e["code"], f"场外基金 {e['code']}") if e["side"] in FUND_TRADES

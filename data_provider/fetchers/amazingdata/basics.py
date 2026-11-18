@@ -2,6 +2,7 @@
 from datetime import date
 from typing import List, Optional
 import pandas as pd
+from data_provider.codes import normalize_stock_code
 from data_provider.types import DataFetchError
 from .client import client
 from ._utils import (_chunks, _tgw_codes, _temporary_sdk_cache, date_range, date_to_int)
@@ -39,6 +40,11 @@ def get_code_list(security_type="EXTRA_STOCK_A_SH_SZ"):
         return _code_list(client.get_base_data().get_code_list(security_type))
     except Exception as exc:
         raise DataFetchError(f"AmazingData get_code_list 失败: {exc}") from exc
+
+
+def fetch_security_names(security_type):
+    info = client.get_base_data().get_code_info(security_type=security_type)
+    return {normalize_stock_code(str(code)): name for code, name in info["symbol"].items()}
 
 
 def get_hist_code_list(security_type="EXTRA_STOCK_A_SH_SZ", start_date=20130101,

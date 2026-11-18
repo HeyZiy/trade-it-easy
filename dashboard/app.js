@@ -22,10 +22,12 @@ const isAllocationBalanced = deviation => Math.abs(deviation) <= ALLOCATION_TOLE
 let data, selected = 0, chartRange = 'all', chartObserver;
 let coreSort = {key: null, dir: 1};
 let selectedReport, reportRequest, configRequest;
+let overviewRequest = 0, appliedOverviewRequest = 0;
 let showAllRecords = false;
 let holdingKind = '';
 const reportCache = new Map();
 const requestedFundNames = new Set();
+const requestedSecurityNames = new Set();
 let quoteRequestPending = false, quotePollTimer, quotePolling = false, quoteError = '';
 const fundDisplayName = code => data.accounts[0].fund_names?.[code];
 const quoteTime = value => new Date(value).toLocaleString('zh-CN', {timeZone:'Asia/Shanghai',hour12:false});
@@ -487,6 +489,7 @@ fetch('/api/overview',{cache:'no-store'}).then(response => {
   document.querySelector('#app').hidden=false;
   render();
   loadMissingFundNames();
+  loadMissingSecurityNames();
   scheduleQuotePoll();
 }).catch(() => { document.querySelector('#status').textContent='数据读取失败，请刷新页面重试。'; });
 
@@ -520,17 +523,39 @@ async function loadMissingFundNames() {
   }
 }
 
+async function loadMissingSecurityNames() {
+  const codes = (data.accounts[0]?.missing_security_names || [])
+    .filter(code => !requestedSecurityNames.has(code)).slice(0,100);
+  if (!codes.length) return;
+  codes.forEach(code => requestedSecurityNames.add(code));
+  try {
+    const {names} = await accountRequest('/api/etf/security/names', {codes});
+    if (Object.keys(names).length) {
+      await reloadAccount({deferWhileRefreshing:true});
+    } else {
+      loadMissingSecurityNames();
+    }
+  } catch {
+    // 读不到简称时继续显示证券代码。
+  }
+}
+
 async function reloadAccount({deferWhileRefreshing=false} = {}) {
+  const request = ++overviewRequest;
   const response = await fetch('/api/overview', {cache:'no-store'});
   if (!response.ok) throw Error('页面暂时无法更新，请重试。');
+  const result = await response.json();
+  if (request < appliedOverviewRequest) return;
+  appliedOverviewRequest = request;
   const previous = data.accounts[0]?.quote_refresh;
-  data = await response.json();
+  data = result;
   document.querySelector('#status').textContent=`页面更新于 ${quoteTime(data.generated_at)}`;
   const state = data.accounts[0]?.quote_refresh;
   const completed = (previous?.running && !state?.running) || (previous?.funds?.running && !state?.funds?.running);
   if (!deferWhileRefreshing || completed || !refreshInProgress(state)) {
     render();
     loadMissingFundNames();
+    loadMissingSecurityNames();
   }
 }
 

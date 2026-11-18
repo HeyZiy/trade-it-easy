@@ -7,6 +7,7 @@ import threading
 import urllib.error
 import urllib.request
 
+import pandas as pd
 import pytest
 
 import dashboard
@@ -96,6 +97,73 @@ def serve():
     server = ThreadingHTTPServer(("127.0.0.1", 0), dashboard.Handler)
     threading.Thread(target=server.serve_forever, daemon=True).start()
     return server
+
+
+def test_dashboard_bulk_fills_missing_listed_names(tmp_path, monkeypatch):
+    from data_provider import bars, security_names
+    from data_provider.fetchers.amazingdata import basics
+    from src.etf_account import initialize, record_event, revision, load
+
+    path = tmp_path / "data" / "etf_account.json"
+    initialize(path, asof="2025-01-02", cash=1000,
+               positions=[dict(code=code, count=100, price=3, strategy="core")
+                          for code in ("513260", "159957", "159561", "600519")],
+               cash_allocations={"core": 1000})
+    record_event(path, {"request_id": "fund-name", "revision": revision(load(path)),
+                        "date": "2025-01-06", "side": "fund_buy", "code": "000001",
+                        "qty": 10, "amount": 10, "nav": 1, "nav_date": "2025-01-06"})
+    before = path.read_bytes()
+    security_names.remember({"159561": "德国ETF嘉实"})
+    calls = []
+
+    def sina():
+        calls.append("sina")
+        return pd.DataFrame({"code": ["513260", "159957", "159561", "588000"],
+                             "name": ["恒生科技ETF汇添富", "nan", "简称待保留", "科创50ETF"]})
+
+    def amazingdata(kind):
+        calls.append(kind)
+        return {"159957": "创业板HX", "513260": "恒科技"} if kind == "EXTRA_ETF" else {"600519": "贵州茅台"}
+
+    monkeypatch.setattr(bars, "get_etf_universe", sina)
+    monkeypatch.setattr(basics, "fetch_security_names", amazingdata)
+    monkeypatch.setattr(dashboard, "ROOT", tmp_path)
+    monkeypatch.setenv("TRADE_DASHBOARD_PASSWORD", "secret")
+    monkeypatch.delenv("TRADE_DASHBOARD_TAILSCALE_LOGIN", raising=False)
+    server = serve()
+    try:
+        base = f"http://127.0.0.1:{server.server_port}"
+        auth = {"Authorization": basic("trader", "secret")}
+        overview = urllib.request.Request(base + "/api/overview", headers=auth)
+        with urllib.request.urlopen(overview) as response:
+            account = json.load(response)["accounts"][0]
+        requested = ["513260", "159957", "600519"]
+        assert set(requested) <= set(account["missing_security_names"])
+        assert {"159561", "000001"}.isdisjoint(account["missing_security_names"])
+        assert not calls
+
+        endpoint = base + "/api/etf/security/names"
+        headers = {**auth, "Content-Type": "application/json", "X-Trade-Request": "dashboard"}
+        invalid = urllib.request.Request(endpoint, json.dumps({"codes": ["513abc"]}).encode(), headers)
+        with pytest.raises(urllib.error.HTTPError) as rejected:
+            urllib.request.urlopen(invalid)
+        assert rejected.value.code == 400
+        request = urllib.request.Request(endpoint, json.dumps({"codes": [*requested, "159561"]}).encode(), headers)
+        expected = {"513260": "恒生科技ETF汇添富", "159957": "创业板HX", "600519": "贵州茅台", "159561": "德国ETF嘉实"}
+        for _ in range(2):
+            with urllib.request.urlopen(request) as response:
+                assert json.load(response) == {"names": expected}
+        assert calls == ["sina", "EXTRA_ETF", "EXTRA_STOCK_A"]
+        assert security_names.names() == expected
+
+        with urllib.request.urlopen(overview) as response:
+            updated = json.load(response)["accounts"][0]
+        assert not set(requested).intersection(updated["missing_security_names"])
+        assert {row["code"]: row["name"] for row in updated["positions"]} == expected
+        assert path.read_bytes() == before
+    finally:
+        server.shutdown()
+        server.server_close()
 
 
 def test_handler_requires_auth_before_routing(monkeypatch):
