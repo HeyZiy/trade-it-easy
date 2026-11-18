@@ -3,6 +3,7 @@
 import argparse
 import base64
 from datetime import date, datetime
+import gzip
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from html import escape
 from html.parser import HTMLParser
@@ -24,6 +25,9 @@ APP_ROOT = Path(__file__).resolve().parent
 ROOT = Path(os.environ.get("TRADE_DASHBOARD_ROOT", APP_ROOT)).resolve()
 AUTH_REALM = 'Basic realm="trade-dashboard", charset="UTF-8"'
 AUTH_DELAY = 0.5
+ASSET_TYPES = {".js": "text/javascript; charset=utf-8",
+               ".css": "text/css; charset=utf-8", ".svg": "image/svg+xml"}
+COMPRESSIBLE = {"text/html", "text/plain", "text/css", "text/javascript", "application/json"}
 QUOTES = QuoteRefresh()
 TIMING_URL = "/research/timing"
 TIMING_API = "/api" + TIMING_URL
@@ -280,10 +284,10 @@ class Handler(BaseHTTPRequestHandler):
             self.respond((APP_ROOT / "dashboard" / "timing.html").read_bytes(), "text/html; charset=utf-8")
         elif self.path == TIMING_API or self.path.startswith(TIMING_API + "/"):
             self.read_timing()
-        elif self.path in {"/assets/app.js", "/assets/styles.css", "/assets/timing.js", "/assets/timing.css"}:
-            filename = self.path.rsplit("/", 1)[-1]
-            content_type = "text/javascript; charset=utf-8" if filename.endswith(".js") else "text/css; charset=utf-8"
-            self.respond((APP_ROOT / "dashboard" / filename).read_bytes(), content_type)
+        elif self.path.startswith("/assets/") and Path(self.path).suffix in ASSET_TYPES:
+            self.serve_asset(APP_ROOT / "dashboard" / Path(self.path).name)
+        elif self.path == "/favicon.svg" or self.path == "/favicon.ico":
+            self.serve_asset(APP_ROOT / "dashboard" / "favicon.svg")
         elif self.path == "/api/overview":
             body = json.dumps(dashboard_data(ROOT), ensure_ascii=False, allow_nan=False).encode("utf-8")
             self.respond(body, "application/json; charset=utf-8")
@@ -306,10 +310,30 @@ class Handler(BaseHTTPRequestHandler):
         else:
             self.send_error(404)
 
-    def respond(self, body, content_type, status=200, headers=None):
+    def serve_asset(self, path):
+        """静态资源带 ETag 协商缓存：内容未变时返回 304，不再整份重传。"""
+        try:
+            stat = path.stat()
+            body = path.read_bytes()
+        except OSError:
+            self.send_error(404)
+            return
+        etag = f'W/"{int(stat.st_mtime)}-{stat.st_size}"'
+        if self.headers.get("If-None-Match") == etag:
+            self.respond(b"", "text/plain; charset=utf-8", status=304, etag=etag)
+            return
+        self.respond(body, ASSET_TYPES[path.suffix], etag=etag)
+
+    def respond(self, body, content_type, status=200, headers=None, *, etag=None):
+        body, gzip_used = self.maybe_gzip(body, content_type)
         self.send_response(status)
         self.send_header("Content-Type", content_type)
         self.send_header("Content-Length", str(len(body)))
+        if gzip_used:
+            self.send_header("Content-Encoding", "gzip")
+            self.send_header("Vary", "Accept-Encoding")
+        if etag:
+            self.send_header("ETag", etag)
         self.send_header("Cache-Control", "no-store")
         self.send_header("X-Content-Type-Options", "nosniff")
         self.send_header("Content-Security-Policy", "default-src 'self'; style-src 'self' 'unsafe-inline'; script-src 'self'; base-uri 'none'; frame-ancestors 'none'")
@@ -317,6 +341,13 @@ class Handler(BaseHTTPRequestHandler):
             self.send_header(key, value)
         self.end_headers()
         self.wfile.write(body)
+
+    def maybe_gzip(self, body, content_type):
+        """对可压缩类型按 Accept-Encoding 协商 gzip，太小或不支持则原样返回。"""
+        accepts = (self.headers.get("Accept-Encoding") or "").lower()
+        if (len(body) >= 1024 and "gzip" in accepts and content_type.split(";")[0] in COMPRESSIBLE):
+            return gzip.compress(body, 6), True
+        return body, False
 
 
 def main():

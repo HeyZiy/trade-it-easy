@@ -1,4 +1,5 @@
 import base64
+import gzip
 import json
 from http.server import ThreadingHTTPServer
 from pathlib import Path
@@ -173,6 +174,36 @@ def test_report_api_requires_auth_and_returns_inline_content(tmp_path, monkeypat
         with pytest.raises(urllib.error.HTTPError) as missing:
             urllib.request.urlopen(invalid)
         assert missing.value.code == 404
+    finally:
+        server.shutdown()
+        server.server_close()
+
+
+def test_static_assets_revalidate_with_etag_and_gzip(monkeypatch):
+    monkeypatch.setenv("TRADE_DASHBOARD_PASSWORD", "secret")
+    server = serve()
+    try:
+        base = f"http://127.0.0.1:{server.server_port}"
+        headers = {"Authorization": basic("trader", "secret")}
+        with urllib.request.urlopen(urllib.request.Request(base + "/assets/app.js", headers=headers)) as response:
+            body = response.read()
+            etag = response.headers["ETag"]
+            assert response.status == 200 and etag and body
+        cached = urllib.request.Request(base + "/assets/app.js", headers={**headers, "If-None-Match": etag})
+        try:
+            urllib.request.urlopen(cached)
+            assert False, "etag revalidation should return 304"
+        except urllib.error.HTTPError as not_modified:
+            assert not_modified.code == 304
+            assert not_modified.read() == b""
+        compressed = urllib.request.Request(base + "/assets/app.js",
+                                            headers={**headers, "Accept-Encoding": "gzip"})
+        with urllib.request.urlopen(compressed) as response:
+            assert response.headers["Content-Encoding"] == "gzip"
+            assert gzip.decompress(response.read()) == body
+        with urllib.request.urlopen(urllib.request.Request(base + "/favicon.svg", headers=headers)) as response:
+            assert response.status == 200
+            assert response.headers["Content-Type"] == "image/svg+xml"
     finally:
         server.shutdown()
         server.server_close()
