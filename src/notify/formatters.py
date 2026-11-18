@@ -157,76 +157,10 @@ def markdown_to_html_document(markdown_text: str) -> str:
 
 
 def format_feishu_markdown(content: str) -> str:
-    """
-    将通用 Markdown 转换为飞书 lark_md 更友好的格式
-    
-    转换规则：
-    - 飞书不支持 Markdown 标题（# / ## / ###），用加粗代替
-    - 引用块使用前缀替代
-    - 分隔线统一为细线
-    - 表格转换为条目列表
-    
-    Args:
-        content: 原始 Markdown 内容
-        
-    Returns:
-        转换后的飞书 Markdown 格式内容
-        
-    Example:
-        >>> markdown = "# 标题\\n> 引用\\n| 列1 | 列2 |"
-        >>> formatted = format_feishu_markdown(markdown)
-        >>> print(formatted)
-        **标题**
-        💬 引用
-        • 列1：值1 | 列2：值2
-    """
-    def _flush_table_rows(buffer: List[str], output: List[str]) -> None:
-        """将表格缓冲区中的行转换为飞书格式"""
-        if not buffer:
-            return
-
-        def _parse_row(row: str) -> List[str]:
-            """解析表格行，提取单元格（<br> 换行标签转 ' / '，飞书纯文本不渲染 HTML）"""
-            cells = [_BR_TAG_RE.sub(" / ", c).strip() for c in row.strip().strip('|').split('|')]
-            return [c for c in cells if c]
-
-        rows = []
-        for raw in buffer:
-            # 跳过分隔行（如 |---|---|）
-            if re.match(r'^\s*\|?\s*[:-]+\s*(\|\s*[:-]+\s*)+\|?\s*$', raw):
-                continue
-            parsed = _parse_row(raw)
-            if parsed:
-                rows.append(parsed)
-
-        if not rows:
-            return
-
-        header = rows[0]
-        data_rows = rows[1:] if len(rows) > 1 else []
-        for row in data_rows:
-            pairs = []
-            for idx, cell in enumerate(row):
-                key = header[idx] if idx < len(header) else f"列{idx + 1}"
-                pairs.append(f"{key}：{cell}")
-            output.append(f"• {' | '.join(pairs)}")
-
+    """适配 lark_md 文本；表格由 format_feishu_elements 单独提取。"""
     lines = []
-    table_buffer: List[str] = []
-
     for raw_line in content.splitlines():
         line = raw_line.rstrip()
-
-        # 处理表格行
-        if line.strip().startswith('|'):
-            table_buffer.append(line)
-            continue
-
-        # 刷新表格缓冲区
-        if table_buffer:
-            _flush_table_rows(table_buffer, lines)
-            table_buffer = []
-
         # 转换标题（# ## ### 等）
         if re.match(r'^#{1,6}\s+', line):
             title = re.sub(r'^#{1,6}\s+', '', line).strip()
@@ -248,8 +182,96 @@ def format_feishu_markdown(content: str) -> str:
 
         lines.append(line)
 
-    # 处理末尾的表格
-    if table_buffer:
-        _flush_table_rows(table_buffer, lines)
-
     return "\n".join(lines).strip()
+
+
+def _feishu_table_cells(line: str) -> List[str]:
+    line = line.strip()
+    if line.startswith("|"):
+        line = line[1:]
+    if line.endswith("|") and not line.endswith("\\|"):
+        line = line[:-1]
+    return [_BR_TAG_RE.sub(" / ", cell).strip().replace("\\|", "|")
+            for cell in re.split(r"(?<!\\)\|", line)]
+
+
+def _feishu_table_columns(header_line: str, separator_line: str) -> List[dict]:
+    header = _feishu_table_cells(header_line)
+    separators = _feishu_table_cells(separator_line)
+    if not 1 <= len(header) <= 50 or len(header) != len(separators):
+        return []
+
+    columns = []
+    for index, (name, separator) in enumerate(zip(header, separators)):
+        if not re.fullmatch(r":?-{3,}:?", separator):
+            return []
+        if not separator.endswith(":"):
+            alignment = "left"
+        elif separator.startswith(":"):
+            alignment = "center"
+        else:
+            alignment = "right"
+        columns.append({
+            "name": f"col_{index}",
+            "display_name": name,
+            "data_type": "lark_md",
+            "width": "auto",
+            "horizontal_align": alignment,
+        })
+    return columns
+
+
+def format_feishu_elements(content: str) -> List[dict]:
+    """表格使用根级 table 组件；其余内容保留为 lark_md 文本块。"""
+    elements = []
+    text_lines = []
+    lines = content.splitlines()
+    fence = None
+
+    def flush_text() -> None:
+        text = format_feishu_markdown("\n".join(text_lines))
+        if text:
+            elements.append({"tag": "div", "text": {"tag": "lark_md", "content": text}})
+        text_lines.clear()
+
+    index = 0
+    while index < len(lines):
+        line = lines[index]
+        marker = re.match(r"^\s*(`{3,}|~{3,})", line)
+        if marker:
+            token = marker.group(1)
+            if fence is None:
+                fence = token
+            elif token[0] == fence[0] and len(token) >= len(fence):
+                fence = None
+
+        columns = []
+        if fence is None and "|" in line and index + 1 < len(lines):
+            columns = _feishu_table_columns(line, lines[index + 1])
+        if not columns:
+            text_lines.append(line)
+            index += 1
+            continue
+
+        flush_text()
+        column_names = [column["name"] for column in columns]
+        rows = []
+        index += 2
+        while index < len(lines) and "|" in lines[index]:
+            cells = _feishu_table_cells(lines[index])
+            if len(cells) > len(columns):
+                break
+            cells.extend([""] * (len(columns) - len(cells)))
+            rows.append(dict(zip(column_names, cells)))
+            index += 1
+        elements.append({
+            "tag": "table",
+            "page_size": 10,
+            "row_height": "low",
+            "freeze_first_column": True,
+            "columns": columns,
+            "rows": rows,
+        })
+
+    flush_text()
+    return elements

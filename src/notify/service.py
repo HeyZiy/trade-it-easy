@@ -14,6 +14,7 @@ A股自选股智能分析系统 - 通知层
    - 邮件 SMTP
    - Pushover（手机/桌面推送）
 """
+import json
 import logging
 import requests
 from datetime import datetime
@@ -26,42 +27,56 @@ from src.notify.email import EmailSender
 logger = logging.getLogger(__name__)
 
 
-def _chunk_by_line(text: str, max_bytes: int) -> List[str]:
-    """按行累加到 UTF-8 字节预算内切片。
-
-    卡片 payload 必须在 json.dumps 之前切内容（切编码后的 JSON 会切坏结构，
-    旧法按字节硬切还会截断多字节汉字）；单行超预算时整行放行，不拆行。
-    """
-    chunks: List[str] = []
-    buf: List[str] = []
-    size = 0
-    for line in text.splitlines():
-        cost = len(line.encode("utf-8")) + 1
-        if buf and size + cost > max_bytes:
-            chunks.append("\n".join(buf))
-            buf, size = [], 0
-        buf.append(line)
-        size += cost
-    if buf:
-        chunks.append("\n".join(buf))
-    return chunks or [text]
-
-
-def _feishu_card(content: str) -> dict:
-    """把一段 lark_md 正文包成飞书自定义机器人卡片 payload。
-
-    卡片内 lark_md 渲染加粗/斜体/颜色/链接（text 消息里这些全按字面量显示）；
-    表格与图片仍不支持，故正文继续由 format_feishu_markdown 拍平。
-    """
+def _feishu_card(elements: List[dict]) -> dict:
     return {
         "msg_type": "interactive",
         "card": {
             "config": {"wide_screen_mode": True},
-            "elements": [
-                {"tag": "div", "text": {"tag": "lark_md", "content": content}},
-            ],
+            "elements": elements,
         },
     }
+
+
+def _feishu_fragment(element: dict, lines: list) -> dict:
+    if element["tag"] == "table":
+        return {**element, "rows": lines}
+    return {**element, "text": {**element["text"], "content": "\n".join(lines)}}
+
+
+def _feishu_cards(content: str, max_bytes: int) -> List[dict]:
+    """按完整行拆卡，表格续片保留列定义；单行超预算时整行放行。"""
+    from src.notify.formatters import format_feishu_elements
+
+    cards = []
+    pending_elements = []
+    for element in format_feishu_elements(content):
+        is_table = element["tag"] == "table"
+        lines = element["rows"] if is_table else element["text"]["content"].split("\n")
+        table_count = sum(e["tag"] == "table" for e in pending_elements) + is_table
+        fragment = None
+        start = 0
+
+        # 空表也需要保留列定义。
+        for end in range(1, max(1, len(lines)) + 1):
+            candidate = _feishu_fragment(element, lines[start:end])
+            # requests 默认转义非 ASCII，按整个 JSON 的序列化大小计费。
+            size = len(json.dumps(_feishu_card([*pending_elements, candidate])).encode("utf-8"))
+            if (pending_elements or fragment is not None) and (size > max_bytes or table_count > 5):
+                if fragment is not None:
+                    pending_elements.append(fragment)
+                cards.append(_feishu_card(pending_elements))
+                pending_elements = []
+                table_count = int(is_table)
+                start = end - 1
+                candidate = _feishu_fragment(element, lines[start:end])
+            fragment = candidate
+
+        pending_elements.append(fragment)
+
+    if not pending_elements:
+        pending_elements = [{"tag": "div", "text": {"tag": "lark_md", "content": ""}}]
+    cards.append(_feishu_card(pending_elements))
+    return cards
 
 
 class NotificationChannel(Enum):
@@ -231,38 +246,32 @@ class NotificationService(EmailSender):
         """
         通过飞书群机器人 Webhook 以交互卡片推送报告。
 
-        text 消息不渲染任何 Markdown（`**加粗**` 原样显示），故走 msg_type=interactive
-        卡片：正文先由 format_feishu_markdown 拍平表格（卡片同样不支持表格），
-        再按行分片包成多张卡片以避开长度限制。
+        文本使用 lark_md，表格使用原生 table 组件，按行分片以保留表头。
         注意：机器人安全设置请选「无需」或「自定义关键词」，勿选「签名校验」（本方法不计算签名）。
         """
-        from src.notify.formatters import format_feishu_markdown
-
         try:
             cfg = get_config()
             url = getattr(cfg, 'feishu_webhook_url', None)
             if not url:
                 logger.error("飞书 Webhook 未配置（FEISHU_WEBHOOK_URL 为空），无法推送")
 
-            text = format_feishu_markdown(content)
             max_bytes = int(getattr(cfg, 'feishu_max_bytes', 20000) or 20000)
-            chunks = _chunk_by_line(text, max_bytes)
+            cards = _feishu_cards(content, max_bytes)
 
             ok = True
-            for idx, chunk in enumerate(chunks, 1):
-                payload = _feishu_card(chunk)
+            for idx, payload in enumerate(cards, 1):
                 try:
                     resp = requests.post(url, json=payload, timeout=15)
                     data = resp.json()
                 except Exception as e:
-                    logger.error(f"飞书推送请求失败({idx}/{len(chunks)}): {e}")
+                    logger.error(f"飞书推送请求失败({idx}/{len(cards)}): {e}")
                     ok = False
                     continue
                 if data.get("code", 0) != 0:
-                    logger.error(f"飞书推送失败({idx}/{len(chunks)}): {data}")
+                    logger.error(f"飞书推送失败({idx}/{len(cards)}): {data}")
                     ok = False
                 else:
-                    logger.info(f"飞书推送成功({idx}/{len(chunks)})")
+                    logger.info(f"飞书推送成功({idx}/{len(cards)})")
             return ok
         except Exception as e:
             logger.error(f"飞书推送异常: {e}")
