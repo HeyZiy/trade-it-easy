@@ -62,7 +62,7 @@ class ClosingPrices:
                 except Exception:
                     price = None
                 if price is None:
-                    price = _at(get_etf_daily(code, adjust=None), asof, "date")
+                    price = _at(get_etf_daily(code), asof, "date")
                 self._prices[code, asof] = price
             except Exception:
                 logger.exception("原始ETF收盘数据缺失：%s %s", code, asof)
