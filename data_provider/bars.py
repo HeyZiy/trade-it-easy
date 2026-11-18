@@ -17,7 +17,7 @@
     ETF(51/52/53/55/56/58/15/16/18) → 新浪 fund_etf_hist_sina（带 amount；
       未复权原始价）——台账收盘价新浪保底、observe 现价补口（get_etf_daily）
     ETF 同码族                      → 东财 fund_etf_hist_em 双线（原始 OHLC+amount
-      与供应商官方后复权 hfq_ OHLC 同表；失败抛错不回退）——台账收盘价优先源、
+      与供应商官方后复权 hfq_ OHLC 同表；失败抛错不回退）——台账收盘价备源、
       跨资产动量池分数线（hfq 比值）、唐奇安通道观察与研究缓存口径
       （get_etf_daily_em）
     A股指数(000/399)          → 中证官网 csindex（000 权威源）
@@ -85,7 +85,7 @@ def get_etf_daily_em(code: str, end_date: str) -> pd.DataFrame:
     """东财双线日线：原始 OHLC + 供应商官方后复权 OHLC（hfq_ 前缀同表）。
 
     后复权含分红与份额折算，由供应商维护，不做启发式猜测。消费方：台账收盘价
-    （优先源，原始 close）、跨资产动量池分数线（hfq 比值，src/etf/rotation）、
+    （备源，原始 close）、跨资产动量池分数线（hfq 比值，src/etf/rotation）、
     唐奇安通道观察（src/etf/allocation、src/etf/trend）与研究缓存
     （research/tools/etf_data）。价格两条线来自同一供应商；成交额为元，
     成交量由手转换为份。失败抛错（区别于 get_etf_daily 返 None 的
@@ -121,7 +121,7 @@ def get_etf_daily_em(code: str, end_date: str) -> pd.DataFrame:
 def get_etf_daily(code: str) -> Optional[pd.DataFrame]:
     """ETF 日线全历史（新浪 fund_etf_hist_sina 单源，未复权原始价，带 amount）。
 
-    台账收盘价东财优先、新浪保底（ClosingPrices）；observe 现价补口走这里。
+    台账收盘价保底（ClosingPrices）和 observe 现价补口走这里。
     历史比值口径（池分数线等）用 get_etf_daily_em 的官方后复权，不用本函数。
     返回形状唯一：date 列升序，
     columns=['date','open','high','low','close','volume','amount']；

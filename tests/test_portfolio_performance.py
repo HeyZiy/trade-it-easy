@@ -158,6 +158,9 @@ def test_raw_close_feed_rejects_stale_future_and_duplicate_rows(monkeypatch):
         return frames[code]
     def em_unavailable(code, end_date):
         raise ValueError("东财行情为空")
+    def ad_unavailable(codes, begin_date, end_date):
+        raise TimeoutError("AD 行情不可用")
+    monkeypatch.setattr("data_provider.fetchers.amazingdata.market.fetch_kline", ad_unavailable)
     monkeypatch.setattr("data_provider.bars.get_etf_daily_em", em_unavailable)
     monkeypatch.setattr("data_provider.bars.get_etf_daily", fetch)
     feed = ClosingPrices()
@@ -166,29 +169,47 @@ def test_raw_close_feed_rejects_stale_future_and_duplicate_rows(monkeypatch):
     assert seen == list(frames)
 
 
-def test_raw_close_feed_prefers_em_raw_close_and_falls_back_to_sina(monkeypatch):
+def test_raw_close_feed_batches_amazingdata_and_uses_etf_fallbacks_for_gaps(monkeypatch):
     import akshare as ak
     from src.trade_ledger.closing_prices import ClosingPrices
-    asof = "2026-11-17"
+    asof = "2026-11-18"
+    ad_frames = {
+        "600519": pd.DataFrame({"kline_time": [asof], "close": [1500]}),
+        "513500": pd.DataFrame({"kline_time": [asof], "close": [2.3]}),
+        "159632": pd.DataFrame({"kline_time": ["2026-11-17"], "close": [2.366]}),
+        "510050": pd.DataFrame({"kline_time": [asof], "close": pd.Series([pd.NA], dtype="Float64")}),
+    }
     em_frames = {
         "510300": pd.DataFrame({"date": [asof], "close": [10], "hfq_close": [20]}),
-        "510050": pd.DataFrame({"date": ["2026-11-16"], "close": [9]}),
+        "510050": pd.DataFrame({"date": ["2026-11-17"], "close": [9]}),
     }
-    em_calls, sina_calls = [], []
+    ad_calls, em_calls, sina_calls = [], [], []
+
+    def ad_fetch(codes, begin_date, end_date):
+        ad_calls.append((codes, begin_date, end_date))
+        return ad_frames
+
     def em_fetch(code, end_date):
+        assert end_date == asof
         em_calls.append(code)
         if code == "159632":
             raise ValueError("东财行情为空")
         return em_frames[code]
+
     def sina_fetch(symbol):
         sina_calls.append(symbol)
-        return pd.DataFrame({"date": [asof], "close": [{"sz159632": 11, "sh510050": 12}[symbol]],
+        return pd.DataFrame({"date": [asof], "close": [{"sz159632": 2.39, "sh510050": 12}[symbol]],
                              "volume": [10000]})
+
+    monkeypatch.setattr("data_provider.fetchers.amazingdata.market.fetch_kline", ad_fetch)
     monkeypatch.setattr("data_provider.bars.get_etf_daily_em", em_fetch)
     monkeypatch.setattr(ak, "fund_etf_hist_sina", sina_fetch)
     feed = ClosingPrices()
-    assert feed.close_prices(["510300", "159632", "510050"], asof) == {
-        "510300": 10, "159632": 11, "510050": 12}
+    codes = ["600519", "513500", "510300", "159632", "510050"]
+    closes = {"600519": 1500, "513500": 2.3, "510300": 10, "159632": 2.39, "510050": 12}
+    assert feed.close_prices(codes, asof) == closes
+    assert feed.close_prices(codes, asof) == closes
+    assert ad_calls == [(codes, asof, asof)]
     assert em_calls == ["510300", "159632", "510050"]
     assert sina_calls == ["sz159632", "sh510050"]
 

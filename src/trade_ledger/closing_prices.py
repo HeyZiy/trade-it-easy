@@ -6,7 +6,8 @@ import math
 
 import pandas as pd
 
-from data_provider.codes import is_a_stock_code, is_etf_code
+from data_provider.codes import is_a_stock_code, is_etf_code, normalize_stock_code
+from data_provider.types import safe_float
 
 logger = logging.getLogger(__name__)
 
@@ -25,48 +26,60 @@ def _at(frame, asof, date_column):
     rows = frame.loc[days == pd.Timestamp(asof)]
     if len(rows) != 1:
         return None
-    value = float(pd.to_numeric(rows["close"], errors="coerce").iloc[0])
-    return value if math.isfinite(value) and value > 0 else None
+    value = safe_float(rows["close"].iloc[0])
+    return value if value is not None and math.isfinite(value) and value > 0 else None
+
+
+def _etf_fallback_close(code, asof):
+    from data_provider.bars import get_etf_daily, get_etf_daily_em
+
+    try:
+        price = _at(get_etf_daily_em(code, asof), asof, "date")
+    except Exception:
+        price = None
+    if price is not None:
+        return price
+    try:
+        return _at(get_etf_daily(code), asof, "date")
+    except Exception:
+        logger.exception("原始ETF收盘数据缺失：%s %s", code, asof)
+        return None
 
 
 class ClosingPrices:
-    """一次收盘任务共享行情缓存，两个资金池重叠代码不重复取数。"""
+    """股票和 ETF 优先走 AmazingData 批量日线，ETF 缺价时依次走东财、新浪。"""
 
     def __init__(self):
         self._prices = {}
         self._indices = {}
 
     def close_prices(self, codes, asof):
-        missing = [c for c in codes if (c, asof) not in self._prices]
-        stocks = [c for c in missing if is_a_stock_code(c)]
-        if stocks:
+        pending = {}
+        etfs = set()
+        for code in codes:
+            if (code, asof) in self._prices or code in pending:
+                continue
+            if is_etf_code(code):
+                etfs.add(code)
+            elif not is_a_stock_code(code):
+                logger.error("未识别的股票或 ETF 代码：%s %s", code, asof)
+                self._prices[code, asof] = None
+                continue
+            pending[code] = normalize_stock_code(code)
+
+        frames = {}
+        if pending:
             from data_provider.fetchers.amazingdata.market import fetch_kline
             try:
-                frames = fetch_kline(stocks, asof, asof)
-                for code in stocks:
-                    self._prices[code, asof] = _at(frames.get(code), asof, "kline_time")
+                frames = fetch_kline(list(dict.fromkeys(pending.values())), asof, asof)
             except Exception:
-                logger.exception("原始股票收盘数据缺失：%s", asof)
-                self._prices.update({(c, asof): None for c in stocks})
-        for code in missing:
-            if code in stocks:
-                continue
-            try:
-                if not is_etf_code(code):
-                    raise ValueError("不是已知股票或ETF代码")
-                from data_provider.bars import get_etf_daily, get_etf_daily_em
-                # 台账股数与未复权价格配对；东财当日收盘发布早于新浪，优先东财原始线，
-                # 失败或缺当日价再回退新浪；不把研究用连续价格当作资产市值。
-                try:
-                    price = _at(get_etf_daily_em(code, asof), asof, "date")
-                except Exception:
-                    price = None
-                if price is None:
-                    price = _at(get_etf_daily(code), asof, "date")
-                self._prices[code, asof] = price
-            except Exception:
-                logger.exception("原始ETF收盘数据缺失：%s %s", code, asof)
-                self._prices[code, asof] = None
+                logger.exception("AmazingData 批量收盘数据查询失败：%s", asof)
+
+        for code, bare_code in pending.items():
+            price = _at(frames.get(bare_code), asof, "kline_time")
+            if price is None and code in etfs:
+                price = _etf_fallback_close(code, asof)
+            self._prices[code, asof] = price
         return {c: self._prices[c, asof] for c in codes if self._prices.get((c, asof)) is not None}
 
     def index_prices(self, codes, asof):

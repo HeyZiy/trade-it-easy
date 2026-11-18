@@ -79,7 +79,6 @@ def benchmark_nav(state, asof, index_prices):
     return float(current) / spec["baseline_price"] if positive(current) else None
 
 
-# 东财当日收盘与多数场外净值此时已发布；早于该时点仍按前一交易日估值。
 VALUATION_CUTOFF = time(18, 30)
 
 
