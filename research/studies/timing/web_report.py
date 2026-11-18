@@ -2,7 +2,6 @@
 
 import logging
 from datetime import datetime, time, timedelta, timezone
-from functools import lru_cache
 
 import numpy as np
 import pandas as pd
@@ -119,16 +118,6 @@ def archive_group(archive, code, key):
     return group
 
 
-@lru_cache(maxsize=1)
-def _listed_etfs(day):
-    from data_provider.bars import get_etf_universe
-
-    listed = get_etf_universe()
-    if listed is None or listed.empty:
-        raise ValueError("ETF 名单暂不可用，请稍后重试。")
-    return dict(zip(listed.code, listed.name))
-
-
 def _price_history(rows, cutoff):
     history = rows.set_index(pd.to_datetime(rows["date"], errors="raise"))
     fields = ["open", "high", "low", "close"]
@@ -166,17 +155,16 @@ def load_cached(code, cache):
 
 
 def load_live(code):
-    """Verify a listed ETF, then read provider-adjusted OHLC without modifying the research cache."""
+    """Load historical adjusted OHLC; current listing status is not a requirement."""
     from data_provider.bars import get_etf_daily_em
     from data_provider.fetchers.amazingdata import market
     from data_provider.fetchers.amazingdata.client import is_configured
+    from data_provider.security_names import security_name
 
     now = datetime.now(timezone(timedelta(hours=8)))
     today = now.date()
     cutoff = today if now.time() >= time(15, 30) else today - timedelta(days=1)
-    name = _listed_etfs(today).get(code)
-    if name is None:
-        raise ValueError("在当前沪深上市 ETF 名单中未找到该代码。")
+    name = security_name(code)
     end = cutoff.isoformat()
     try:
         return name, _price_history(get_etf_daily_em(code, end), end), SOURCE

@@ -34,7 +34,7 @@ class TimingReports:
 
     def _path(self, code):
         if not _valid_code(code):
-            raise ValueError("请输入 6 位沪深上市 ETF 代码。")
+            raise ValueError("请输入 6 位沪深 ETF 代码。")
         return self.cache / f"{code}.json"
 
     def _load(self, code):

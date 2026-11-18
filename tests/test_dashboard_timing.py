@@ -9,7 +9,7 @@ import pandas as pd
 import pytest
 
 import dashboard
-from data_provider import bars
+from data_provider import bars, security_names
 from research.studies.timing import web_report
 from src.dashboard_timing import TimingReports
 
@@ -76,13 +76,19 @@ def test_archive_opens_without_fetching_and_keeps_cycle_window_separate(reports)
     assert not list(reports.cache.glob("*.json"))
 
 
-def test_generate_new_etf_publishes_full_before_rolling_and_reopens(reports, monkeypatch):
-    code = "512690"
+def test_generate_etf_missing_from_directory_publishes_full_before_rolling_and_reopens(reports, monkeypatch):
+    code = "563360"
     dates = pd.bdate_range("2023-01-03", periods=482)
     close = 2 + np.arange(len(dates)) / 180
     raw = pd.DataFrame({"date": dates, "hfq_open": close, "hfq_high": close + .03,
                         "hfq_low": close - .02, "hfq_close": close})
-    monkeypatch.setattr(web_report, "_listed_etfs", lambda _: {code: "测试 ETF"})
+    directory_calls = []
+
+    def incomplete_directory():
+        directory_calls.append(True)
+        return pd.DataFrame({"code": ["512690"], "name": ["酒 ETF"]})
+
+    monkeypatch.setattr(bars, "get_etf_universe", incomplete_directory)
     monkeypatch.setattr(bars, "get_etf_daily_em", lambda *args: raw)
     real_rolling = web_report.rolling_report
     rolling_started, release = Event(), Event()
@@ -98,7 +104,8 @@ def test_generate_new_etf_publishes_full_before_rolling_and_reopens(reports, mon
     assert http(API, payload={"code": code}, write_header=False)[0] == 403
     assert http(API, payload={"code": code}) == (202, {"phase": "queued"})
     try:
-        assert rolling_started.wait(timeout=10)
+        assert rolling_started.wait(timeout=10), reports.overview(code)["error"]
+        assert not directory_calls
         assert http(API, payload={"code": code}) == (202, {"phase": "rolling"})
         current = http(API + "/" + code)[1]
         assert current["phase"] == "rolling"
@@ -114,7 +121,7 @@ def test_generate_new_etf_publishes_full_before_rolling_and_reopens(reports, mon
     reports.worker.shutdown()
 
     reloaded = TimingReports(reports.cache)
-    assert reloaded.catalog()[0]["name"] == "测试 ETF"
+    assert reloaded.catalog()[0]["name"] == code
     saved = reloaded.overview(code)
     assert saved["phase"] is None and saved["rolling_state"] == "ready"
     assert {row["years"] for row in saved["rolling"]} == {1}
@@ -162,7 +169,7 @@ def test_eastmoney_outage_uses_full_amazingdata_history(monkeypatch):
 
     expected = {"date": ["2024-01-02"], "hfq_open": [1.0], "hfq_high": [2.0],
                 "hfq_low": [1.0], "hfq_close": [2.0]}
-    monkeypatch.setattr(web_report, "_listed_etfs", lambda _: {"159920": "恒生 ETF"})
+    security_names.remember({"159920": "恒生 ETF"})
 
     def eastmoney_down(*args):
         raise ConnectionError
