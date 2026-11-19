@@ -37,8 +37,8 @@
 # ── 市场观察周报：每周一 14:40 生成市场观察报告并推送 ──
 40 14 * * 1 cd /root/trade-it-easy && flock -n /tmp/etf.lock /root/miniconda/envs/rt/bin/python etf_observe.py > /dev/null 2>> logs/cron_error.log
 
-# ── 跨资产动量：每交易日 10:40 更新实际账户建议并推送 ──
-40 10 * * 1-5 cd /root/trade-it-easy && flock -n /tmp/etf-rotation.lock /root/miniconda/envs/rt/bin/python etf_rotation.py > /dev/null 2>> logs/cron_error.log
+# ── 跨资产动量：每交易日 14:50 更新实际账户建议并推送 ──
+50 14 * * 1-5 cd /root/trade-it-easy && flock -n /tmp/etf-rotation.lock /root/miniconda/envs/rt/bin/python etf_rotation.py > /dev/null 2>> logs/cron_error.log
 
 # ── 收盘成绩：当日18:30（北京时间）采集投资账户当日收盘估值，并回补最近5个交易日不完整记录；
 #    股票和 ETF 优先用 AmazingData，ETF 缺价时依次改用东财、新浪；

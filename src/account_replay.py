@@ -6,7 +6,7 @@ from decimal import Decimal, ROUND_HALF_UP
 import math
 import re
 
-from data_provider.codes import canonical_stock_code, is_a_stock_code, is_etf_code
+from data_provider.codes import FUND_FEE_PREFIXES, canonical_stock_code, is_a_stock_code
 from data_provider.security_names import security_name
 from src import portfolio_config
 
@@ -72,8 +72,7 @@ def net_subscription(amount, fee):
 def holding_kind(code):
     if is_a_stock_code(code):
         return "stock"
-    # 行情路由还把 16、18 码族归入基金接口，对账时将它们单列。
-    if is_etf_code(code) and not code.startswith(("16", "18")):
+    if code.startswith(FUND_FEE_PREFIXES):
         return "etf"
     return "other"
 

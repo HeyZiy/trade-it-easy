@@ -9,7 +9,7 @@ import numpy as np
 import pandas as pd
 
 from . import bars
-from .codes import is_etf_code, normalize_stock_code
+from .codes import is_etf_code, is_sh_lof_code, normalize_stock_code
 
 logger = logging.getLogger(__name__)
 
@@ -97,7 +97,8 @@ def etf_daily_bars(
     observation/online_research 返回截止 completed_through（默认 end_date）的后复权 HLC/OHLC。
     history_issue 返回非空原因时，拒绝整段历史并继续尝试下一来源。
     """
-    requested = {code: normalize_stock_code(code) for code in codes if is_etf_code(code)}
+    requested = {code: normalize_stock_code(code) for code in codes
+                 if is_etf_code(code) or (policy == "rotation" and is_sh_lof_code(code))}
     result: dict[str, EtfBars] = {}
     cutoff = min(end_date, completed_through) if completed_through is not None else end_date
     fields = HLC if policy == "observation" else OHLC

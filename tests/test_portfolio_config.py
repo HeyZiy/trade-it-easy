@@ -168,7 +168,8 @@ def test_rotation_pool_seeded_on_init_and_editable(account):
     from src.etf.rotation import pool_from_config
     current=config.data(account)
     seeded=pool_from_config(current['config'])
-    assert len(seeded)==15 and seeded[0][0]=='510300'
+    assert len(seeded) == 16 and seeded[0][0] == '510300'
+    assert seeded[-1][0] == '501018'
     draft=deepcopy(current['config'])
     draft['rotation']={'pool':[{'code':'510300','group':'国内权益'},{'code':'518880','group':'商品'}]}
     config.update(account,{'revision':current['revision'],'config':draft})

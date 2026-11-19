@@ -27,6 +27,7 @@ ROOT = Path(__file__).resolve().parents[1]
 V1_SCRIPT = ROOT / 'research/studies/etf/v1.py'
 MEDIUM_SCRIPT = ROOT / 'research/studies/etf/medium_correlation_jq.py'
 BREADTH_SCRIPT = ROOT / 'research/studies/etf/study_breadth_jq.py'
+ROTATION_SCRIPT = ROOT / 'research/studies/rotation/unified.py'
 
 DATES = pd.bdate_range('2025-01-01', periods=260)
 SCORE_EXIT_CONFIRM_CALLS = 3              # 与脚本 SCORE_EXIT_CONFIRM 一致
@@ -222,6 +223,59 @@ def scores_of(world):
 # ---------------------------------------------------------------------------
 # v1.py：基线轮动的订单簿行为
 # ---------------------------------------------------------------------------
+
+@pytest.fixture
+def cross_asset_script():
+    namespace = {}
+    exec(compile(ROTATION_SCRIPT.read_text(encoding='utf-8'), str(ROTATION_SCRIPT), 'exec'), namespace)
+    return namespace
+
+
+def test_cross_asset_pool_and_scores_match_account(cross_asset_script):
+    from src.etf.rotation import ensemble_score
+    from src.portfolio_config import example
+
+    strategy = cross_asset_script['EtfRotationStrategy']()
+    assert [code.split('.')[0] for code in strategy.etf_pool] == [
+        member['code'] for member in example()['rotation']['pool']]
+    closes = np.r_[np.linspace(1, 1.3, 14), np.linspace(1.29, 1.4, 16)]
+    history = pd.DataFrame({'close': closes})
+    cross_asset_script['attribute_history'] = lambda *args, **kwargs: history
+    score = strategy.calculate_momentum_score(strategy.etf_pool[0], 1.42)
+    assert score == pytest.approx(ensemble_score(closes, 1.42))
+    assert strategy.calculate_momentum_score(strategy.etf_pool[0], 1.3) == 0.0
+
+
+@pytest.mark.parametrize('blocked_exit', [False, True])
+def test_cross_asset_executes_sells_before_equal_weight_buys(cross_asset_script, blocked_exit):
+    strategy = cross_asset_script['EtfRotationStrategy']()
+    retained, incoming, outgoing = strategy.etf_pool[:3]
+    quotes = {code: NS(last_price=2.0) for code in (retained, incoming, outgoing)}
+    portfolio = NS(positions={retained: NS(total_amount=1500), outgoing: NS(total_amount=150)},
+                   available_cash=700, total_value=4000)
+    orders = []
+
+    def sell(code, target_shares):
+        orders.append(('sell_to', code, target_shares))
+        if not blocked_exit or code != outgoing:
+            position = portfolio.positions[code]
+            portfolio.available_cash += (position.total_amount - target_shares) * 2 - 5
+            position.total_amount = target_shares
+
+    cross_asset_script['get_current_data'] = lambda: quotes
+    cross_asset_script['order_target'] = sell
+    cross_asset_script['order'] = lambda code, shares: orders.append(('buy', code, shares))
+    strategy.rank_and_filter = lambda quotes: [retained, incoming]
+    strategy.execute_trade(NS(portfolio=portfolio))
+    assert orders == [('sell_to', outgoing, 0)] + ([] if blocked_exit else [
+        ('sell_to', retained, 900), ('buy', incoming, 900)])
+
+    orders.clear()
+    portfolio.positions = {retained: NS(total_amount=1500), incoming: NS(total_amount=200)}
+    strategy.rank_and_filter = lambda quotes: [incoming, retained]
+    strategy.execute_trade(NS(portfolio=portfolio))
+    assert not orders
+
 
 def test_positive_holding_can_stay_below_the_old_cost_line(v1):
     v1.hold('E1', cost=12.)

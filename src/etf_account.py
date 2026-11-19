@@ -8,7 +8,7 @@ from pathlib import Path
 from uuid import uuid4
 
 from data_provider import canonical_stock_code, fund_names, security_names
-from data_provider.codes import A_STOCK_PREFIXES, ETF_PREFIXES, normalize_stock_code
+from data_provider.codes import A_STOCK_PREFIXES, FUND_FEE_PREFIXES, normalize_stock_code
 from data_provider.security_names import security_name
 from src import account_advice, account_valuation, portfolio_config
 from src.account_advice import baseline, strategy_views, suggestions
@@ -22,7 +22,6 @@ from src.account_valuation import valuation_day
 from src.json_store import locked as _locked
 from src.trading_calendar import SHANGHAI, shanghai_today as _today
 
-ETF_HOLDING_PREFIXES = tuple(prefix for prefix in ETF_PREFIXES if prefix not in {"16", "18"})
 logger = logging.getLogger(__name__)
 
 
@@ -494,7 +493,7 @@ def account_data(path):
             "fund_subscription_fee": state["_config"].get("fund_subscription_fee"),
             "fund_subscription_fees": fund_subscription_fees,
             "trade_fees": state["_config"].get("trade_fees", {}),
-            "trade_fee_code_prefixes": {"stock": A_STOCK_PREFIXES, "etf": ETF_HOLDING_PREFIXES},
+            "trade_fee_code_prefixes": {"stock": A_STOCK_PREFIXES, "etf": FUND_FEE_PREFIXES},
             "missing_security_names": _missing_security_names(state, view["positions"], strategies),
             "fund_names": {code: names.get(code) for code in sorted(fund_codes)},
             "performance": latest, "trades": [{**{k: v for k, v in e.items() if k != "request"},

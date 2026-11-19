@@ -8,7 +8,8 @@ from typing import Literal, Optional, Sequence
 
 import pandas as pd
 
-from .codes import _split_prefix, is_a_stock_code, is_etf_code, market_suffix, normalize_stock_code
+from .codes import (_split_prefix, is_a_stock_code, is_listed_fund_code, is_sh_lof_code,
+                    market_suffix, normalize_stock_code)
 from .types import safe_float
 
 logger = logging.getLogger(__name__)
@@ -60,12 +61,13 @@ def get_etf_daily_em(
     code: str, end_date: str, *, begin_date: str = "1990-01-01",
     adjust: Literal["raw", "hfq", "both"] = "both",
 ) -> pd.DataFrame:
-    """东财单源日线；各口径只请求所需序列。后复权字段带 hfq_ 前缀，量为份、额为元。"""
+    """东财 ETF/沪市 LOF 日线。后复权字段带 hfq_ 前缀，量为份、额为元。"""
     import akshare as ak
 
     symbol = normalize_stock_code(code)
-    if len(symbol) != 6 or not symbol.isdigit() or not is_etf_code(symbol):
-        raise ValueError(f"{code} 不是受支持的 ETF 代码")
+    if len(symbol) != 6 or not symbol.isdigit() or not is_listed_fund_code(symbol):
+        raise ValueError(f"{code} 不是受支持的场内基金代码")
+    fetch = ak.fund_lof_hist_em if is_sh_lof_code(symbol) else ak.fund_etf_hist_em
     adjustments = {"raw": ("",), "hfq": ("hfq",), "both": ("", "hfq")}.get(adjust)
     if adjustments is None:
         raise ValueError(f"不支持的东财 ETF 复权口径: {adjust}")
@@ -75,8 +77,7 @@ def get_etf_daily_em(
     start, end = begin_date.replace("-", ""), end_date.replace("-", "")
     tables = []
     for adjustment in adjustments:
-        df = ak.fund_etf_hist_em(symbol=symbol, period="daily", start_date=start,
-                                 end_date=end, adjust=adjustment)
+        df = fetch(symbol=symbol, period="daily", start_date=start, end_date=end, adjust=adjustment)
         if df is None or df.empty:
             raise ValueError(f"{code} 东财 {adjustment or 'raw'} 行情为空")
         df = df.rename(columns=rename)
@@ -106,7 +107,7 @@ def get_etf_daily(code: str) -> Optional[pd.DataFrame]:
     空/失败返回 None；非 ETF 码族拒绝（个股走 DataFetcherManager）。
     amount 为元口径。
     """
-    if not is_etf_code(code):
+    if not is_listed_fund_code(code):
         logger.warning(f"[bars] {code} 不是 ETF：ETF 日线请传 ETF 代码；个股走 DataFetcherManager")
         return None
     import akshare as ak
@@ -157,13 +158,13 @@ def _etf_fallback_close(code: str, asof: str) -> Optional[float]:
 
 
 def listed_close_prices(codes: Sequence[str], asof: str) -> dict[str, float]:
-    """股票与 ETF 共用 AmazingData 批量收盘；ETF 缺价才尝试东财原始价、再尝试新浪。"""
+    """股票与场内基金共用 AmazingData 批量收盘；基金缺价再尝试东财和新浪。"""
     pending = {}
     for code in codes:
-        if is_etf_code(code) or is_a_stock_code(code):
+        if is_listed_fund_code(code) or is_a_stock_code(code):
             pending[code] = normalize_stock_code(code)
         else:
-            logger.error("未识别的股票或 ETF 代码：%s %s", code, asof)
+            logger.error("未识别的股票或场内基金代码：%s %s", code, asof)
     if not pending:
         return {}
 
@@ -178,7 +179,7 @@ def listed_close_prices(codes: Sequence[str], asof: str) -> dict[str, float]:
     prices = {}
     for code, bare_code in pending.items():
         price = close_on_date(frames.get(bare_code), asof, "kline_time")
-        if price is None and is_etf_code(code):
+        if price is None and is_listed_fund_code(code):
             price = _etf_fallback_close(code, asof)
         if price is not None:
             prices[code] = price

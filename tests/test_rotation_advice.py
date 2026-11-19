@@ -60,6 +60,31 @@ def test_budget_and_cash_both_limit_buy(account):
     assert strategy(account)['suggestions'][0]['amount'] + 5 <= 500
 
 
+def test_two_target_partial_fills_persist_across_rank_swap(account, monkeypatch):
+    codes = ['510300', '501018']
+    prices = dict.fromkeys(codes, 2)
+    rows = [RotationRow(code, code, '场内基金', 2, 2, 2 - rank / 10, True, rank)
+            for rank, code in enumerate(codes, 1)]
+    publish('2025-01-07', rows, prices, {}, path=account)
+    assert [(item['code'], item['qty']) for item in strategy(account)['suggestions']] == [
+        ('510300', 400), ('501018', 400)]
+    event(account, 'buy', code='510300', qty=200, price=2, fee=5)
+    event(account, 'buy', code='501018', qty=100, price=2, fee=5)
+    monkeypatch.setattr(wallet, '_today', lambda: date(2025, 1, 8))
+    publish('2025-01-08', list(reversed(rows)), prices, {}, path=account)
+    assert {item['code']: item['qty'] for item in strategy(account)['suggestions']} == {
+        '510300': 200, '501018': 300}
+
+
+def test_larger_manual_fill_does_not_trigger_a_corrective_sale(account):
+    event(account, 'cash_assign', cash_allocations={'core': 0, 'rotation': 3000})
+    update(account)
+    assert strategy(account)['suggestions'][0]['qty'] == 900
+    event(account, 'buy', code='510300', qty=1000, price=2, fee=5)
+    assert strategy(account)['suggestions'] == []
+    assert strategy(account)['advice_status'] == '继续持有，目标组合未变'
+
+
 def test_switch_only_sells_own_shares_and_uses_net_proceeds(account):
     event(account, 'buy', code='513100', name='旧仓', qty=500, price=2, fee=5)
     # 先让买入份额跨日变为可卖。

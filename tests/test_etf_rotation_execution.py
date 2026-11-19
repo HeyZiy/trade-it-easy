@@ -38,13 +38,13 @@ def test_fetch_bars_excludes_bars_after_decision_date(monkeypatch):
     calls = []
     def fake(code, end_date):
         calls.append(end_date)
-        return _em_frame([10.0] * 30, [20.0] * 30)
+        return _em_frame([10.0] * 34, [20.0] * 34)
     monkeypatch.setattr("data_provider.bars.get_etf_daily_em", fake)
-    bars = fetch_bars(["510300"], decision_date=date(2026, 8, 28))
+    bars = fetch_bars(["510300"], decision_date=date(2026, 9, 1))
     frame = bars["510300"].history
-    assert calls == ["2026-08-28"]
-    assert frame.index.max() == pd.Timestamp("2026-08-28")
-    assert frame["close"].tolist() == [10.0] * 28
+    assert calls == ["2026-09-01"]
+    assert frame.index.max() == pd.Timestamp("2026-09-01")
+    assert frame["close"].tolist() == [10.0] * 32
 
 
 def test_fetch_bars_skips_code_when_anchor_close_invalid(monkeypatch):
@@ -56,10 +56,10 @@ def test_fetch_bars_skips_code_when_anchor_close_invalid(monkeypatch):
 
 
 def test_fetch_bars_anchors_to_confirmed_previous_trading_day(monkeypatch):
-    primary = _em_frame([10.] * 28 + [99.] * 2, [20.] * 30)
+    primary = _em_frame([10.] * 30 + [99.] * 2, [20.] * 32)
     monkeypatch.setattr("data_provider.bars.get_etf_daily_em", lambda code, end_date: primary)
-    bars = fetch_bars(["510300"], date(2026, 8, 31), prev_trading_day=date(2026, 8, 28))
-    assert bars["510300"].history.loc["2026-08-28", "close"] == 10.
+    bars = fetch_bars(["510300"], date(2026, 9, 2), prev_trading_day=date(2026, 8, 30))
+    assert bars["510300"].history.loc["2026-08-30", "close"] == 10.
 
 
 @pytest.mark.parametrize("problem", ["outage", "short", "stale", "bad_close", "duplicate"])

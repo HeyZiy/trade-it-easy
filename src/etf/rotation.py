@@ -1,37 +1,4 @@
-# -*- coding: utf-8 -*-
-"""
-===================================
-跨资产动量 — 单只全仓引擎
-===================================
-
-把原15只研究线 `research/studies/rotation/study_etf_fit_jq.py`（聚宽单文件策略）
-移植为本地日频模拟账户的判定核，交易语义保持一致：
-
-  1. 标的池 rotation.pool（pool_from_config），跨国内权益 /
-     海外权益 / 商品 / 利率等资产类别；新账户初始化以示例配置的 15 只为种子。
-     未配置池子时入口暂停建议；被移出池子的持仓由建议层兜底卖出。
-     改池后的结果与旧池回测不可比，换池前自行回测验证。
-  2. 打分：25 根已完成日线收盘 + 当日现价共 26 点，对对数价格做加权线性回归
-     （权重 w 从 1 线性升到 2），score = 年化涨幅 × 加权 R²；
-     近 3 个日环比任一 < 0.95（单日跳水）则 score 记 0。
-  3. 合格候选：0 < score < 5（严格两端，上限 5 是研究线的实际过滤规则）。
-  4. 仓位：只在合格候选中排名第一的一只上全仓；无合格候选则空仓。
-  5. 换仓：现持仓不再是合格候选第一名时，卖出并买入新的第一名；
-     仍为第一名则不调整数量（不做再平衡、不加仓、不止损）。
-
-与聚宽版的已知口径差（实现即事实，写进策略文档）：
-  - 决策时点：研究线在聚宽 10:40 用分钟现价决策；本地入口按运行时刻取实时报价，
-    部署在10:40即为同一口径；报价缺失时收盘仅展示，整轮不调仓。
-  - 复权：研究线用聚宽 fq='pre'；本地用东财官方后复权日线（含分红与份额折算），
-    按最近已完成 bar 的原始收盘整段缩放，使历史与当日现价同单位。
-    除息日当天现价已除息、历史仍锚定前一日含息收盘，会出现等于分红幅度的
-    单日假跳水；触发跳水阈值即记 0 分回避，不做启发式猜测。
-  - 成交：本地是名义影子成交台账，新成交按万二/最低5元计费；
-    卖出净回款用于买入资金预检，未模拟滑点。
-
-判定核（momentum_score / build_rows / plan_rotation）零 I/O、无状态：
-每天从日线与现价重算，跨日只依赖台账流水（持仓与现金的唯一事实来源）。
-"""
+"""真实账户的跨资产轮动评分、目标与调仓计划；只给建议，不执行交易。"""
 
 from __future__ import annotations
 
@@ -43,15 +10,15 @@ from typing import Dict, List, Optional, Sequence, Tuple
 import pandas as pd
 
 from data_provider.etf import EtfBars, etf_daily_bars
-from src.etf.momentum import (DIVE_RATIO, SCORE_DAYS, EtfOrder,
-                              momentum_score)
-from src.mx.executor import floor_lot
 from data_provider.security_names import security_name
+from src.etf.momentum import DIVE_RATIO, EtfOrder, weighted_trend_score
+from src.mx.executor import floor_lot
 from src.trading_calendar import latest_trading_day_on_or_before
 
-# ── 研究线参数（research/studies/rotation/study_etf_fit_jq.py；
-#    趋势分参数 SCORE_DAYS/DIVE_RATIO 居 src/etf/momentum.py 单点）──
 
+MOMENTUM_WINDOWS = (15, 20, 25, 30)
+LOOKBACK_DAYS = max(MOMENTUM_WINDOWS)
+TARGET_COUNT = 2
 SCORE_LOW = 0.0          # 合格下限（严格大于）
 SCORE_HIGH = 5.0         # 合格上限（严格小于）
 STALE_DAYS = 10          # 交易日历不可用时：最后日线距今 > N 自然日 → 剔除
@@ -59,7 +26,7 @@ STALE_DAYS = 10          # 交易日历不可用时：最后日线距今 > N 自
 ACCOUNT = "etf_rotation"
 COMMISSION = 0.0002      # 轮动建议预估佣金
 MIN_COMMISSION = 5.0     # 新成交最低佣金5元
-SCORE_HINT = "10:40"     # 研究线的决策时点；部署 cron 应对齐（报告里展示）
+
 
 def pool_from_config(config) -> Tuple[Tuple[str, str, str], ...]:
     """生效池唯一来源：账户配置 rotation.pool；未设置时拒绝运行。"""
@@ -84,7 +51,22 @@ class RotationRow:
     rank: int = 0         # 合格候选内排名（1 = 最强）；不合格为 0
 
 
-# ── 判定核（零 I/O；momentum_score/SCORE_DAYS/DIVE_RATIO 引自趋势分引擎）──
+# ── 判定核（零 I/O）──
+
+
+def ensemble_score(closes: Sequence[float], last_price: float) -> float:
+    prices = [*closes[-LOOKBACK_DAYS:], last_price]
+    if len(prices) != LOOKBACK_DAYS + 1 or not all(
+            math.isfinite(price) and price > 0 for price in prices):
+        return math.nan
+    if any(current / previous < DIVE_RATIO
+           for previous, current in zip(prices[-4:-1], prices[-3:])):
+        return 0.0
+    try:
+        return math.fsum(weighted_trend_score(prices[-(window + 1):])
+                         for window in MOMENTUM_WINDOWS) / len(MOMENTUM_WINDOWS)
+    except OverflowError:
+        return math.nan
 
 
 def is_eligible(score: float) -> bool:
@@ -111,9 +93,9 @@ def affordable_shares(cash: float, price: float) -> int:
 def _prepare_bars(df: pd.DataFrame, decision_date: date,
                   prev_trading_day: Optional[date]) -> Tuple[Optional[List[float]],
                                                             Optional[float], str]:
-    """单只日线 → (25 根已完成收盘, 当日 bar 收盘 fallback, 跳过原因)。
+    """单只日线 → (30 根已完成收盘, 当日 bar 收盘 fallback, 跳过原因)。
 
-    决策日当天的 bar 不进历史窗口（研究线用 25 根此前日线 + 当日现价）；
+    决策日当天的 bar 不进历史窗口（研究线用 30 根此前日线 + 当日现价）；
     若供应商日线盘中已包含当日 bar，其收盘作为现价缺失时的回退。
     日历可用时严格要求最后一根历史 bar = 上一交易日（与聚宽 skip_paused=False
     下缺行即 NaN 的口径一致）；日历不可用时退化为自然日陈旧检查。
@@ -135,13 +117,13 @@ def _prepare_bars(df: pd.DataFrame, decision_date: date,
                                            and intraday_close > 0):
         intraday_close = None
 
-    # 只有 25 个历史点可进入打分；交易日历可用时还要求最后一根就是上一交易日。
-    # 先按"上一交易日"截断，再检查短缺，避免把更早的历史补成 25 根。
+    # 只有 30 个历史点可进入打分；交易日历可用时还要求最后一根就是上一交易日。
+    # 先按"上一交易日"截断，再检查短缺，避免把更早的历史补成 30 根。
     if prev_trading_day is not None:
         history = history[history.index <= pd.Timestamp(prev_trading_day)]
-    if len(history) < SCORE_DAYS:
+    if len(history) < LOOKBACK_DAYS:
         return None, intraday_close, "short"
-    tail = [float(v) for v in history.values[-SCORE_DAYS:]]
+    tail = [float(v) for v in history.values[-LOOKBACK_DAYS:]]
     if not all(math.isfinite(v) and v > 0 for v in tail):
         return None, intraday_close, "bad_close"
     if prev_trading_day is not None:
@@ -175,8 +157,8 @@ def build_rows(bars: Dict[str, pd.DataFrame], prices: Dict[str, float], *,
         if not (math.isfinite(price) and price > 0):
             price = intraday_close if intraday_close is not None else tail[-1]
             realtime_missing += 1
-        score = momentum_score(tail, price)
-        rows.append(RotationRow(code=code, name=security_name(code), group=group,
+        score = ensemble_score(tail, price)
+        rows.append(RotationRow(code=code, name=name, group=group,
                                 close=tail[-1], price=price, score=score))
 
     for row in rows:
@@ -198,95 +180,83 @@ def build_rows(bars: Dict[str, pd.DataFrame], prices: Dict[str, float], *,
     return rows, diag
 
 
-def top_candidate(rows: Sequence[RotationRow]) -> Optional[RotationRow]:
-    """合格候选第一名；没有合格候选返回 None（→ 空仓）。"""
-    for row in rows:
-        if row.eligible:
-            return row
-    return None
+def top_targets(rows: Sequence[RotationRow]) -> List[RotationRow]:
+    return [row for row in rows if row.eligible][:TARGET_COUNT]
+
+
+def _position_price(position: dict, prices: Dict[str, float]) -> float:
+    for value in (prices.get(position["code"]), position.get("current_price")):
+        price = float(value or 0)
+        if math.isfinite(price) and price > 0:
+            return price
+    return 0.0
+
+
+def _order_fee(amount: float) -> float:
+    return round(max(MIN_COMMISSION, amount * COMMISSION), 2)
 
 
 def plan_rotation(rows: Sequence[RotationRow], positions: List[dict],
                   prices: Dict[str, float], avail_cash: float, *,
-                  account: str = ACCOUNT) -> dict:
-    """单只全仓的调仓计划：卖出旧持仓 → 用全部可用资金买入目标 → 空仓。
-
-    规则（unified_coverage.execute_trade）：
-      - 无合格候选：清仓；
-      - 现持仓 = 第一名：不动；
-      - 否则：先卖出全部现持仓，再以卖出回款 + 原有现金买入第一名。
-    卖出价用现价，取不到时回退持仓快照的 current_price；买侧股数按
-    费用预检后的整手（affordable_shares）。
-    """
-    target = top_candidate(rows)
-    held = [p for p in positions
-            if p.get("account") == account and int(p.get("count") or 0) > 0]
-    notes: List[str] = []
-    orders: List[EtfOrder] = []
-    if len(held) > 1:
-        notes.append(f"⚠️ 台账中存在 {len(held)} 只持仓，本策略应为单只，"
-                     f"按规则先全部卖出再买入第一名")
-    holding = held[0] if held else None
-
-    def _price_of(pos: dict) -> float:
-        price = float(prices.get(pos.get("code")) or 0.0)
-        if not (math.isfinite(price) and price > 0):
-            price = float(pos.get("current_price") or 0.0)
-        return price if math.isfinite(price) and price > 0 else 0.0
-
-    # 先确定"卖出谁"：目标是现持仓 → 只处理台账异常多出来的持仓；否则清空全部。
+                  account: str = ACCOUNT, budget: float = math.inf,
+                  rebalance: Optional[Dict[str, int]] = None) -> dict:
+    """仅在成员变化时配平等权，或继续完成已开始的调仓。"""
+    targets = {row.code: row for row in top_targets(rows)}
+    held = {pos["code"]: pos for pos in positions
+            if pos.get("account") == account and int(pos.get("count") or 0) > 0}
     sells: List[EtfOrder] = []
-    unsellable: List[str] = []
-    if target is not None and holding is not None and holding["code"] == target.code:
-        to_sell = [p for p in held if p is not holding]
-        notes.append(f"继续持有 {target.name}({target.code})：仍为合格候选第一名")
-        if to_sell:
-            notes.append(f"⚠️ 台账另有 {len(to_sell)} 只非目标持仓（应为单只），本次卖出")
-        sell_reason = f"超出单只规则的持仓，卖出"
-    else:
-        to_sell = list(held)
-        if target is None and holding is None:
-            notes.append("无合格候选，保持空仓")
-        sell_reason = (f"排名退出，换入 {target.name}({target.code})"
-                       if target is not None else "无合格候选，空仓")
-    for pos in to_sell:
-        price = _price_of(pos)
-        qty = floor_lot(int(pos.get("count") or 0))
-        if price <= 0:
-            notes.append(f"{pos.get('name', '')}({pos.get('code', '')}) "
-                         f"缺现价，无法卖出（仍持有）")
-            unsellable.append(str(pos.get("code", "")))
-            continue
-        if qty <= 0:
-            continue
-        sells.append(EtfOrder(
-            code=pos["code"], name=pos.get("name", "") or pos["code"],
-            action="sell", shares=qty, price=price, amount=qty * price,
-            reason=sell_reason))
-
     buys: List[EtfOrder] = []
-    if target is not None and not (
-            holding is not None and holding["code"] == target.code):
-        if unsellable:
-            # 旧持仓无法卖出时不得再买入，否则会同时持有两只（违反单只全仓）
-            notes.append("存在无法估价的持仓，本次不买入（避免与旧持仓重叠）")
+    plan = {"targets": list(targets), "sells": sells, "buys": buys, "orders": [], "issue": None}
+    if rebalance is None and held.keys() == targets.keys():
+        return plan
+
+    held_prices = {code: _position_price(pos, prices) for code, pos in held.items()}
+    if any(price <= 0 for price in held_prices.values()):
+        plan["issue"] = "持仓缺现价，等待更新"
+        return plan
+
+    held_shares = {code: int(position["count"]) for code, position in held.items()}
+    target_count = len(targets)
+    desired = rebalance
+    if desired is None:
+        equity = avail_cash + math.fsum(held_shares[code] * price for code, price in held_prices.items())
+        allocation = min(equity, budget) / target_count if target_count else 0
+        desired = {code: affordable_shares(allocation, row.price) for code, row in targets.items()}
+    pool_codes = {row.code for row in rows}
+    for code, position in held.items():
+        quantity = held_shares[code]
+        if code in targets:
+            quantity = floor_lot(max(0, quantity - desired[code]))
+            reason = "成员变更，等权配平"
+        elif code not in pool_codes:
+            reason = "已移出池子，兜底卖出"
         else:
-            buy_cash = float(avail_cash) + sum(
-                o.amount - round(max(MIN_COMMISSION, o.amount * COMMISSION), 2)
-                for o in sells)
-            shares = affordable_shares(buy_cash, target.price)
-            if shares <= 0:
-                notes.append(f"{target.name}({target.code}) 可用资金不足一手，未买入")
-            else:
-                flow = (f"先卖后买（卖出 {len(sells)} 笔）" if sells else "空仓建仓")
-                buys.append(EtfOrder(
-                    code=target.code, name=target.name, action="buy", shares=shares,
-                    price=target.price, amount=shares * target.price,
-                    reason=(f"合格候选第{target.rank}名（score={target.score:+.4f}）；"
-                            f"{flow}")))
-    orders = sells + buys
-    return {"target": target, "holding": holding, "orders": orders,
-            "sells": sells, "buys": buys, "notes": notes}
+            reason = "退出目标组合" if targets else "无合格候选，保持现金"
+        if quantity > 0:
+            price = held_prices[code]
+            sells.append(EtfOrder(code, position.get("name") or code, "sell",
+                                  quantity, price, quantity * price, reason))
+    sells.sort(key=lambda order: -order.amount)
+    cash = avail_cash + math.fsum(order.amount - _order_fee(order.amount) for order in sells)
+    if cash < 0 and sells:
+        plan["issue"] = "策略现金不足以扣除卖出费用"
+        return plan
+    budget_per_target = budget / target_count if target_count else 0
+    for code, row in targets.items():
+        target_quantity = desired[code]
+        if math.isfinite(budget_per_target):
+            target_quantity = min(target_quantity, affordable_shares(budget_per_target, row.price))
+        quantity = min(floor_lot(max(0, target_quantity - held_shares.get(code, 0))),
+                       affordable_shares(cash, row.price))
+        if quantity <= 0:
+            continue
+        reason = ("完成本轮剩余买入" if rebalance is not None else
+                  f"合格候选第{row.rank}名（score={row.score:+.4f}），等权配置")
+        amount = quantity * row.price
+        buys.append(EtfOrder(code, row.name, "buy", quantity, row.price, amount, reason))
+        cash -= amount + _order_fee(amount)
+    plan["orders"] = sells + buys
+    return plan
 
 
 # ── 编排（取数 + 决策组装，不执行交易）──

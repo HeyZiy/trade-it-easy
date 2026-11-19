@@ -6,6 +6,24 @@ import pytest
 
 import akshare as ak
 from data_provider.bars import get_etf_daily, get_etf_daily_em
+from data_provider.codes import is_etf_code, is_sh_lof_code, market_suffix
+
+
+def test_shanghai_lof_uses_its_own_eastmoney_history_endpoint(monkeypatch):
+    calls = []
+
+    def lof_history(**kwargs):
+        calls.append((kwargs['symbol'], kwargs['adjust']))
+        price = 2.0 if not kwargs['adjust'] else 4.0
+        return pd.DataFrame({'日期': ['2026-09-02'], '开盘': [price], '最高': [price],
+                             '最低': [price], '收盘': [price], '成交量': [1], '成交额': [200]})
+
+    monkeypatch.setattr(ak, 'fund_lof_hist_em', lof_history)
+    assert market_suffix('501018') == 'SH' and is_sh_lof_code('501018.SH')
+    assert not is_etf_code('501018')
+    result = get_etf_daily_em('501018.SH', '2026-09-02')
+    assert calls == [('501018', ''), ('501018', 'hfq')]
+    assert (result['close'].iloc[0], result['hfq_close'].iloc[0]) == (2.0, 4.0)
 
 
 def _raw(closes, symbol="sh510300"):

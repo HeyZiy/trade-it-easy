@@ -41,7 +41,7 @@ from tenacity import (
 
 from data_provider._crosscut import Throttle, TtlSnapshotCache, classify_http_error
 
-from data_provider.codes import is_etf_code, is_us_stock_code, market_suffix
+from data_provider.codes import is_etf_code, is_sh_lof_code, is_us_stock_code, market_suffix
 from data_provider.fetchers.base import BaseFetcher
 from data_provider.fetchers._snapshot_quote import snapshot_realtime_quote
 from data_provider.fetchers._direct_quote import direct_realtime_quote
@@ -77,6 +77,7 @@ USER_AGENTS = [
 # - 防封禁：减少 API 调用频率
 _realtime_cache = TtlSnapshotCache(ttl=1200, label="A股实时行情(东财)")
 _etf_realtime_cache = TtlSnapshotCache(ttl=1200, label="ETF实时行情(东财)")
+_lof_realtime_cache = TtlSnapshotCache(ttl=1200, label="LOF实时行情(东财)")
 
 
 def _to_sina_tx_symbol(stock_code: str) -> str:
@@ -576,6 +577,8 @@ class AkshareFetcher(BaseFetcher):
             source_key = "akshare_sina"
         elif source == "tencent":
             source_key = "akshare_tencent"
+        elif is_sh_lof_code(stock_code):
+            source_key = "akshare_lof"
         else:
             source_key = "akshare_etf" if is_etf_code(stock_code) else "akshare_em"
         if not circuit_breaker.is_available(source_key):
@@ -585,6 +588,8 @@ class AkshareFetcher(BaseFetcher):
             return self._get_stock_realtime_quote_sina(stock_code)
         if source == "tencent":
             return self._get_stock_realtime_quote_tencent(stock_code)
+        if is_sh_lof_code(stock_code):
+            return self._get_lof_realtime_quote(stock_code)
         if is_etf_code(stock_code):
             return self._get_etf_realtime_quote(stock_code)
         return self._get_stock_realtime_quote_em(stock_code)
@@ -655,6 +660,13 @@ class AkshareFetcher(BaseFetcher):
             row_builder=_build_em_etf_quote,
             code_columns="代码")
     
+    def _get_lof_realtime_quote(self, stock_code: str) -> Optional[UnifiedRealtimeQuote]:
+        import akshare as ak
+        return snapshot_realtime_quote(
+            stock_code, source_key="akshare_lof", source_label="东财(LOF快照)",
+            cache=_lof_realtime_cache, throttle=self._throttle,
+            fetch=ak.fund_lof_spot_em, row_builder=_build_em_etf_quote, code_columns="代码")
+
     def get_market_stats(self) -> Optional[Dict[str, Any]]:
         """
         获取市场涨跌统计

@@ -62,6 +62,7 @@ _STOCK_SZ_FAMILIES = ("000", "001", "002", "003", "300", "301")
 _STOCK_BJ_FAMILIES = ("43", "83", "87", "88", "920")
 _ETF_SH_FAMILIES = ("51", "52", "53", "55", "56", "58")   # 53/55 为 2025 年新上交所码族
 _ETF_SZ_FAMILIES = ("15", "16", "18")
+_LOF_SH_FAMILIES = ("501",)
 _B_SHARE_SH_FAMILIES = ("900",)
 _B_SHARE_SZ_FAMILIES = ("200",)
 
@@ -71,11 +72,13 @@ _MARKET_FAMILY_ROWS = (
     (_STOCK_BJ_FAMILIES, "BJ"),
     (_ETF_SH_FAMILIES, "SH"),
     (_ETF_SZ_FAMILIES, "SZ"),
+    (_LOF_SH_FAMILIES, "SH"),
     (_B_SHARE_SH_FAMILIES, "SH"),
     (_B_SHARE_SZ_FAMILIES, "SZ"),
 )
 
 ETF_PREFIXES = _ETF_SH_FAMILIES + _ETF_SZ_FAMILIES
+FUND_FEE_PREFIXES = _ETF_SH_FAMILIES + ("15",) + _LOF_SH_FAMILIES
 A_STOCK_PREFIXES = _STOCK_SH_FAMILIES + _STOCK_SZ_FAMILIES + _STOCK_BJ_FAMILIES
 
 
@@ -189,6 +192,15 @@ def is_etf_code(code: str) -> bool:
     """
     num, _ = _split_prefix(code)
     return num[:2] in ETF_PREFIXES
+
+
+def is_sh_lof_code(code: str) -> bool:
+    number = normalize_stock_code(code)
+    return len(number) == 6 and number.isdigit() and number.startswith(_LOF_SH_FAMILIES)
+
+
+def is_listed_fund_code(code: str) -> bool:
+    return is_etf_code(code) or is_sh_lof_code(code)
 
 
 def is_us_stock_code(code: str) -> bool:

@@ -6,7 +6,7 @@ from pathlib import Path
 import re
 import sqlite3
 
-from .codes import is_a_stock_code, is_etf_code, normalize_stock_code
+from .codes import is_a_stock_code, is_etf_code, is_listed_fund_code, normalize_stock_code
 
 CACHE_PATH = Path("data/security_names.sqlite3")
 logger = logging.getLogger(__name__)
@@ -75,7 +75,7 @@ def remember(values, *, path=None, overwrite=True):
 
 def is_listed_code(code):
     return (isinstance(code, str) and re.fullmatch(r"[0-9]{6}", code)
-            and (is_etf_code(code) or is_a_stock_code(code)))
+            and (is_listed_fund_code(code) or is_a_stock_code(code)))
 
 
 def lookup(codes):

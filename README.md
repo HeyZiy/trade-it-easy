@@ -22,7 +22,7 @@
 
 ## 部署（云服务器）
 
-`deploy/crontab.server`：质量动量 09:30（昨收信号与实际账户建议）→ 跨资产动量 10:40 → 市场观察周报 14:40（周一）。质量动量规则见[质量池规格](strategy/quality_pool.md)。
+`deploy/crontab.server`：质量动量 09:30（昨收信号与实际账户建议）→ 市场观察周报 14:40（周一）→ 跨资产动量 14:50。质量动量规则见[质量池规格](strategy/quality_pool.md)。
 
 ## 文档
 
