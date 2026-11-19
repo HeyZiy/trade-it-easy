@@ -15,7 +15,6 @@ from src.logging_config import setup_logging
 
 setup_env()
 
-from data_provider.etf import AMAZINGDATA  # noqa: E402
 from src.etf.rotation import rotation_snapshot  # noqa: E402
 from src.task_io import notify, save_report       # noqa: E402
 
@@ -110,12 +109,12 @@ def run(dry_run: bool = False, trade_date: Optional[str] = None) -> str:
         f"- 数据基准日：上一交易日 {diag.get('prev_trading_day') or '—'}；"
         f"池内可用 {diag['n']}/{diag['pool']} 只，合格候选 {diag['eligible']} 只",
     ]
-    fallback_codes = [code for code, source in diag.get("bar_sources", {}).items() if source == AMAZINGDATA]
-    if fallback_codes:
-        lines.append(f"- 日线备源（{AMAZINGDATA}）：{'、'.join(fallback_codes)}")
     missing_codes = diag.get("missing_bars", [])
     if missing_codes:
-        lines.append(f"- 无合格日线：{'、'.join(missing_codes)}，本次暂停建议")
+        codes = "、".join(missing_codes)
+        if not dry_run:
+            logger.warning("轮动日线缺失，暂停建议：%s", codes)
+        lines.append(f"- 无合格日线：{codes}，本次暂停建议")
     if diag["realtime_missing"]:
         lines.append(f"- 实时价缺失 {diag['realtime_missing']}/{diag['n']} 只，收盘价仅供展示，本次暂停建议")
     lines += ["", "## 今日截面", "", *_cross_section_table(rows),

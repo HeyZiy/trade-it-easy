@@ -214,7 +214,6 @@ def test_entry_publishes_account_advice_from_one_snapshot(account, monkeypatch):
     import etf_rotation as entry
     row = RotationRow('510300', '目标', '股票', 2, 2, 1, True, 1)
     diag = dict(n=1, pool=15, eligible=1, realtime_missing=0, prev_trading_day='2025-01-06')
-    diag['bar_sources'] = {'510300': 'AmazingData'}
     calls = []
     def quotes(**kwargs):
         calls.append(kwargs)
@@ -225,7 +224,7 @@ def test_entry_publishes_account_advice_from_one_snapshot(account, monkeypatch):
     report = entry.run(trade_date='2025-01-07')
     assert len(calls) == 1
     assert '账户建议' in report and '约 900 份' in report
-    assert '日线备源（AmazingData）：510300' in report
+    assert '日线备源' not in report
     assert strategy(account)['suggestions'][0]['qty'] == 900
     assert wallet.account_data(account)['positions'] == before['positions']
     assert wallet.account_data(account)['cash'] == before['cash']
@@ -233,6 +232,24 @@ def test_entry_publishes_account_advice_from_one_snapshot(account, monkeypatch):
     old_state = account.read_bytes()
     entry.run(dry_run=True, trade_date='2025-01-07')
     assert account.read_bytes() == old_state
+
+
+def test_entry_aggregates_missing_bars_warning(account, monkeypatch, caplog):
+    import logging
+    import etf_rotation as entry
+
+    row = RotationRow('510300', '目标', '股票', 2, 2, 1, True, 1)
+    missing = ['159561', '501018']
+    diag = dict(n=1, pool=3, eligible=1, realtime_missing=0,
+                missing_bars=missing, skipped={'no_bars': len(missing)})
+    monkeypatch.setattr(entry, 'rotation_snapshot', lambda **kwargs: ([row], {'510300': 2}, diag))
+    monkeypatch.setattr(wallet, 'ACCOUNT_PATH', account)
+
+    report = entry.run(trade_date='2025-01-07')
+    assert '无合格日线：159561、501018，本次暂停建议' in report
+    assert strategy(account)['suggestions'] == []
+    assert [record.getMessage() for record in caplog.records if record.levelno == logging.WARNING] == [
+        '轮动日线缺失，暂停建议：159561、501018']
 
 
 def test_entry_fetch_exception_invalidates_old_advice(account, monkeypatch):

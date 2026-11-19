@@ -260,7 +260,7 @@ def fetch_etf_hfq_bars(
         try:
             out = build_etf_bars(raw, factors[column], require_open=False)
         except (KeyError, ValueError) as exc:
-            logger.warning("AmazingData ETF %s 日线不可用：%s", code, exc)
+            logger.info("AmazingData ETF %s 日线不可用：%s", code, exc)
             continue
         adjusted = out.filter(regex="^hfq_")
         if (adjusted.isna().any().any() or (adjusted <= 0).any().any()

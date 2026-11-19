@@ -17,11 +17,7 @@ EASTMONEY = "东财"
 AMAZINGDATA = "AmazingData"
 OHLC = ("open", "high", "low", "close")
 HLC = OHLC[1:]
-_SOURCE_ORDER = {
-    "rotation": (EASTMONEY, AMAZINGDATA),
-    "observation": (AMAZINGDATA, EASTMONEY),
-    "online_research": (EASTMONEY, AMAZINGDATA),
-}
+_SOURCE_ORDER = (AMAZINGDATA, EASTMONEY)
 
 
 @dataclass(frozen=True)
@@ -93,7 +89,8 @@ def etf_daily_bars(
 ) -> dict[str, EtfBars]:
     """批量取信号日线并保留来源。无合格序列的标的不返回；结果以请求代码为键。
 
-    rotation 返回锚定至决策日前最后一根原始收盘的 close，保留决策日行供展示补价。
+    优先从 AmazingData 批量取数，缺失或校验失败的标的才查东财。
+    rotation 返回锚定至决策日前最后一根原始收盘的 close；若包含决策日行，仅供展示补价。
     observation/online_research 返回截止 completed_through（默认 end_date）的后复权 HLC/OHLC。
     history_issue 返回非空原因时，拒绝整段历史并继续尝试下一来源。
     """
@@ -102,7 +99,8 @@ def etf_daily_bars(
     result: dict[str, EtfBars] = {}
     cutoff = min(end_date, completed_through) if completed_through is not None else end_date
     fields = HLC if policy == "observation" else OHLC
-    for source in _SOURCE_ORDER[policy]:
+    log_source_failure = logger.info if policy == "rotation" else logger.warning
+    for source in _SOURCE_ORDER:
         pending = {code: bare_code for code, bare_code in requested.items() if code not in result}
         if not pending:
             break
@@ -113,7 +111,7 @@ def etf_daily_bars(
                 batch = _amazingdata_rows(list(dict.fromkeys(pending.values())), end_date,
                                           policy=policy, completed_through=cutoff)
             except Exception as exc:
-                logger.warning("ETF 日线 %s 批量取数失败：%s", source, exc)
+                log_source_failure("ETF 日线 %s 批量取数失败：%s", source, exc)
                 continue
         for code, bare_code in pending.items():
             try:
@@ -129,7 +127,7 @@ def etf_daily_bars(
                 if issue:
                     raise ValueError(issue)
             except Exception as exc:
-                logger.warning("ETF 日线 %s %s 不可用：%s", source, code, exc)
+                log_source_failure("ETF 日线 %s %s 不可用：%s", source, code, exc)
                 continue
             result[code] = EtfBars(history, source)
     return result

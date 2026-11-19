@@ -300,6 +300,5 @@ def rotation_snapshot(decision_date: Optional[date] = None, *,
     prices = fetch_prices(price_codes + extra)
     rows, diag = build_rows(bars, prices, decision_date=decision_date,
                             prev_trading_day=previous, pool=pool)
-    diag["bar_sources"] = {code: item.source for code, item in series.items()}
     diag["missing_bars"] = [code for code in codes if code not in bars]
     return rows, prices, diag

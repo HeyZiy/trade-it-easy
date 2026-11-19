@@ -10,6 +10,7 @@ import pytest
 
 import dashboard
 from data_provider import bars, security_names
+from data_provider.fetchers.amazingdata import client, market
 from research.studies.timing import web_report
 from src.dashboard_timing import TimingReports
 
@@ -89,6 +90,7 @@ def test_generate_etf_missing_from_directory_publishes_full_before_rolling_and_r
         return pd.DataFrame({"code": ["512690"], "name": ["酒 ETF"]})
 
     monkeypatch.setattr(bars, "get_etf_universe", incomplete_directory)
+    monkeypatch.setattr(client, "is_configured", lambda: False)
     monkeypatch.setattr(bars, "get_etf_daily_em", lambda *args: raw)
     real_rolling = web_report.rolling_report
     rolling_started, release = Event(), Event()
@@ -164,24 +166,31 @@ def test_unavailable_refresh_keeps_real_cache_report(reports, tmp_path, monkeypa
     assert reports.group(code, "current") == initial
 
 
-def test_eastmoney_outage_uses_full_amazingdata_history(monkeypatch):
-    from data_provider.fetchers.amazingdata import client, market
-
+@pytest.mark.parametrize("amazingdata_available", [True, False])
+def test_online_research_prefers_full_amazingdata_history(monkeypatch, amazingdata_available):
     expected = {"date": ["2024-01-02"], "hfq_open": [1.0], "hfq_high": [2.0],
                 "hfq_low": [1.0], "hfq_close": [2.0]}
-    security_names.remember({"159920": "恒生 ETF"})
+    monkeypatch.setattr(security_names, "security_name", lambda code: "恒生 ETF")
+    calls = []
 
-    def eastmoney_down(*args):
-        raise ConnectionError
+    def eastmoney(*args):
+        calls.append("东财")
+        return pd.DataFrame(expected)
 
     def fetch(codes, end, *, begin_date):
+        calls.append("AmazingData")
         assert codes == ["159920"] and begin_date == "1990-01-01"
-        return {"159920": pd.DataFrame(expected)}
+        return {"159920": pd.DataFrame(expected)} if amazingdata_available else {}
 
-    monkeypatch.setattr(bars, "get_etf_daily_em", eastmoney_down)
+    monkeypatch.setattr(bars, "get_etf_daily_em", eastmoney)
     monkeypatch.setattr(client, "is_configured", lambda: True)
     monkeypatch.setattr(market, "fetch_etf_hfq_bars", fetch)
     name, history, source = web_report.load_live("159920")
     assert name == "恒生 ETF"
-    assert source == "AmazingData 后复权 · 在线"
+    if amazingdata_available:
+        assert calls == ["AmazingData"]
+        assert source == "AmazingData 后复权 · 在线"
+    else:
+        assert calls == ["AmazingData", "东财"]
+        assert source == "东方财富后复权日线"
     assert history.loc["2024-01-02", "close"] == 2.0

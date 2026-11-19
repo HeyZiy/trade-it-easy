@@ -1,5 +1,6 @@
 """Execution accounting: official-hfq anchoring, unavailable quotes and net sale proceeds."""
 from datetime import date
+import logging
 
 import pandas as pd
 import pytest
@@ -23,18 +24,20 @@ def _em_frame(raw, hfq):
 def test_fetch_bars_rescales_official_hfq_to_latest_raw_units(monkeypatch):
     raw = [10.0] * 20 + [5.0] * 5 + [4.5] * 5   # 1:2 折算 + 每份 0.5 分红
     hfq = [10.0] * 30                            # 官方后复权连续，无跳变
+    monkeypatch.setattr(market, "fetch_etf_hfq_bars",
+                        lambda *args, **kwargs: {"510300": _em_frame(raw, hfq)})
     monkeypatch.setattr("data_provider.bars.get_etf_daily_em",
-                        lambda code, end_date: _em_frame(raw, hfq))
-    monkeypatch.setattr(market, "fetch_etf_hfq_bars", lambda *args, **kwargs: pytest.fail("东财合格，不应查备源"))
+                        lambda *args: pytest.fail("AmazingData 合格，不应查东财"))
     monkeypatch.setattr(client, "is_configured", lambda: True)
     bars = fetch_bars(["510300"], decision_date=date(2026, 9, 1))
-    assert bars["510300"].source == EASTMONEY
+    assert bars["510300"].source == AMAZINGDATA
     close = bars["510300"].history["close"]
     assert close.tolist() == [4.5] * 30          # 折算/分红缺口消失
     assert close.iloc[-1] == raw[-1]             # 最近已完成收盘 = 原始单位
 
 
 def test_fetch_bars_excludes_bars_after_decision_date(monkeypatch):
+    monkeypatch.setattr(client, "is_configured", lambda: False)
     calls = []
     def fake(code, end_date):
         calls.append(end_date)
@@ -57,45 +60,61 @@ def test_fetch_bars_skips_code_when_anchor_close_invalid(monkeypatch):
 
 def test_fetch_bars_anchors_to_confirmed_previous_trading_day(monkeypatch):
     primary = _em_frame([10.] * 30 + [99.] * 2, [20.] * 32)
-    monkeypatch.setattr("data_provider.bars.get_etf_daily_em", lambda code, end_date: primary)
+    monkeypatch.setattr(client, "is_configured", lambda: True)
+    monkeypatch.setattr(market, "fetch_etf_hfq_bars", lambda *args, **kwargs: {"510300": primary})
     bars = fetch_bars(["510300"], date(2026, 9, 2), prev_trading_day=date(2026, 8, 30))
     assert bars["510300"].history.loc["2026-08-30", "close"] == 10.
 
 
-@pytest.mark.parametrize("problem", ["outage", "short", "stale", "bad_close", "duplicate"])
-def test_rotation_replaces_unusable_primary_with_whole_amazingdata_series(monkeypatch, problem):
+@pytest.mark.parametrize("problem", ["missing", "short", "stale", "bad_close", "duplicate"])
+def test_rotation_uses_eastmoney_only_for_unusable_amazingdata_series(monkeypatch, problem, caplog):
     primary = _em_frame([10.] * 30, [20.] * 30)
     backup = _em_frame([8.] * 30, list(range(81, 111)))
     affected = "510300"
     healthy = "510500"
 
-    def eastmoney(code, end_date):
-        if code == healthy:
-            return primary
-        if problem == "outage":
-            raise TimeoutError("东财不可用")
-        if problem == "short":
-            return primary.tail(24)
-        if problem == "stale":
-            return primary.iloc[:-1]
-        if problem == "bad_close":
-            return primary.assign(hfq_close=primary.hfq_close.mask(primary.index == 24))
-        return pd.concat([primary, primary.tail(1)])
-
+    invalid = {
+        "short": primary.tail(24),
+        "stale": primary.iloc[:-1],
+        "bad_close": primary.assign(hfq_close=primary.hfq_close.mask(primary.index == 24)),
+        "duplicate": pd.concat([primary, primary.tail(1)]),
+    }
     calls = []
 
     def amazingdata(codes, end_date, *, begin_date, include_raw_close):
-        calls.append((codes, end_date, begin_date, include_raw_close))
-        return {affected: backup}
+        calls.append((AMAZINGDATA, codes, end_date, begin_date, include_raw_close))
+        result = {healthy: primary}
+        if problem != "missing":
+            result[affected] = invalid[problem]
+        return result
+
+    def eastmoney(code, end_date):
+        calls.append((EASTMONEY, code, end_date))
+        return backup
 
     monkeypatch.setattr("data_provider.bars.get_etf_daily_em", eastmoney)
     monkeypatch.setattr(client, "is_configured", lambda: True)
     monkeypatch.setattr(market, "fetch_etf_hfq_bars", amazingdata)
     result = fetch_bars([affected, healthy], date(2026, 8, 31), prev_trading_day=date(2026, 8, 30))
-    assert calls == [([affected], "2026-08-30", "2026-06-02", True)]
-    assert result[affected].source == AMAZINGDATA
+    assert calls == [(AMAZINGDATA, [affected, healthy], "2026-08-30", "2026-06-02", True),
+                     (EASTMONEY, affected, "2026-08-31")]
+    assert result[affected].source == EASTMONEY
     assert result[affected].history.close.tolist() == pytest.approx((backup.hfq_close * (8 / 110)).tolist())
-    assert result[healthy].source == EASTMONEY
+    assert result[healthy].source == AMAZINGDATA
+    assert not [record for record in caplog.records if record.levelno >= logging.WARNING]
+
+
+def test_rotation_provider_failures_are_info_logs(monkeypatch, caplog):
+    def unavailable(*args, **kwargs):
+        raise ConnectionError("Remote end closed connection without response")
+
+    monkeypatch.setattr(client, "is_configured", lambda: True)
+    monkeypatch.setattr(market, "fetch_etf_hfq_bars", unavailable)
+    monkeypatch.setattr("data_provider.bars.get_etf_daily_em", unavailable)
+    with caplog.at_level(logging.INFO, logger="data_provider.etf"):
+        assert fetch_bars(["159561"], date(2026, 8, 31)) == {}
+    assert [(record.levelno, record.args[0]) for record in caplog.records] == [
+        (logging.INFO, AMAZINGDATA), (logging.INFO, EASTMONEY)]
 
 
 @pytest.mark.parametrize("backup_ok, has_quote", [(False, True), (True, False), (True, True)])
@@ -116,7 +135,6 @@ def test_rotation_signal_requires_qualified_backup_and_live_quote(monkeypatch, b
     rows, prices, diag = rotation.rotation_snapshot(decision, pool=pool)
     signal = make_signal(decision.isoformat(), rows, prices, diag)
     assert bool(signal["issues"]) == (not backup_ok or not has_quote)
-    assert diag["bar_sources"].get(code) == (AMAZINGDATA if backup_ok else None)
     assert diag["missing_bars"] == ([] if backup_ok else [code])
 
 

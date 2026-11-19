@@ -436,7 +436,6 @@ class TestConfigurablePool:
         assert [row.code for row in rows] == ["510300"]
         assert prices["513100"] == 10.0
         assert diag["pool"] == 1
-        assert diag["bar_sources"] == {"510300": EASTMONEY}
 
 
 # ══════════════ 入口集成：独立台账闭环（monkeypatch 取数，禁网络） ══════════════
