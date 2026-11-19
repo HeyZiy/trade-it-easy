@@ -198,7 +198,7 @@ def fetch_adj_factors(codes: List[str], begin_date: str,
         try:
             raw = base.get_adj_factor(
                 batch, local_path=AMAZINGDATA_CACHE_DIR, is_local=False)
-        except Exception as e:
+        except (Exception, SystemExit) as e:
             raise DataFetchError(f"AmazingData get_adj_factor 失败: {e}") from e
         if isinstance(raw, pd.DataFrame) and not raw.empty:
             raw = raw.copy(deep=False)
@@ -238,12 +238,15 @@ def build_etf_bars(
     return out.reset_index(drop=True)
 
 
-def fetch_etf_hfq_bars(codes: List[str], end_date: str, *, begin_date: str | None = None) -> Dict[str, pd.DataFrame]:
+def fetch_etf_hfq_bars(
+    codes: List[str], end_date: str, *, begin_date: str | None = None, include_raw_close: bool = False,
+) -> Dict[str, pd.DataFrame]:
     """ETF 供应商后复权 OHLC，默认取最近三年。
 
     get_adj_factor 给的是事件当日乘数（除权日 1.98，次日回到 1.0），必须按日
     累积相乘再乘原始 OHLC；直接乘当日因子会把除权日算成暴跌。
     缺行情、缺因子或复权价异常的代码不返回，由调用方按失败处理（不补旧价）。
+    include_raw_close 保留同源原始收盘，供复权序列锚定至现价单位。
     """
     begin = begin_date or (pd.Timestamp(end_date) - pd.DateOffset(years=3)).strftime('%Y-%m-%d')
     klines = fetch_kline(codes, begin, end_date)
@@ -263,5 +266,8 @@ def fetch_etf_hfq_bars(codes: List[str], end_date: str, *, begin_date: str | Non
         if (adjusted.isna().any().any() or (adjusted <= 0).any().any()
                 or (adjusted.hfq_high < adjusted.hfq_low).any()):
             continue
-        bars[code] = out[["date", *adjusted.columns]]
+        columns = ["date", *adjusted.columns]
+        if include_raw_close:
+            columns.append("close")
+        bars[code] = out[columns]
     return bars

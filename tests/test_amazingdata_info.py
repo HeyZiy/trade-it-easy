@@ -390,6 +390,8 @@ def test_etf_hfq_bars_accumulate_event_factors(monkeypatch):
     assert bars["516560"]["hfq_open"].tolist() == [1.0, 4.0, 6.0]
     assert bars["516560"]["hfq_high"].tolist() == [2.0, 6.0, 8.0]
     assert bars["516560"]["hfq_low"].tolist() == [0.5, 2.0, 4.0]
+    with_raw = market.fetch_etf_hfq_bars(["516560"], "2026-10-14", include_raw_close=True)
+    assert with_raw["516560"]["close"].tolist() == [1.0, 2.0, 3.0]
     cached = build_one("516560", {"516560": kline}, factors, {"516560": "516560.SH"})
     pd.testing.assert_frame_equal(cached[bars["516560"].columns], bars["516560"])
     assert cached["volume"].tolist() == [10., 20., 30.]

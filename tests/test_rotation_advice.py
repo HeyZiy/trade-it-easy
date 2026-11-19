@@ -189,6 +189,7 @@ def test_entry_publishes_account_advice_from_one_snapshot(account, monkeypatch):
     import etf_rotation as entry
     row = RotationRow('510300', '目标', '股票', 2, 2, 1, True, 1)
     diag = dict(n=1, pool=15, eligible=1, realtime_missing=0, prev_trading_day='2025-01-06')
+    diag['bar_sources'] = {'510300': 'AmazingData'}
     calls = []
     def quotes(**kwargs):
         calls.append(kwargs)
@@ -199,6 +200,7 @@ def test_entry_publishes_account_advice_from_one_snapshot(account, monkeypatch):
     report = entry.run(trade_date='2025-01-07')
     assert len(calls) == 1
     assert '账户建议' in report and '约 900 份' in report
+    assert '日线备源（AmazingData）：510300' in report
     assert strategy(account)['suggestions'][0]['qty'] == 900
     assert wallet.account_data(account)['positions'] == before['positions']
     assert wallet.account_data(account)['cash'] == before['cash']

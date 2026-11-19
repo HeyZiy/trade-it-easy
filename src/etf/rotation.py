@@ -42,6 +42,7 @@ from typing import Dict, List, Optional, Sequence, Tuple
 
 import pandas as pd
 
+from data_provider.etf import EtfBars, etf_daily_bars
 from src.etf.momentum import (DIVE_RATIO, SCORE_DAYS, EtfOrder,
                               momentum_score)
 from src.mx.executor import floor_lot
@@ -290,11 +291,16 @@ def plan_rotation(rows: Sequence[RotationRow], positions: List[dict],
 
 # ── 编排（取数 + 决策组装，不执行交易）──
 
-def fetch_bars(codes: Sequence[str], decision_date: Optional[date] = None) -> Dict[str, pd.DataFrame]:
-    from data_provider.etf import etf_daily_bars
+def fetch_bars(codes: Sequence[str], decision_date: date, *,
+               prev_trading_day: Optional[date] = None) -> Dict[str, EtfBars]:
+    def history_issue(history: pd.DataFrame) -> str:
+        _, _, reason = _prepare_bars(history, decision_date, prev_trading_day)
+        return reason
 
-    bars = etf_daily_bars(codes, (decision_date or date.today()).isoformat(), policy="rotation")
-    return {code: series.history for code, series in bars.items()}
+    return etf_daily_bars(
+        codes, decision_date.isoformat(), policy="rotation", history_issue=history_issue,
+        completed_through=prev_trading_day.isoformat() if prev_trading_day is not None else None,
+    )
 
 
 def fetch_prices(codes: Sequence[str]) -> Dict[str, float]:
@@ -317,10 +323,13 @@ def rotation_snapshot(decision_date: Optional[date] = None, *,
     previous = latest_trading_day_on_or_before(decision_date - timedelta(days=1),
                                                fallback=None)
     codes = [code for code, _, _ in pool]
-    bars = fetch_bars(codes, decision_date=decision_date)
+    series = fetch_bars(codes, decision_date=decision_date, prev_trading_day=previous)
+    bars = {code: item.history for code, item in series.items()}
     price_codes = [code for code in codes if code in bars]
     extra = [code for code in held_codes if code not in price_codes]
     prices = fetch_prices(price_codes + extra)
     rows, diag = build_rows(bars, prices, decision_date=decision_date,
                             prev_trading_day=previous, pool=pool)
+    diag["bar_sources"] = {code: item.source for code, item in series.items()}
+    diag["missing_bars"] = [code for code in codes if code not in bars]
     return rows, prices, diag

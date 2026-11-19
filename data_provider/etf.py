@@ -3,7 +3,7 @@
 import logging
 import math
 from dataclasses import dataclass
-from typing import Literal, Sequence
+from typing import Callable, Literal, Sequence
 
 import numpy as np
 import pandas as pd
@@ -18,7 +18,7 @@ AMAZINGDATA = "AmazingData"
 OHLC = ("open", "high", "low", "close")
 HLC = OHLC[1:]
 _SOURCE_ORDER = {
-    "rotation": (EASTMONEY,),
+    "rotation": (EASTMONEY, AMAZINGDATA),
     "observation": (AMAZINGDATA, EASTMONEY),
     "online_research": (EASTMONEY, AMAZINGDATA),
 }
@@ -52,13 +52,13 @@ def adjusted_etf_history(
     return history
 
 
-def _rotation_history(rows: pd.DataFrame, decision_date: str) -> pd.DataFrame:
+def _rotation_history(rows: pd.DataFrame, decision_date: str, completed_through: str) -> pd.DataFrame:
     frame = rows[["date", "close", "hfq_close"]].copy()
     frame["date"] = pd.to_datetime(frame["date"], errors="coerce")
     frame = frame.dropna(subset=["date"]).sort_values("date").set_index("date")
     decision = pd.Timestamp(decision_date)
     frame = frame.loc[frame.index <= decision]
-    history = frame.loc[frame.index < decision]
+    history = frame.loc[(frame.index < decision) & (frame.index <= pd.Timestamp(completed_through))]
     if history.empty:
         raise ValueError("没有可用于锚定的已完成收盘")
     raw_last = float(history["close"].iloc[-1])
@@ -68,12 +68,19 @@ def _rotation_history(rows: pd.DataFrame, decision_date: str) -> pd.DataFrame:
     return frame[["hfq_close"]].rename(columns={"hfq_close": "close"}) * (raw_last / hfq_last)
 
 
-def _amazingdata_rows(codes: list[str], end_date: str, *, full_history: bool) -> dict[str, pd.DataFrame]:
+def _amazingdata_rows(
+    codes: list[str], end_date: str, *, policy: str, completed_through: str,
+) -> dict[str, pd.DataFrame]:
     from .fetchers.amazingdata import client, market
 
-    if full_history:
-        if not client.is_configured():
-            return {}
+    if policy != "observation" and not client.is_configured():
+        return {}
+    if policy == "rotation":
+        decision = pd.Timestamp(end_date)
+        begin = (decision - pd.Timedelta(days=90)).date().isoformat()
+        end = min(decision - pd.Timedelta(days=1), pd.Timestamp(completed_through)).date().isoformat()
+        return market.fetch_etf_hfq_bars(codes, end, begin_date=begin, include_raw_close=True)
+    if policy == "online_research":
         return market.fetch_etf_hfq_bars(codes, end_date, begin_date="1990-01-01")
     return market.fetch_etf_hfq_bars(codes, end_date)
 
@@ -82,11 +89,13 @@ def etf_daily_bars(
     codes: Sequence[str], end_date: str, *,
     policy: Literal["rotation", "observation", "online_research"],
     completed_through: str | None = None, min_bars: int = 1,
+    history_issue: Callable[[pd.DataFrame], str] | None = None,
 ) -> dict[str, EtfBars]:
     """批量取信号日线并保留来源。无合格序列的标的不返回；结果以请求代码为键。
 
     rotation 返回锚定至决策日前最后一根原始收盘的 close，保留决策日行供展示补价。
     observation/online_research 返回截止 completed_through（默认 end_date）的后复权 HLC/OHLC。
+    history_issue 返回非空原因时，拒绝整段历史并继续尝试下一来源。
     """
     requested = {code: normalize_stock_code(code) for code in codes if is_etf_code(code)}
     result: dict[str, EtfBars] = {}
@@ -100,9 +109,8 @@ def etf_daily_bars(
         batch = {}
         if uses_batch:
             try:
-                batch = _amazingdata_rows(
-                    list(dict.fromkeys(pending.values())), end_date, full_history=policy == "online_research",
-                )
+                batch = _amazingdata_rows(list(dict.fromkeys(pending.values())), end_date,
+                                          policy=policy, completed_through=cutoff)
             except Exception as exc:
                 logger.warning("ETF 日线 %s 批量取数失败：%s", source, exc)
                 continue
@@ -113,9 +121,12 @@ def etf_daily_bars(
                 if rows is None:
                     continue
                 if policy == "rotation":
-                    history = _rotation_history(rows, end_date)
+                    history = _rotation_history(rows, end_date, cutoff)
                 else:
                     history = adjusted_etf_history(rows, cutoff, fields=fields, min_bars=min_bars)
+                issue = history_issue(history) if history_issue is not None else ""
+                if issue:
+                    raise ValueError(issue)
             except Exception as exc:
                 logger.warning("ETF 日线 %s %s 不可用：%s", source, code, exc)
                 continue

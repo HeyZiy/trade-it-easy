@@ -512,7 +512,9 @@ class TestConfigurablePool:
 
     def test_snapshot_uses_config_pool_and_prices_out_of_pool_holding(self, monkeypatch):
         """池外持仓不打分但一并取现价（兜底卖出用）；池内持仓不重复取价。"""
-        bars = {"510300": _dt_bars(_geo())}
+        from data_provider.etf import EASTMONEY, EtfBars
+
+        bars = {"510300": EtfBars(_dt_bars(_geo()), EASTMONEY)}
         fetched = {}
         monkeypatch.setattr(rot, "latest_trading_day_on_or_before", lambda *a, **k: PREV)
         monkeypatch.setattr(rot, "fetch_bars",
@@ -527,6 +529,7 @@ class TestConfigurablePool:
         assert [row.code for row in rows] == ["510300"]
         assert prices["513100"] == 10.0
         assert diag["pool"] == 1
+        assert diag["bar_sources"] == {"510300": EASTMONEY}
 
 
 # ══════════════ 入口集成：独立台账闭环（monkeypatch 取数，禁网络） ══════════════
