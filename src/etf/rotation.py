@@ -291,40 +291,10 @@ def plan_rotation(rows: Sequence[RotationRow], positions: List[dict],
 # ── 编排（取数 + 决策组装，不执行交易）──
 
 def fetch_bars(codes: Sequence[str], decision_date: Optional[date] = None) -> Dict[str, pd.DataFrame]:
-    """东财官方后复权日线，整段缩放到决策日价格单位。
+    from data_provider.etf import etf_daily_bars
 
-    后复权比值与锚点无关：全序列乘（最近已完成 bar 原始收盘 / 后复权收盘），
-    最近已完成收盘回到原始单位，与当日现价直接可比。除息日现价已除息而
-    历史仍锚定前一日含息收盘，会出现等于分红幅度的单日假跳水；触发跳水
-    阈值即记 0 分回避。取数失败或锚点无效按只跳过该标的。
-    """
-    from data_provider.bars import get_etf_daily_em
-
-    decision_date = decision_date or date.today()
-    frames: Dict[str, pd.DataFrame] = {}
-    for code in codes:
-        try:
-            df = get_etf_daily_em(code, decision_date.isoformat())
-            frame = df[["date", "close", "hfq_close"]].copy()
-            frame["date"] = pd.to_datetime(frame["date"], errors="coerce")
-            frame = frame.dropna(subset=["date"]).sort_values("date").set_index("date")
-            decision = pd.Timestamp(decision_date)
-            frame = frame.loc[frame.index <= decision]
-            history = frame.loc[frame.index < decision]
-            if history.empty:
-                continue
-            raw_last = float(history["close"].iloc[-1])
-            hfq_last = float(history["hfq_close"].iloc[-1])
-            if not (math.isfinite(raw_last) and raw_last > 0
-                    and math.isfinite(hfq_last) and hfq_last > 0):
-                raise ValueError("最近已完成 bar 原始/后复权收盘无效，无法锚定")
-            frame["close"] = frame["hfq_close"] * (raw_last / hfq_last)
-            frames[code] = frame[["close"]]
-        except Exception:
-            import logging
-            logging.getLogger(__name__).warning("ETF 日线获取失败 %s", code,
-                                                exc_info=True)
-    return frames
+    bars = etf_daily_bars(codes, (decision_date or date.today()).isoformat(), policy="rotation")
+    return {code: series.history for code, series in bars.items()}
 
 
 def fetch_prices(codes: Sequence[str]) -> Dict[str, float]:

@@ -70,12 +70,13 @@ CLAUDE.md
 .zcodeignore
 
 
-# csv 文件
+# 日志文件
 *.csv
 *.pkl
 *.json
+*.log
+*.txt
 
-plots/
 
 
 # 行情源证券简称缓存

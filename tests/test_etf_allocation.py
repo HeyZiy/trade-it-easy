@@ -18,7 +18,7 @@ def test_weekly_report_uses_market_data_only(monkeypatch):
     def unexpected(*args, **kwargs):
         pytest.fail("市场观察周报不应读取账户、配置或单只标的行情")
 
-    for name in ("_raw_snapshot", "_raw_valuation_rows", "_raw_trend_bars_ad",
+    for name in ("_raw_snapshot", "_raw_valuation_rows", "_fetch_trend_observations",
                  "_raw_daily_close", "_raw_realtime_prices"):
         monkeypatch.setattr(allocation, name, unexpected)
 

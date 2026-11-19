@@ -3,6 +3,10 @@
 import numpy as np
 import pandas as pd
 
+from data_provider.etf import HLC, adjusted_etf_history
+
+OBSERVATION_MIN_BARS = 21
+
 
 def channel_signals(history, entry=55, exit=20, channel="ohlc"):
     """只含此前日线的通道；收盘严格突破，次日开盘执行，区间内维持状态。"""
@@ -24,34 +28,22 @@ def channel_signals(history, entry=55, exit=20, channel="ohlc"):
                          "execution_date": execution}).rename_axis("signal_date")
 
 
-def donchian_observation(bars, *, now):
-    """从供应商后复权 OHLC 回放20/10；只使用上海时间已收盘的日线。
-
-    状态来自历史最近一次明确突破，而非实际持仓。尚无突破时不猜初始状态。
-    now 为上海本地时间（入口传入），盘中排除当天；行情日期显式返回供报告展示。
-    """
-    if bars is None or bars.empty:
-        raise ValueError("行情为空")
-    history = bars.copy()
-    history.index = pd.to_datetime(history["date"], errors="raise").dt.normalize()
-    cutoff = pd.Timestamp(now).normalize()
+def observation_cutoff(now):
+    """上海时间盘中排除当天。"""
+    cutoff = pd.Timestamp(now).date()
     if (now.hour, now.minute) < (15, 0):
-        history = history.loc[history.index < cutoff]
-    else:
-        history = history.loc[history.index <= cutoff]
-    history = history.sort_index()
-    if history.index.has_duplicates:
-        raise ValueError("行情日期重复")
-    if len(history) < 21:
-        raise ValueError("已收盘日线不足21日")
-    history = history[["hfq_high", "hfq_low", "hfq_close"]].rename(
-        columns=lambda col: col.removeprefix("hfq_"))
-    history = history.apply(pd.to_numeric, errors="coerce")
-    if (not np.isfinite(history.to_numpy()).all() or (history <= 0).any().any()
-            or (history.high < history.low).any()
-            or (history.close > history.high).any()
-            or (history.close < history.low).any()):
-        raise ValueError("复权OHLC无效")
+        cutoff -= pd.Timedelta(days=1)
+    return cutoff.isoformat()
+
+
+def donchian_observation(bars, *, now):
+    """从供应商后复权日线回放20/10，只用已完成的收盘。"""
+    return observe_donchian_history(adjusted_etf_history(
+        bars, observation_cutoff(now), fields=HLC, min_bars=OBSERVATION_MIN_BARS))
+
+
+def observe_donchian_history(history):
+    """从已经过校验的完整日线回放状态；没有明确突破时不猜初始状态。"""
     signals = channel_signals(history, entry=20, exit=10)
     events = signals.target.dropna()
     latest = signals.iloc[-1]

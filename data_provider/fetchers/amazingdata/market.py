@@ -214,6 +214,30 @@ def fetch_adj_factors(codes: List[str], begin_date: str,
     return pd.concat(frames, axis=1)
 
 
+def build_etf_bars(
+    raw: pd.DataFrame, multipliers: pd.Series | None, *, require_open: bool = True,
+) -> pd.DataFrame:
+    """原始和后复权日线共用日期排序；复权缺失原样保留，交给在线校验或缓存质量标记。"""
+    if raw is None or raw.empty:
+        raise ValueError("AD 无行情")
+    dates = pd.to_datetime(raw["kline_time"], errors="coerce").dt.normalize()
+    if dates.isna().any() or dates.duplicated().any():
+        raise ValueError("K线日期无效或重复")
+    fields = ["high", "low", "close"]
+    if require_open or "open" in raw.columns:
+        fields.insert(0, "open")
+    activity = [field for field in ("volume", "amount") if field in raw.columns]
+    out = raw[fields + activity].apply(pd.to_numeric, errors="coerce")
+    out.index = pd.DatetimeIndex(dates)
+    out = out.sort_index()
+    if multipliers is not None:
+        factor = multipliers.reindex(out.index).ffill().cumprod()
+        adjusted = out[fields].mul(factor, axis=0).add_prefix("hfq_")
+        out = out.join(adjusted)
+    out.insert(0, "date", out.index.strftime("%Y-%m-%d"))
+    return out.reset_index(drop=True)
+
+
 def fetch_etf_hfq_bars(codes: List[str], end_date: str, *, begin_date: str | None = None) -> Dict[str, pd.DataFrame]:
     """ETF 供应商后复权 OHLC，默认取最近三年。
 
@@ -230,23 +254,14 @@ def fetch_etf_hfq_bars(codes: List[str], end_date: str, *, begin_date: str | Non
         column = factor_columns.get(code)
         if column is None:
             continue
-        fields = ["high", "low", "close"]
-        if "open" in raw.columns:
-            fields.insert(0, "open")
-        dates = pd.to_datetime(raw['kline_time'], errors='coerce').dt.normalize()
-        if dates.isna().any() or dates.duplicated().any():
+        try:
+            out = build_etf_bars(raw, factors[column], require_open=False)
+        except (KeyError, ValueError) as exc:
+            logger.warning("AmazingData ETF %s 日线不可用：%s", code, exc)
             continue
-        prices = raw[fields].apply(pd.to_numeric, errors='coerce')
-        prices.index = pd.DatetimeIndex(dates)
-        prices = prices.sort_index()
-        factor = factors[column].reindex(prices.index).ffill()
-        if factor.isna().any():
-            continue
-        adjusted = prices.mul(factor.cumprod(), axis=0)
+        adjusted = out.filter(regex="^hfq_")
         if (adjusted.isna().any().any() or (adjusted <= 0).any().any()
-                or (adjusted.high < adjusted.low).any()):
+                or (adjusted.hfq_high < adjusted.hfq_low).any()):
             continue
-        out = adjusted.rename(columns=lambda column: f'hfq_{column}')
-        out.insert(0, 'date', prices.index.strftime('%Y-%m-%d'))
-        bars[code] = out.reset_index(drop=True)
+        bars[code] = out[["date", *adjusted.columns]]
     return bars

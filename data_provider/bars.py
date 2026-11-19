@@ -1,41 +1,15 @@
 # -*- coding: utf-8 -*-
-"""
-===================================
-日线取数（ETF / A股指数）
-===================================
-
-项目 ETF 与 A股指数日线的取数入口，替代各模块散落的 akshare 直连
-（rebalancer / data_collector / momentum_check 此前各自拼 sh/sz 前缀、各自选接口）。
-
-设计原则：
-- 函数名即类型：get_etf_daily / get_etf_daily_em / get_index_daily 三个入口，
-  调用方自己声明要什么，不做"从裸代码推断标的类型"（000 家族天生歧义，
-  推断必然出错）。
-- 市场前缀显式：sh/sz 前缀优先；裸码仅按确定规则推断（ETF 码族→市场无歧义；
-  指数 399→sz、其余→sh），规则写死在各自函数内，不扩散。
-- 源选择（单源为主；指数三腿是"互斥代码族路由 + 一次网络保底"，不是 failover）：
-    ETF(51/52/53/55/56/58/15/16/18) → 新浪 fund_etf_hist_sina（带 amount；
-      未复权原始价）——台账收盘价新浪保底、observe 现价补口（get_etf_daily）
-    ETF 同码族                      → 东财 fund_etf_hist_em 双线（原始 OHLC+amount
-      与供应商官方后复权 hfq_ OHLC 同表；失败抛错不回退）——台账收盘价备源、
-      跨资产动量池分数线（hfq 比值）、唐奇安通道观察与研究缓存口径
-      （get_etf_daily_em）
-    A股指数(000/399)          → 中证官网 csindex（000 权威源）
-                                → 东财 index_zh_a_hist（399 深证/国证不在 csindex）
-                                → 新浪 stock_zh_index_daily（东财不可达时保底；
-                                  000 行业指数可能停更，仅前两者失败触发）
-- 个股不在本模块范围：项目个股走 DataFetcherManager（AmazingData>Tushare 多源
-  + 实时报价合并）。传个股进来会明确拒绝，避免静默降级 AmazingData 优先级。
-- 全部归一化到 ['date','open','high','low','close','volume']，date 为 'YYYY-MM-DD' 字符串。
-"""
+"""ETF/指数单源日线与场内证券指定日原始收盘。信号日线用 data_provider.etf。"""
 
 import logging
+import math
 from datetime import datetime, timedelta
-from typing import Optional
+from typing import Literal, Optional, Sequence
 
 import pandas as pd
 
-from .codes import _split_prefix, is_etf_code, market_suffix
+from .codes import _split_prefix, is_a_stock_code, is_etf_code, market_suffix, normalize_stock_code
+from .types import safe_float
 
 logger = logging.getLogger(__name__)
 
@@ -48,6 +22,7 @@ def _etf_sym(code: str) -> str:
     num, pref = _split_prefix(code)
     if pref:
         return pref + num
+    num = normalize_stock_code(num)
     suffix = market_suffix(num)
     if suffix is None:
         raise ValueError(f"无法确定 ETF {code} 的市场归属（码族外）")
@@ -81,27 +56,27 @@ def _finalize(df: Optional[pd.DataFrame]) -> Optional[pd.DataFrame]:
     return df if len(df) > 0 else None
 
 
-def get_etf_daily_em(code: str, end_date: str) -> pd.DataFrame:
-    """东财双线日线：原始 OHLC + 供应商官方后复权 OHLC（hfq_ 前缀同表）。
-
-    后复权含分红与份额折算，由供应商维护，不做启发式猜测。消费方：台账收盘价
-    （备源，原始 close）、跨资产动量池分数线（hfq 比值，src/etf/rotation）、
-    唐奇安通道观察（src/etf/allocation、src/etf/trend）与研究缓存
-    （research/tools/etf_data）。价格两条线来自同一供应商；成交额为元，
-    成交量由手转换为份。失败抛错（区别于 get_etf_daily 返 None 的
-    fail-soft），让消费方保留旧数据并记录失败，不回退到猜测复权。
-    """
+def get_etf_daily_em(
+    code: str, end_date: str, *, begin_date: str = "1990-01-01",
+    adjust: Literal["raw", "hfq", "both"] = "both",
+) -> pd.DataFrame:
+    """东财单源日线；各口径只请求所需序列。后复权字段带 hfq_ 前缀，量为份、额为元。"""
     import akshare as ak
 
-    if not is_etf_code(code):
+    symbol = normalize_stock_code(code)
+    if len(symbol) != 6 or not symbol.isdigit() or not is_etf_code(symbol):
         raise ValueError(f"{code} 不是受支持的 ETF 代码")
-    symbol = _etf_sym(code)[2:]
+    adjustments = {"raw": ("",), "hfq": ("hfq",), "both": ("", "hfq")}.get(adjust)
+    if adjustments is None:
+        raise ValueError(f"不支持的东财 ETF 复权口径: {adjust}")
     rename = {"日期": "date", "开盘": "open", "最高": "high", "最低": "low",
               "收盘": "close", "成交量": "volume", "成交额": "amount"}
+    price_columns = ["open", "high", "low", "close"]
+    start, end = begin_date.replace("-", ""), end_date.replace("-", "")
     tables = []
-    for adjustment in ("", "hfq"):
-        df = ak.fund_etf_hist_em(symbol=symbol, period="daily", start_date="19900101",
-                                 end_date=end_date.replace("-", ""), adjust=adjustment)
+    for adjustment in adjustments:
+        df = ak.fund_etf_hist_em(symbol=symbol, period="daily", start_date=start,
+                                 end_date=end, adjust=adjustment)
         if df is None or df.empty:
             raise ValueError(f"{code} 东财 {adjustment or 'raw'} 行情为空")
         df = df.rename(columns=rename)
@@ -109,20 +84,23 @@ def get_etf_daily_em(code: str, end_date: str) -> pd.DataFrame:
         if df["date"].duplicated().any():
             raise ValueError(f"{code} 东财行情日期重复")
         if adjustment:
-            df = df[["date", "open", "high", "low", "close"]].rename(
-                columns={f: f"hfq_{f}" for f in ("open", "high", "low", "close")})
+            df = df[["date", *price_columns]].rename(
+                columns={column: f"hfq_{column}" for column in price_columns})
         else:
-            df = df[["date", "open", "high", "low", "close", "volume", "amount"]].copy()
+            df = df[["date", *price_columns, "volume", "amount"]].copy()
             df["volume"] = pd.to_numeric(df["volume"], errors="coerce") * 100
         tables.append(df)
-    return tables[0].merge(tables[1], on="date", how="left", validate="one_to_one").sort_values("date")
+    result = tables[0]
+    if adjust == "both":
+        result = result.merge(tables[1], on="date", how="left", validate="one_to_one")
+    return result.sort_values("date")
 
 
 def get_etf_daily(code: str) -> Optional[pd.DataFrame]:
     """ETF 日线全历史（新浪 fund_etf_hist_sina 单源，未复权原始价，带 amount）。
 
     台账收盘价保底（ClosingPrices）和 observe 现价补口走这里。
-    历史比值口径（池分数线等）用 get_etf_daily_em 的官方后复权，不用本函数。
+    信号日线走 data_provider.etf，不用本函数。
     返回形状唯一：date 列升序，
     columns=['date','open','high','low','close','volume','amount']；
     空/失败返回 None；非 ETF 码族拒绝（个股走 DataFetcherManager）。
@@ -149,6 +127,62 @@ def get_etf_daily(code: str) -> Optional[pd.DataFrame]:
         df[c] = pd.to_numeric(df[c], errors="coerce")
     out = _finalize(df)
     return out
+
+
+def close_on_date(frame: Optional[pd.DataFrame], asof: str, date_column: str = "date") -> Optional[float]:
+    """只接受指定交易日唯一有效的原始收盘，不用其他日期补价。"""
+    if frame is None or frame.empty or not {date_column, "close"} <= set(frame.columns):
+        return None
+    days = pd.to_datetime(frame[date_column], errors="coerce").dt.normalize()
+    rows = frame.loc[days == pd.Timestamp(asof)]
+    if len(rows) != 1:
+        return None
+    value = safe_float(rows["close"].iloc[0])
+    return value if value is not None and math.isfinite(value) and value > 0 else None
+
+
+def _etf_fallback_close(code: str, asof: str) -> Optional[float]:
+    try:
+        price = close_on_date(get_etf_daily_em(code, asof, begin_date=asof, adjust="raw"), asof)
+        if price is not None:
+            return price
+    except Exception:
+        logger.debug("东财原始收盘不可用：%s %s", code, asof, exc_info=True)
+
+    try:
+        return close_on_date(get_etf_daily(code), asof)
+    except Exception:
+        logger.exception("新浪原始收盘不可用：%s %s", code, asof)
+        return None
+
+
+def listed_close_prices(codes: Sequence[str], asof: str) -> dict[str, float]:
+    """股票与 ETF 共用 AmazingData 批量收盘；ETF 缺价才尝试东财原始价、再尝试新浪。"""
+    pending = {}
+    for code in codes:
+        if is_etf_code(code) or is_a_stock_code(code):
+            pending[code] = normalize_stock_code(code)
+        else:
+            logger.error("未识别的股票或 ETF 代码：%s %s", code, asof)
+    if not pending:
+        return {}
+
+    from .fetchers.amazingdata.market import fetch_kline
+
+    try:
+        frames = fetch_kline(list(dict.fromkeys(pending.values())), asof, asof)
+    except Exception:
+        logger.exception("AmazingData 批量收盘数据查询失败：%s", asof)
+        frames = {}
+
+    prices = {}
+    for code, bare_code in pending.items():
+        price = close_on_date(frames.get(bare_code), asof, "kline_time")
+        if price is None and is_etf_code(code):
+            price = _etf_fallback_close(code, asof)
+        if price is not None:
+            prices[code] = price
+    return prices
 
 
 def get_index_daily(code: str, days: int = 400) -> Optional[pd.DataFrame]:

@@ -371,11 +371,13 @@ def test_factor_result_is_windowed_even_though_sdk_requires_cache(monkeypatch, t
 
 
 def test_etf_hfq_bars_accumulate_event_factors(monkeypatch):
+    from research.tools.etf_data.fetch_ad import build_one
+
     dates = pd.to_datetime(["2026-10-12", "2026-10-13", "2026-10-14"])
     kline = pd.DataFrame({"code": "516560.SH", "kline_time": dates,
                           "open": [1., 2., 3.], "high": [2., 3., 4.],
                           "low": [.5, 1., 2.], "close": [1., 2., 3.],
-                          "volume": [10., 10., 10.], "amount": [1e5, 1e5, 1e5]})
+                          "volume": [10., 20., 30.], "amount": [1e5, 2e5, 3e5]}).iloc[::-1]
     # 事件乘数：除权日 2.0，次日回到 1.0，必须累积相乘。
     factors = pd.DataFrame({"516560.SH": [1.0, 2.0, 1.0]}, index=dates)
     monkeypatch.setattr(market, "fetch_kline",
@@ -388,6 +390,10 @@ def test_etf_hfq_bars_accumulate_event_factors(monkeypatch):
     assert bars["516560"]["hfq_open"].tolist() == [1.0, 4.0, 6.0]
     assert bars["516560"]["hfq_high"].tolist() == [2.0, 6.0, 8.0]
     assert bars["516560"]["hfq_low"].tolist() == [0.5, 2.0, 4.0]
+    cached = build_one("516560", {"516560": kline}, factors, {"516560": "516560.SH"})
+    pd.testing.assert_frame_equal(cached[bars["516560"].columns], bars["516560"])
+    assert cached["volume"].tolist() == [10., 20., 30.]
+    assert cached["amount"].tolist() == [1e5, 2e5, 3e5]
 
 
 def test_etf_hfq_bars_omit_codes_without_factors(monkeypatch):

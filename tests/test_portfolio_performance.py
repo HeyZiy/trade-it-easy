@@ -156,12 +156,12 @@ def test_raw_close_feed_rejects_stale_future_and_duplicate_rows(monkeypatch):
     def fetch(code):
         seen.append(code)
         return frames[code]
-    def em_unavailable(code, end_date):
+    def em_unavailable(**kwargs):
         raise ValueError("东财行情为空")
     def ad_unavailable(codes, begin_date, end_date):
         raise TimeoutError("AD 行情不可用")
     monkeypatch.setattr("data_provider.fetchers.amazingdata.market.fetch_kline", ad_unavailable)
-    monkeypatch.setattr("data_provider.bars.get_etf_daily_em", em_unavailable)
+    monkeypatch.setattr("akshare.fund_etf_hist_em", em_unavailable)
     monkeypatch.setattr("data_provider.bars.get_etf_daily", fetch)
     feed = ClosingPrices()
     assert feed.close_prices(list(frames), "2026-09-23") == {"512880": 12}
@@ -180,8 +180,8 @@ def test_raw_close_feed_batches_amazingdata_and_uses_etf_fallbacks_for_gaps(monk
         "510050": pd.DataFrame({"kline_time": [asof], "close": pd.Series([pd.NA], dtype="Float64")}),
     }
     em_frames = {
-        "510300": pd.DataFrame({"date": [asof], "close": [10], "hfq_close": [20]}),
-        "510050": pd.DataFrame({"date": ["2026-11-17"], "close": [9]}),
+        "510300": (asof, 10),
+        "510050": ("2026-11-17", 9),
     }
     ad_calls, em_calls, sina_calls = [], [], []
 
@@ -189,12 +189,13 @@ def test_raw_close_feed_batches_amazingdata_and_uses_etf_fallbacks_for_gaps(monk
         ad_calls.append((codes, begin_date, end_date))
         return ad_frames
 
-    def em_fetch(code, end_date):
-        assert end_date == asof
-        em_calls.append(code)
-        if code == "159632":
+    def em_fetch(symbol, period, start_date, end_date, adjust):
+        em_calls.append((symbol, start_date, end_date, adjust))
+        if symbol == "159632":
             raise ValueError("东财行情为空")
-        return em_frames[code]
+        day, price = em_frames[symbol]
+        return pd.DataFrame({"日期": [day], "开盘": [price], "最高": [price],
+                             "最低": [price], "收盘": [price], "成交量": [100], "成交额": [10000]})
 
     def sina_fetch(symbol):
         sina_calls.append(symbol)
@@ -202,7 +203,7 @@ def test_raw_close_feed_batches_amazingdata_and_uses_etf_fallbacks_for_gaps(monk
                              "volume": [10000]})
 
     monkeypatch.setattr("data_provider.fetchers.amazingdata.market.fetch_kline", ad_fetch)
-    monkeypatch.setattr("data_provider.bars.get_etf_daily_em", em_fetch)
+    monkeypatch.setattr(ak, "fund_etf_hist_em", em_fetch)
     monkeypatch.setattr(ak, "fund_etf_hist_sina", sina_fetch)
     feed = ClosingPrices()
     codes = ["600519", "513500", "510300", "159632", "510050"]
@@ -210,7 +211,8 @@ def test_raw_close_feed_batches_amazingdata_and_uses_etf_fallbacks_for_gaps(monk
     assert feed.close_prices(codes, asof) == closes
     assert feed.close_prices(codes, asof) == closes
     assert ad_calls == [(codes, asof, asof)]
-    assert em_calls == ["510300", "159632", "510050"]
+    assert em_calls == [(code, "20261118", "20261118", "")
+                        for code in ("510300", "159632", "510050")]
     assert sina_calls == ["sz159632", "sh510050"]
 
 

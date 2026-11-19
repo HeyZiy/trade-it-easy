@@ -3,6 +3,8 @@
 import pandas as pd
 import pytest
 
+from data_provider.etf import etf_daily_bars
+from data_provider.fetchers.amazingdata import market
 from src.etf import allocation as eo
 from src.etf.trend import donchian_observation
 from src.etf.rebalancer import RebalancePlan
@@ -12,7 +14,7 @@ CORE_BASELINE = example_baseline()
 
 @pytest.fixture(autouse=True)
 def baseline_for_trend_tests(monkeypatch):
-    monkeypatch.setattr(eo, "_raw_trend_bars_ad", lambda codes, end: {})
+    monkeypatch.setattr(market, "fetch_etf_hfq_bars", lambda codes, end: {})
 
 
 def history():
@@ -89,7 +91,7 @@ def test_amazingdata_is_primary_and_eastmoney_only_fills_missing(monkeypatch):
         calls.append(code)
         return history()
 
-    monkeypatch.setattr(eo, "_raw_trend_bars_ad", lambda codes, end: {"513180": history()})
+    monkeypatch.setattr(market, "fetch_etf_hfq_bars", lambda codes, end: {"513180": history()})
     monkeypatch.setattr(provider, "get_etf_daily_em", fetch)
     observations = eo._fetch_trend_observations(CORE_BASELINE)
     assert observations["513180"]["source"] == "AmazingData"
@@ -104,7 +106,7 @@ def test_amazingdata_bulk_failure_falls_back_to_eastmoney(monkeypatch):
     def unavailable(codes, end):
         raise RuntimeError("login failed")
 
-    monkeypatch.setattr(eo, "_raw_trend_bars_ad", unavailable)
+    monkeypatch.setattr(market, "fetch_etf_hfq_bars", unavailable)
     monkeypatch.setattr(provider, "get_etf_daily_em", lambda code, end: history())
     observations = eo._fetch_trend_observations(CORE_BASELINE)
     assert observations["513180"]["state"] is False
@@ -114,11 +116,26 @@ def test_amazingdata_bulk_failure_falls_back_to_eastmoney(monkeypatch):
 def test_amazingdata_series_too_short_falls_back_to_eastmoney(monkeypatch):
     from data_provider import bars as provider
 
-    monkeypatch.setattr(eo, "_raw_trend_bars_ad",
+    monkeypatch.setattr(market, "fetch_etf_hfq_bars",
                         lambda codes, end: {"513180": history().iloc[:20]})
     monkeypatch.setattr(provider, "get_etf_daily_em", lambda code, end: history())
     observations = eo._fetch_trend_observations(CORE_BASELINE)
     assert observations["513180"]["source"] == "东财"
+
+
+def test_invalid_primary_bar_replaces_entire_series_not_only_the_missing_day(monkeypatch):
+    from data_provider import bars as provider
+
+    eastmoney = history()
+    amazing = eastmoney.copy()
+    amazing[["hfq_high", "hfq_low", "hfq_close"]] *= 10
+    amazing.loc[25, "hfq_close"] = float("nan")
+    monkeypatch.setattr(market, "fetch_etf_hfq_bars", lambda codes, end: {"513180": amazing})
+    monkeypatch.setattr(provider, "get_etf_daily_em", lambda code, end: eastmoney)
+
+    series = etf_daily_bars(["513180"], "2026-09-30", policy="observation", min_bars=21)["513180"]
+    assert series.source == "东财"
+    assert series.history.close.tolist() == eastmoney.hfq_close.tolist()
 
 
 def test_report_columns_share_snapshot_and_do_not_change_target_or_plan(monkeypatch):

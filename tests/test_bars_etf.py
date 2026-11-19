@@ -5,7 +5,7 @@ import pandas as pd
 import pytest
 
 import akshare as ak
-from data_provider.bars import get_etf_daily
+from data_provider.bars import get_etf_daily, get_etf_daily_em
 
 
 def _raw(closes, symbol="sh510300"):
@@ -50,6 +50,8 @@ def test_symbol_routes_by_market_suffix(capture):
     assert capture["symbol"] == "sz159915"
     get_etf_daily("sh558001")  # 显式前缀优先
     assert capture["symbol"] == "sh558001"
+    get_etf_daily("159915.SZ")
+    assert capture["symbol"] == "sz159915"
 
 
 def test_raw_close_untouched(capture):
@@ -63,3 +65,19 @@ def test_raw_close_untouched(capture):
 def test_empty_source_returns_none(capture):
     capture["raw"] = pd.DataFrame()
     assert get_etf_daily("510300") is None
+
+
+def test_eastmoney_hfq_only_uses_single_normalized_request(monkeypatch):
+    calls = []
+
+    def fetch(**kwargs):
+        calls.append((kwargs["symbol"], kwargs["adjust"]))
+        return pd.DataFrame({"日期": ["2026-09-02", "2026-09-01"], "开盘": [2, 1],
+                             "最高": [2, 1], "最低": [2, 1], "收盘": [2, 1]})
+
+    monkeypatch.setattr(ak, "fund_etf_hist_em", fetch)
+    result = get_etf_daily_em("510300.SH", "2026-09-02", adjust="hfq")
+    assert calls == [("510300", "hfq")]
+    assert result["date"].tolist() == ["2026-09-01", "2026-09-02"]
+    assert result["hfq_close"].tolist() == [1, 2]
+    assert "close" not in result
