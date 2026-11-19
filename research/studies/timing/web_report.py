@@ -118,20 +118,9 @@ def archive_group(archive, code, key):
     return group
 
 
-def _price_history(rows, cutoff):
-    history = rows.set_index(pd.to_datetime(rows["date"], errors="raise"))
-    fields = ["open", "high", "low", "close"]
-    history = history[[f"hfq_{field}" for field in fields]].set_axis(fields, axis=1).sort_index()
-    history = history.loc[:cutoff].apply(pd.to_numeric, errors="coerce")
-    if (history.empty or not history.index.is_unique or history.index.hasnans
-            or not np.isfinite(history.to_numpy()).all() or (history <= 0).any().any()
-            or (history.high < history.max(axis=1)).any() or (history.low > history.min(axis=1)).any()):
-        raise ValueError("复权行情有缺失或价格异常，无法生成可靠的报告。")
-    return history
-
-
 def load_cached(code, cache):
     """Read one qualified AmazingData snapshot without loading the cross-asset tables."""
+    from data_provider.etf import adjusted_etf_history
     from research.tools.etf_data.cache import AD_SOURCE, cache_is_fresh
 
     path = cache / "etf_daily" / f"{code}.csv"
@@ -149,35 +138,25 @@ def load_cached(code, cache):
         rows = pd.read_csv(path)
         if not rows.quality.eq("ok").all():
             return None
-        return str(asset.display_name), _price_history(rows, cutoff), "AmazingData 后复权 · 本地研究快照"
+        return str(asset.display_name), adjusted_etf_history(rows, cutoff), "AmazingData 后复权 · 本地研究快照"
     except (OSError, ValueError, KeyError, AttributeError):
         return None
 
 
 def load_live(code):
     """Load historical adjusted OHLC; current listing status is not a requirement."""
-    from data_provider.bars import get_etf_daily_em
-    from data_provider.fetchers.amazingdata import market
-    from data_provider.fetchers.amazingdata.client import is_configured
+    from data_provider.etf import EASTMONEY, etf_daily_bars
     from data_provider.security_names import security_name
 
     now = datetime.now(timezone(timedelta(hours=8)))
     today = now.date()
     cutoff = today if now.time() >= time(15, 30) else today - timedelta(days=1)
     name = security_name(code)
-    end = cutoff.isoformat()
-    try:
-        return name, _price_history(get_etf_daily_em(code, end), end), SOURCE
-    except Exception as error:
-        logger.warning("ETF %s 东方财富后复权失败 (%s)", code, type(error).__name__)
-        if not is_configured():
-            raise ValueError("东方财富后复权日线不可用，当前工作台未配置 AmazingData 备用来源。") from error
-    try:
-        rows = market.fetch_etf_hfq_bars([code], end, begin_date="1990-01-01")[code]
-        return name, _price_history(rows, end), "AmazingData 后复权 · 在线"
-    except Exception as error:
-        logger.warning("ETF %s AmazingData 后复权失败 (%s)", code, type(error).__name__)
-        raise ValueError("东方财富和 AmazingData 均未返回可用的后复权日线，请稍后重试。") from error
+    series = etf_daily_bars([code], cutoff.isoformat(), policy="online_research").get(code)
+    if series is None:
+        raise ValueError("未获取到可用的后复权日线，请稍后重试。")
+    source = SOURCE if series.source == EASTMONEY else "AmazingData 后复权 · 在线"
+    return name, series.history, source
 
 
 def full_report(history, source):

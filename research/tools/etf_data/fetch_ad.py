@@ -8,13 +8,13 @@ import argparse
 from pathlib import Path
 import sys
 
-import numpy as np
 import pandas as pd
 
 ROOT = Path(__file__).resolve().parents[3]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
+from data_provider.codes import normalize_stock_code
 from research.tools.etf_data.cache import (
     AD_SOURCE,
     atomic_csv,
@@ -23,13 +23,9 @@ from research.tools.etf_data.cache import (
     cache_is_fresh,
     normalize_bars,
 )
-from research.tools.etf_data.data import DEFAULT_AD_CACHE, PRICE_FIELDS, SCHEMA_VERSION
+from research.tools.etf_data.data import DEFAULT_AD_CACHE, SCHEMA_VERSION
 
 BATCH = 200
-
-
-def _plain(code):
-    return str(code).split(".")[0]
 
 
 def write_benchmark(cache, begin, end):
@@ -53,28 +49,11 @@ def write_universe(cache, codes):
 
 
 def build_one(code, klines, factors, factor_cols):
-    raw = klines.get(code)
-    if raw is None or raw.empty:
-        raise ValueError("AD 无行情")
-    dates = pd.to_datetime(raw["kline_time"], errors="coerce").dt.normalize()
-    if dates.isna().any() or dates.duplicated().any():
-        raise ValueError("K线日期无效或重复")
-    prices = raw[list(PRICE_FIELDS)].apply(pd.to_numeric, errors="coerce")
-    prices.index = pd.DatetimeIndex(dates)
-    prices = prices.sort_index()
-    out = pd.DataFrame({"date": prices.index.strftime("%Y-%m-%d")})
-    for field in PRICE_FIELDS:
-        out[field] = prices[field].to_numpy()
-    for field in ("volume", "amount"):
-        out[field] = pd.to_numeric(raw[field], errors="coerce").to_numpy() \
-            if field in raw else np.nan
+    from data_provider.fetchers.amazingdata.market import build_etf_bars
+
     column = factor_cols.get(code)
-    if column is not None:
-        factor = factors[column].reindex(prices.index).ffill()
-        adjusted = prices.mul(factor.cumprod(), axis=0)
-        for field in PRICE_FIELDS:
-            out[f"hfq_{field}"] = adjusted[field].to_numpy()
-    return normalize_bars(out)
+    multipliers = factors[column] if column is not None else None
+    return normalize_bars(build_etf_bars(klines.get(code), multipliers))
 
 
 def write_readme(cache, manifest, named):
@@ -129,11 +108,11 @@ def main():
     from data_provider.fetchers.amazingdata import basics, market
     cutoff = write_benchmark(cache, args.begin_date, args.end_date)
     if args.codes:
-        codes = list(dict.fromkeys(_plain(c) for c in args.codes))
+        codes = list(dict.fromkeys(normalize_stock_code(str(c)) for c in args.codes))
         named = write_universe(cache, codes)
     else:
         sdk_codes = basics.get_fund_list()
-        codes = sorted({_plain(c) for c in sdk_codes})
+        codes = sorted({normalize_stock_code(str(code)) for code in sdk_codes})
         named = write_universe(cache, codes)
     if args.limit:
         codes = codes[:args.limit]
@@ -150,7 +129,7 @@ def main():
         try:
             klines = market.fetch_kline(todo, args.begin_date, cutoff)
             factors = market.fetch_adj_factors(todo, args.begin_date, cutoff)
-            factor_cols = {_plain(c): c for c in factors.columns}
+            factor_cols = {normalize_stock_code(str(column)): column for column in factors.columns}
         except Exception as exc:
             for c in todo:
                 failures[c] = f"{type(exc).__name__}: {str(exc)[:180]}"

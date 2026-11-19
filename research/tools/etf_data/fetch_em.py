@@ -9,7 +9,7 @@ write_manifests 在抓取后刷新数据集元信息。
 抓哪些标的、估值路由由研究入口编排，如 research/studies/timing/fetch_data.py。
 """
 import json
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import akshare as ak
@@ -19,6 +19,7 @@ import requests
 
 from akshare.stock_feature.stock_a_indicator import get_cookie_csrf
 from akshare.stock_feature.stock_a_pe_and_pb import hash_code
+from data_provider.bars import get_etf_daily_em
 
 DATA = Path(__file__).resolve().parents[2] / "data"
 ETF_DIR = DATA / "etf_hfq_em"
@@ -26,10 +27,8 @@ PE_DIR = DATA / "index_pe_lg"
 
 
 def fetch_etf_hfq(code):
-    raw = ak.fund_etf_hist_em(symbol=code, period="daily", adjust="hfq")
-    df = raw.rename(columns={"日期": "date", "开盘": "open", "收盘": "close",
-                             "最高": "high", "最低": "low"})[["date", "open", "high", "low", "close"]]
-    df["date"] = pd.to_datetime(df["date"]).dt.strftime("%Y-%m-%d")
+    asof = datetime.now(timezone(timedelta(hours=8))).date().isoformat()
+    df = get_etf_daily_em(code, asof, adjust="hfq").rename(columns=lambda col: col.removeprefix("hfq_"))
     df.to_csv(ETF_DIR / f"etf_hfq_{code}.csv", index=False)
     print(f"{code} hfq: {df['date'].iloc[0]} -> {df['date'].iloc[-1]}  {len(df)} 行")
 
