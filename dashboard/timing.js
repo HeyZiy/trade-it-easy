@@ -4,13 +4,14 @@ const page = "/research/timing";
 const api = "/api" + page;
 const code = location.pathname.split("/")[3] || "";
 const byId = id => document.getElementById(id);
-const fullColumns = ["规则", "年化收益%", "最大回撤%", "最长水下交易日", "平均仓位%", "交易次数",
+const fullColumns = ["族", "规则", "年化收益%", "最大回撤%", "最长水下交易日", "平均仓位%", "交易次数",
   "较长拿年化差pp", "较长拿回撤改善pp", "较长拿水下缩短交易日"];
 const rollingColumns = ["规则", "窗口数", "超额年化中位数pp", "回撤改善中位数pp",
   "水下缩短交易日中位数", "跑赢长拿比例%", "三项均不差比例%"];
-const colors = ["#54665d", "#1d7664", "#a95b12", "#395ead", "#a43f5d", "#7751a6", "#14818d", "#88623b"];
+const colors = ["#54665d", "#1d7664", "#a95b12", "#395ead", "#a43f5d", "#7751a6", "#14818d",
+  "#88623b", "#2f8f4e", "#b03a2e", "#5d6d7e", "#8e44ad", "#16a085", "#c0392b"];
 const chartTitles = ["净值（倍）", "回撤（%）", "仓位（%）"];
-const chartDefaults = /^(长拿|唐奇安20\/10|MA20_ATR20×1\.5_下轨退出|Cycle v8\.1（入场满仓）)$/;
+const chartDefaults = /^(长拿|半仓长拿|网格·每月重定|MA20\+ATR×1\.5|唐奇安20\/10|MOM252)$/;
 const formatter = new Intl.NumberFormat("zh-CN", { maximumFractionDigits: 2 });
 const sections = {
   asset: byId("asset"), comparison: byId("comparison"), group: byId("report-group"),
@@ -19,6 +20,7 @@ const sections = {
 };
 let overview, group, timer, loadingGroup = 0;
 let selected = new Set(), seriesColors = {}, plotCursors = [], indexStart = 0, activeIndex = -1;
+let sortState = { column: null, dir: 1 }, familyOf = {};
 
 function element(tag, label) {
   const node = document.createElement(tag);
@@ -65,6 +67,58 @@ function table(rows, columns) {
     }
   }
   return result;
+}
+
+function metricTable(rows) {
+  const result = element("table");
+  const heading = result.createTHead().insertRow();
+  for (const title of fullColumns) {
+    const cell = element("th", title);
+    cell.scope = "col";
+    cell.className = "sortable" + (title === "族" || title === "规则" ? " text-left" : "");
+    cell.setAttribute("aria-sort", sortState.column === title
+      ? (sortState.dir > 0 ? "ascending" : "descending") : "none");
+    cell.addEventListener("click", () => {
+      sortState = { column: title, dir: sortState.column === title ? -sortState.dir : 1 };
+      renderMetrics();
+    });
+    heading.append(cell);
+  }
+  const sorted = [...rows];
+  if (sortState.column) {
+    const key = sortState.column === "规则" ? "strategy" : sortState.column;
+    sorted.sort((a, b) => {
+      const av = a[key], bv = b[key];
+      if (typeof av === "string" || typeof bv === "string") {
+        return sortState.dir * String(av ?? "").localeCompare(String(bv ?? ""), "zh");
+      }
+      return sortState.dir * ((av ?? -Infinity) - (bv ?? -Infinity));
+    });
+  }
+  const body = result.createTBody();
+  for (const row of sorted) {
+    const line = body.insertRow();
+    for (const title of fullColumns) {
+      const cell = line.insertCell();
+      if (title === "族" || title === "规则") cell.className = "text-left";
+      cell.textContent = title === "规则" ? row.strategy
+        : title === "族" ? row.族 : number(row[title]);
+    }
+  }
+  return result;
+}
+
+function renderMetrics() {
+  if (!group) return;
+  const family = byId("family-filter").value;
+  const rows = group.metrics.filter(row => !family || row.族 === family);
+  byId("timing-metrics").replaceChildren(metricTable(rows));
+}
+
+function syncRuleChecks() {
+  for (const check of byId("rule-list").querySelectorAll("input")) {
+    check.checked = selected.has(check.dataset.name);
+  }
 }
 
 async function loadCatalog() {
@@ -207,17 +261,30 @@ function drawCharts() {
 function renderGroup(result) {
   group = result;
   const names = Object.keys(result.series);
+  familyOf = Object.fromEntries(result.metrics.map(row => [row.strategy, row.族]));
   selected = new Set(names.filter(name => chartDefaults.test(name)));
+  if (selected.size <= 1) selected = new Set(names.slice(0, Math.min(4, names.length)));
+  if (names.includes("长拿")) selected.add("长拿");
   seriesColors = Object.fromEntries(names.map((name, i) => [name, colors[i % colors.length]]));
   byId("timing-period").textContent = "回测窗口 " + result.start + " 至 " + result.end
     + " · " + result.source + " · 单边模拟成本 " + number(result.cost_pct) + "%";
-  byId("timing-metrics").replaceChildren(table(result.metrics, fullColumns));
+  const families = [...new Set(result.metrics.map(row => row.族).filter(Boolean))];
+  const familyFilter = byId("family-filter");
+  const keepFamily = familyFilter.value;
+  familyFilter.replaceChildren(element("option", "全部"),
+    ...families.map(family => { const option = element("option", family); option.value = family; return option; }));
+  familyFilter.value = families.includes(keepFamily) ? keepFamily : "";
+  const curveFamily = byId("curve-family");
+  curveFamily.replaceChildren(element("option", "自定义"),
+    ...families.map(family => { const option = element("option", family); option.value = family; return option; }));
+  renderMetrics();
   const rules = byId("rule-list");
   rules.replaceChildren();
   for (const name of names) {
     const label = element("label");
     const check = element("input");
     check.type = "checkbox";
+    check.dataset.name = name;
     check.checked = selected.has(name);
     check.disabled = name === "长拿";
     const swatch = element("span");
@@ -227,6 +294,7 @@ function renderGroup(result) {
     check.addEventListener("change", () => {
       if (check.checked) selected.add(name);
       else selected.delete(name);
+      curveFamily.value = "";
       drawCharts();
     });
     label.append(check, swatch, document.createTextNode(name));
@@ -257,6 +325,7 @@ async function refresh() {
   try {
     overview = await request(api + "/" + code);
     byId("asset-name").textContent = overview.name;
+    if (overview.index_code) byId("index-code").value = overview.index_code;
     const keys = Object.keys(overview.groups);
     const active = Boolean(overview.phase);
     sections.generate.hidden = active;
@@ -303,7 +372,8 @@ sections.generate.addEventListener("click", async () => {
     await request(api, {
       method: "POST",
       headers: { "Content-Type": "application/json", "X-Trade-Request": "dashboard" },
-      body: JSON.stringify({ code, refresh: Boolean(Object.keys(overview.groups).length) }),
+      body: JSON.stringify({ code, refresh: Boolean(Object.keys(overview.groups).length),
+        index_code: byId("index-code").value.trim() || undefined }),
     });
     await refresh();
   } catch (error) {
@@ -313,6 +383,15 @@ sections.generate.addEventListener("click", async () => {
   }
 });
 sections.group.addEventListener("change", loadGroup);
+byId("family-filter").addEventListener("change", renderMetrics);
+byId("curve-family").addEventListener("change", () => {
+  const family = byId("curve-family").value;
+  if (!family || !group) return;
+  selected = new Set(Object.keys(group.series).filter(name => familyOf[name] === family));
+  if (group.series["长拿"]) selected.add("长拿");
+  syncRuleChecks();
+  drawCharts();
+});
 byId("hold-years").addEventListener("change", renderRolling);
 sections.range.addEventListener("change", drawCharts);
 sections.cursor.addEventListener("input", () => updateCursor(Number(sections.cursor.value)));
@@ -337,5 +416,6 @@ if (code) {
   byId("asset-name").textContent = "ETF " + code;
   sections.status.textContent = "正在查找报告…";
   sections.asset.hidden = false;
+  byId("index-controls").hidden = false;
   refresh();
 }

@@ -79,7 +79,7 @@ def test_archive_opens_without_fetching_and_keeps_cycle_window_separate(reports)
 
 def test_generate_etf_missing_from_directory_publishes_full_before_rolling_and_reopens(reports, monkeypatch):
     code = "563360"
-    dates = pd.bdate_range("2023-01-03", periods=482)
+    dates = pd.bdate_range("2023-01-03", periods=800)
     close = 2 + np.arange(len(dates)) / 180
     raw = pd.DataFrame({"date": dates, "hfq_open": close, "hfq_high": close + .03,
                         "hfq_low": close - .02, "hfq_close": close})
@@ -112,9 +112,9 @@ def test_generate_etf_missing_from_directory_publishes_full_before_rolling_and_r
         current = http(API + "/" + code)[1]
         assert current["phase"] == "rolling"
         full = http(API + "/" + code + "/current")[1]
-        assert len(full["series"]) == 6
+        assert len(full["series"]) == 24
         assert full["source"] == "东方财富后复权日线"
-        assert full["start"] == dates[199].date().isoformat()
+        assert full["start"] == dates[271].date().isoformat()
         assert full["end"] == dates[-1].date().isoformat()
         assert full["series"]["长拿"][1][0] < 0  # Day-one fee is visible against initial cash.
         assert current["rolling"] == []
@@ -133,7 +133,7 @@ def test_generate_etf_missing_from_directory_publishes_full_before_rolling_and_r
 
 def test_unavailable_refresh_keeps_real_cache_report(reports, tmp_path, monkeypatch):
     code = "512690"
-    dates = pd.bdate_range("2024-01-02", periods=215).strftime("%Y-%m-%d")
+    dates = pd.bdate_range("2024-01-02", periods=300).strftime("%Y-%m-%d")
     cache = tmp_path / "market"
     daily = cache / "etf_daily"
     daily.mkdir(parents=True)
@@ -164,6 +164,32 @@ def test_unavailable_refresh_keeps_real_cache_report(reports, tmp_path, monkeypa
     assert requested.is_set()
     assert reports.overview(code)["error"] == "在线行情暂不可用"
     assert reports.group(code, "current") == initial
+
+
+def test_index_code_enables_pe_row_and_is_surfaced(reports, monkeypatch):
+    code = "512690"
+    idx = pd.bdate_range("2022-01-03", periods=400)
+    c = 2 + np.arange(len(idx)) / 100
+    h = pd.DataFrame({"open": c, "high": c * 1.01, "low": c * 0.99, "close": c}, index=idx)
+    pe = pd.Series(np.linspace(8, 25, len(idx)), index=idx)
+    monkeypatch.setattr(web_report, "load_live", lambda code: ("测试 ETF", h, "东方财富后复权日线"))
+    seen = {}
+
+    def fake_pe(index_code, pe_dir, refresh=False):
+        seen["index_code"] = index_code
+        return pe, "2023-09-01"
+
+    monkeypatch.setattr(web_report, "load_pe", fake_pe)
+    assert http(API, payload={"code": code, "index_code": "12ab"})[0] == 400
+    assert http(API, payload={"code": code, "index_code": "000300"}) == (202, {"phase": "queued"})
+    reports.worker.submit(lambda: None).result(timeout=10)
+    assert seen["index_code"] == "000300"
+    full = http(API + "/" + code + "/current")[1]
+    assert "PE分位" in full["series"]
+    assert full["index_code"] == "000300"
+    assert full["pe_as_of"] == "2023-09-01"
+    assert http(API + "/" + code)[1]["index_code"] == "000300"
+    assert http(API, payload={"code": code, "index_code": "000300"}) == (200, {"phase": "existing"})
 
 
 @pytest.mark.parametrize("amazingdata_available", [True, False])

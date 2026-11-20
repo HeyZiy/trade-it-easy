@@ -37,15 +37,26 @@
       <p id="timing-status" class="subtle" role="status"></p>
       <p id="timing-error" class="warning" role="alert" hidden></p>
       <p id="timing-empty" class="empty" hidden>这只 ETF 暂无报告。生成后，随时可通过代码再次打开。</p>
+      <div class="timing-controls" id="index-controls" hidden>
+        <label for="index-code">跟踪指数代码（选填，启用 PE 估值行）</label>
+        <input id="index-code" inputmode="numeric" pattern="[0-9]{6}" maxlength="6"
+               placeholder="例如 000300" autocomplete="off">
+      </div>
       <div class="timing-controls" id="group-controls" hidden>
         <label for="report-group">研究结果</label><select id="report-group"></select>
       </div>
       <div id="comparison" hidden>
         <p id="timing-period" class="subtle"></p>
+        <div class="timing-controls">
+          <label for="family-filter">按族筛选表格</label><select id="family-filter"><option value="">全部</option></select>
+        </div>
         <div class="table-wrap" id="timing-metrics"></div>
         <p class="subtle">回撤改善要和平均仓位一起看。当前对照未单独识别仓位与择时的贡献。</p>
         <div class="timing-chart-head">
-          <fieldset id="timing-rules"><legend>显示规则</legend><div id="rule-list"></div></fieldset>
+          <fieldset id="timing-rules"><legend>显示规则</legend>
+            <label for="curve-family">按族选曲线 <select id="curve-family"><option value="">自定义</option></select></label>
+            <div id="rule-list"></div>
+          </fieldset>
           <label for="chart-range">仅缩放图表
             <select id="chart-range"><option value="0">全期</option><option value="1">最近 1 年</option><option value="3">最近 3 年</option></select>
           </label>

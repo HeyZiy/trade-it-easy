@@ -199,7 +199,7 @@ class Handler(BaseHTTPRequestHandler):
             payload = json.loads(self.rfile.read(length))
             if not isinstance(payload, dict):
                 raise ValueError("请求内容无效。")
-            phase = TIMING.start(payload.get("code"), payload.get("refresh", False))
+            phase = TIMING.start(payload.get("code"), payload.get("refresh", False), payload.get("index_code"))
             self.timing_json({"phase": phase}, 200 if phase == "existing" else 202)
         except ValueError as error:
             self.timing_json({"error": str(error)}, 400)

@@ -10,7 +10,7 @@ import threading
 from data_provider.codes import is_etf_code
 from src.json_store import save
 
-SCHEMA = 1
+SCHEMA = 2
 MAX_JOBS = 4
 
 
@@ -83,6 +83,7 @@ class TimingReports:
             "code": code, "name": (saved or archive or {"name": f"ETF {code}"})["name"],
             "groups": groups, "phase": phase, "error": error,
             "version": saved["version"] if saved else None,
+            "index_code": saved.get("index_code") if saved else None,
             "rolling_state": saved["rolling_state"] if saved else None,
             "rolling": saved["rolling"] if saved else [],
             "case_study": code == "159915" and self.case_study().is_file(),
@@ -105,34 +106,44 @@ class TimingReports:
     def case_study(self):
         return self.archive / "159915" / "summary.md"
 
-    def start(self, code, refresh=False):
+    def start(self, code, refresh=False, index_code=None):
         from research.studies.timing.web_report import archive_catalog
 
         self._path(code)
         if not isinstance(refresh, bool):
             raise ValueError("刷新选项无效。")
+        if index_code in (None, ""):
+            index_code = None
+        if index_code is not None and re.fullmatch(r"[0-9]{6}", index_code) is None:
+            raise ValueError("指数代码须为 6 位数字。")
         with self.lock:
             if code in self.jobs:
                 return self.jobs[code]
-            if not refresh and (self._load(code) is not None or code in archive_catalog(self.archive)):
+            saved = self._load(code)
+            if not refresh and saved is not None and saved.get("index_code") == index_code:
+                return "existing"
+            if not refresh and index_code is None and code in archive_catalog(self.archive):
                 return "existing"
             if len(self.jobs) >= MAX_JOBS:
                 raise QueueFull("已有多份报告在生成，请稍后再试。")
             self.errors.pop(code, None)
             self.jobs[code] = "queued"
-            self.worker.submit(self._generate, code, refresh)
+            self.worker.submit(self._generate, code, refresh, index_code)
             return "queued"
 
-    def _generate(self, code, refresh):
+    def _generate(self, code, refresh, index_code=None):
         try:
-            from research.studies.timing.web_report import full_report, load_cached, load_live, rolling_report
+            from research.studies.timing.web_report import full_report, load_cached, load_live, load_pe, rolling_report
 
             with self.lock:
                 self.jobs[code] = "history"
             snapshot = load_cached(code, self.market_cache) if self.market_cache and not refresh else None
             name, history, source = snapshot or load_live(code)
-            full, runners = full_report(history, source)
-            report = {"schema": SCHEMA, "code": code, "name": name, "full": full,
+            pe = pe_as_of = None
+            if index_code is not None:
+                pe, pe_as_of = load_pe(index_code, self.cache / "pe", refresh=refresh)
+            full, runners = full_report(history, source, pe=pe, index_code=index_code, pe_as_of=pe_as_of)
+            report = {"schema": SCHEMA, "code": code, "name": name, "index_code": index_code, "full": full,
                       "version": datetime.now(timezone.utc).isoformat(), "rolling_state": "pending", "rolling": []}
             self._save(code, report)
             with self.lock:

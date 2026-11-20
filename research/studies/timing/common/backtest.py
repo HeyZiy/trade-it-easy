@@ -78,7 +78,10 @@ def record_trade(ledger, date, side, price, quantity, cash, shares, **details):
 
 
 # ---------------------------------------------------------------- 策略实现
-def sim_buyhold(px, ledger=None):
+def sim_buyhold(px, ledger=None, weight=1.0):
+    """期初按 weight 比例买入并持有；weight=1.0 为满仓长拿（研究默认）。"""
+    if not 0 < weight <= 1:
+        raise ValueError("建仓比例须介于0和1之间")
     n = len(px)
     nav = np.full(n, np.nan)
     expo = np.zeros(n)
@@ -91,7 +94,7 @@ def sim_buyhold(px, ledger=None):
     for i in range(n):
         o, c = o_arr[i], c_arr[i]
         if shares == 0 and not np.isnan(o):
-            shares = int(cash / (o * (1 + COST)) // LOT) * LOT
+            shares = int(cash * weight / (o * (1 + COST)) // LOT) * LOT
             cash -= shares * o * (1 + COST)
             if shares > 0:
                 trades += 1
@@ -282,8 +285,13 @@ def build_trend_target(px, window=200, start=None):
     return target
 
 
-def build_val_target(px, pe, changes_only=True):
-    """全历史分位；对交易日 t 用最近一期早于 t 的 PE，目标当日开盘执行（无前视）。"""
+def build_val_target(px, pe, changes_only=True, lo=VAL_LO, hi=VAL_HI):
+    """全历史分位；对交易日 t 用最近一期早于 t 的 PE，目标当日开盘执行（无前视）。
+
+    lo/hi 为买/卖分位阈值，默认 0.30/0.70（研究口径）；网页 PE 分位行传 0.20/0.80。
+    """
+    if not 0 < lo < hi < 1:
+        raise ValueError("估值分位阈值须满足 0 < lo < hi < 1")
     target = {}
     cur = None
     for i, t in enumerate(px.index):
@@ -291,7 +299,7 @@ def build_val_target(px, pe, changes_only=True):
         if len(avail) < VAL_MIN_POINTS:
             continue
         pct = (avail <= avail.iloc[-1]).mean()
-        want = 1.0 if pct <= VAL_LO else (0.0 if pct >= VAL_HI else None)
+        want = 1.0 if pct <= lo else (0.0 if pct >= hi else None)
         if want is not None and (not changes_only or want != cur):
             target[t] = want
             cur = want

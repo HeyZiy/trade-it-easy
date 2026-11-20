@@ -17,6 +17,10 @@
 .timing-asset-heading h2 { font-size: 22px; }
 .timing-controls { display: flex; align-items: center; gap: 10px; margin: 14px 0; }
 .timing :is(td, th):not(:first-child) { text-align: right; white-space: nowrap; }
+.timing :is(td, th).text-left { text-align: left; }
+.timing th.sortable { cursor: pointer; user-select: none; }
+.timing th.sortable:hover { color: var(--green); }
+#timing-rules > label { display: inline-flex; align-items: center; gap: 6px; margin-bottom: 8px; font-size: 12px; }
 .timing-chart-head { display: flex; justify-content: space-between; align-items: flex-end; gap: 12px; flex-wrap: wrap; margin: 23px 0 8px; }
 #timing-rules { margin: 0; padding: 0; border: 0; min-inline-size: 0; }
 #timing-rules legend { font-weight: 650; margin-bottom: 8px; }

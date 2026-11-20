@@ -28,8 +28,13 @@ class EtfBars:
 
 def adjusted_etf_history(
     rows: pd.DataFrame, end_date: str, *, fields: Sequence[str] = OHLC, min_bars: int = 1,
+    with_volume: bool = False,
 ) -> pd.DataFrame:
-    """校验截止日内的后复权日线，返回日期索引及不带 hfq_ 前缀的价格列。"""
+    """校验截止日内的后复权日线，返回日期索引及不带 hfq_ 前缀的价格列。
+
+    with_volume=True 时附带原始成交量列（不复权，允许为0/缺失，不参与价格校验），
+    供量价规则使用；默认不附带，保持既有消费方的四价/三价口径不变。
+    """
     if rows is None or rows.empty:
         raise ValueError("行情为空")
     dates = pd.to_datetime(rows["date"], errors="raise").dt.normalize()
@@ -45,6 +50,8 @@ def adjusted_etf_history(
     if (not np.isfinite(history.to_numpy()).all() or (history <= 0).any().any()
             or (history.high < history.max(axis=1)).any() or (history.low > history.min(axis=1)).any()):
         raise ValueError("复权OHLC无效")
+    if with_volume and "volume" in window.columns:
+        history["volume"] = pd.to_numeric(window["volume"], errors="coerce")
     return history
 
 
@@ -86,6 +93,7 @@ def etf_daily_bars(
     policy: Literal["rotation", "observation", "online_research"],
     completed_through: str | None = None, min_bars: int = 1,
     history_issue: Callable[[pd.DataFrame], str] | None = None,
+    with_volume: bool = False,
 ) -> dict[str, EtfBars]:
     """批量取信号日线并保留来源。无合格序列的标的不返回；结果以请求代码为键。
 
@@ -122,7 +130,8 @@ def etf_daily_bars(
                 if policy == "rotation":
                     history = _rotation_history(rows, end_date, cutoff)
                 else:
-                    history = adjusted_etf_history(rows, cutoff, fields=fields, min_bars=min_bars)
+                    history = adjusted_etf_history(rows, cutoff, fields=fields, min_bars=min_bars,
+                                                   with_volume=with_volume)
                 issue = history_issue(history) if history_issue is not None else ""
                 if issue:
                     raise ValueError(issue)
