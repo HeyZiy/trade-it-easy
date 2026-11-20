@@ -190,8 +190,8 @@ def test_edit_replays_same_day_close_and_next_day_availability(path):
     assert (before_transfer["avail_count"], before_transfer["close"]) == (0, 4)
     assert (before_sale["avail_count"], before_sale["close"]) == (100, 4)
     after = account.snapshot(state, "2025-01-07")
-    assert after["cash_by_strategy"] == {"core": 650, "rotation": 500, "quality": 0, "unassigned": 0}
-    assert after["strategy_pnl"] == {"core": -50, "rotation": 200, "quality": 0, "unassigned": 0}
+    assert after["cash_by_strategy"] == {"core": 650, "rotation": 500, "quality": 0, "bond": 0, "unassigned": 0}
+    assert after["strategy_pnl"] == {"core": -50, "rotation": 200, "quality": 0, "bond": 0, "unassigned": 0}
 
 
 def test_edit_cannot_cross_neighbor_dates(path):
@@ -259,20 +259,22 @@ def rebalance(path, budgets):
 
 def test_cash_rebalance_fills_all_strategy_gaps_and_changes_no_holdings(path):
     plan = rebalance(path, {'core': .8, 'rotation': .1, 'quality': .1})
-    assert plan['cash_allocations'] == {'core': 400, 'rotation': 300, 'quality': 300}
+    assert plan['cash_allocations'] == {'core': 400, 'rotation': 300, 'quality': 300, 'bond': 0}
     assert plan['shortfall'] == 0
-    assert all(row['deviation'] == 0 for row in plan['rows'])
+    assert {row['id']: row['deviation'] for row in plan['rows']} == {
+        'core': 0, 'rotation': 0, 'quality': 0, 'bond': None, 'unassigned': 0}
     before = account.account_data(path)
     account.record_event(path, payload(path, 'cash_assign', cash_allocations=plan['cash_allocations']))
     after = account.account_data(path)
     assert after['positions'] == before['positions']
     assert after['equity'] == before['equity'] and after['pnl'] == before['pnl']
-    assert all(s['deviation'] == 0 for s in after['strategies'])
+    assert {s['id']: s['deviation'] for s in after['strategies']} == {
+        'core': 0, 'rotation': 0, 'quality': 0, 'bond': None}
 
 
 def test_cash_rebalance_cannot_sell_overweight_holdings_and_distributes_shortfall(path):
     plan = rebalance(path, {'core': .5, 'rotation': .3, 'quality': .2})
-    assert plan['cash_allocations'] == {'core': 0, 'rotation': 600, 'quality': 400}
+    assert plan['cash_allocations'] == {'core': 0, 'rotation': 600, 'quality': 400, 'bond': 0}
     assert plan['shortfall'] == 500
     assert plan['rows'][0]['holding_overweight']
     assert [r['deviation'] for r in plan['rows'][:3]] == [500, -300, -200]
@@ -280,14 +282,14 @@ def test_cash_rebalance_cannot_sell_overweight_holdings_and_distributes_shortfal
 
 def test_cash_rebalance_allocates_to_cents_without_losing_money(path):
     plan = rebalance(path, {'core': .5, 'rotation': 1 / 3, 'quality': 1 / 6})
-    assert plan['cash_allocations'] == {'core': 0, 'rotation': 666.67, 'quality': 333.33}
+    assert plan['cash_allocations'] == {'core': 0, 'rotation': 666.67, 'quality': 333.33, 'bond': 0}
     assert sum(round(r['after_cash'] * 100) for r in plan['rows']) == 100000
 
 
 def test_cash_rebalance_preserves_cash_of_unconfigured_strategy(path):
     account.record_event(path, payload(path, 'cash_assign', cash_allocations={'core': 800, 'quality': 200}))
     plan = rebalance(path, {'core': .8, 'rotation': .1})
-    assert plan['cash_allocations'] == {'core': 400, 'rotation': 300, 'quality': 200}
+    assert plan['cash_allocations'] == {'core': 400, 'rotation': 300, 'quality': 200, 'bond': 0}
     assert plan['rows'][-1]['after_cash'] == 100
 
 

@@ -119,7 +119,7 @@ def close_record(state, asof, close_prices, *, revision, strategy_revision=None,
 def valuation_codes(state, today):
     """返回仪表盘估值所需的场内持仓及配置参考标的。"""
     codes = {row["code"] for row in snapshot(state, today.isoformat())["positions"]}
-    for asset in state["_config"]["core"]:
+    for asset in portfolio_config.allocation_rows(state["_config"]):
         if asset["code"] != "CASH" and not portfolio_config.fund_only(asset):
             codes.update((asset["code"], *asset.get("etf_codes", ())))
     return codes
@@ -169,8 +169,12 @@ def valuation_view(state, today, price_day):
         if row["nav"] is None:
             row["market_value"] = None
             missing_funds.append(code)
-    if missing_funds:
-        view["strategy_pnl"]["core"] = None
+    for key, positions in view["strategy_fund_positions"].items():
+        for row in positions.values():
+            row.pop("book_price")
+            if row["nav"] is None:
+                row["market_value"] = None
+                view["strategy_pnl"][key] = None
     if missing or missing_funds:
         view.update(invested=None, equity=None, pnl=None)
     view["prices"] = prices

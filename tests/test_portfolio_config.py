@@ -37,7 +37,6 @@ def test_editing_targets_preserves_cash_shares_pnl_and_history(account):
     c=config.data(account)
     changed=deepcopy(c['config'])
     changed['core'][0]['weight']=.3
-    changed['core'][1]['weight']=.7
     changed['budgets']['core']=.7
     config.update(account,{'revision':c['revision'],'config':changed})
     after=wallet.account_data(account)
@@ -46,10 +45,28 @@ def test_editing_targets_preserves_cash_shares_pnl_and_history(account):
     assert account.read_bytes()==raw
     assert after['strategies'][0]['budget']==840
     assert after['strategies'][0]['target_weights']['512010']==.3
+    assert after['strategies'][0]['target_weights']['CASH']==.7
+
+
+@pytest.mark.parametrize(('asset_weight','cash_weight'), [(None, 1), (.85, .15), (1, 0)])
+def test_bond_cash_weight_is_generated_from_assets(account, asset_weight, cash_weight):
+    current = config.data(account)
+    draft = current['config']
+    draft['bond'] = [] if asset_weight is None else [{**draft['core'][0], 'weight': asset_weight}]
+    config.update(account, {'revision': current['revision'], 'config': draft})
+    rows = config.load(config.path_for(account))['bond']
+    assert rows[-1]['code'] == 'CASH' and rows[-1]['weight'] == pytest.approx(cash_weight)
+    assert sum(row['weight'] for row in rows) == pytest.approx(1)
+
+
+def test_balanced_legacy_weights_keep_their_revision(account):
+    draft = config.data(account)['config']
+    draft['core'][1]['weight'] += 1e-10
+    assert config.revision(config.validate(draft)) == config.revision(draft)
 
 
 @pytest.mark.parametrize('mutation',[
-    lambda c:c['core'][0].update(weight=.2),
+    lambda c:c['core'].append({**c['core'][0], 'code':'510300', 'weight':.6}),
     lambda c:c['core'][0].update(code='123'),
     lambda c:c['core'][0].update(code='CASH'),
     lambda c:c['core'][0].update(weight=float('nan')),
@@ -88,8 +105,7 @@ def test_manual_edit_is_validated_and_invalidates_old_page(account):
 def test_history_can_restore_and_removed_asset_remains_held(account):
     current=config.data(account)
     changed=deepcopy(current['config'])
-    changed['core']=[r for r in changed['core'] if r['code']=='CASH']
-    changed['core'][0]['weight']=1
+    changed['core']=[]
     config.update(account,{'revision':current['revision'],'config':changed})
     view=wallet.account_data(account)['strategies'][0]
     assert view['positions'][0]['code']=='512010' and '512010' not in view['target_weights']

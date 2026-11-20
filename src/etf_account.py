@@ -11,7 +11,7 @@ from data_provider import canonical_stock_code, fund_names, security_names
 from data_provider.codes import A_STOCK_PREFIXES, FUND_FEE_PREFIXES, normalize_stock_code
 from data_provider.security_names import security_name
 from src import account_advice, account_valuation, portfolio_config
-from src.account_advice import baseline, strategy_views, suggestions
+from src.account_advice import strategy_views
 from src.account_replay import (
     FUND_TRADES, cash_allocation, fund_code, holding_kind, make_event, money,
     net_subscription, positive, replay_edit, snapshot, validate_day,
@@ -444,7 +444,7 @@ def _missing_security_names(state, positions, strategies):
     codes.update(event["code"] for event in state["events"] if event.get("code") and event["side"] not in FUND_TRADES)
     codes.update(row["code"] for strategy in strategies for row in strategy["suggestions"] if row.get("code"))
     config = state["_config"]
-    for asset in config["core"]:
+    for asset in portfolio_config.allocation_rows(config):
         codes.update((asset["code"], *asset.get("etf_codes", ())))
     codes.update(row["code"] for row in config.get("rotation", {}).get("pool", ()))
     codes = {normalize_stock_code(code) for code in codes}
@@ -477,16 +477,15 @@ def account_data(path):
         event["amount"] if event["side"] == "deposit" else -event["amount"]
         for event in state["events"] if event["date"] <= today and event["side"] in {"deposit", "withdraw"}), 2)
     fund_codes = {event["code"] for event in state["events"] if event["side"] in FUND_TRADES}
-    fund_codes.update(code for asset in state["_config"]["core"] for code in asset.get("fund_codes", []))
+    fund_codes.update(code for asset in portfolio_config.allocation_rows(state["_config"])
+                      for code in asset.get("fund_codes", []))
     names = fund_names.names_for(fund_codes)
-    for row in [*funds.values(), *view["fund_pending"].values()]:
+    strategy_funds = [row for positions in view["strategy_fund_positions"].values()
+                      for row in positions.values()]
+    for row in [*funds.values(), *strategy_funds, *view["fund_pending"].values()]:
         if row["code"] in names:
             row["name"] = names[row["code"]]
     strategies = strategy_views(state, view, today=day, names=names)
-    core = next(strategy for strategy in strategies if strategy["id"] == "core")
-    core["pending_fund_value"] = view["pending_fund_value"]
-    core["allocation_budget"] = core["budget"]
-    core["allocation_assets"] = core["assets"]
     fund_subscription_fees = subscription_fees(state)
     return {"id": "etf", "name": "投资账户", "can_record": True, **view,
             "holdings_by_kind": holdings_by_kind, "net_contributed": net_contributed,
@@ -529,7 +528,7 @@ def strategy_snapshot(path=None):
             return config, None
     try:
         view = snapshot(state, _today().isoformat())
-        if view["fund_positions"] or view["fund_pending"] or any(
+        if view["strategy_fund_positions"].get("core") or view["strategy_pending_fund_value"]["core"] or any(
             portfolio_config.grouped(row) for row in config["core"]
         ):
             return config, None

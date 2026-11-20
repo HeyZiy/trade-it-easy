@@ -48,6 +48,13 @@ def fund_code(value):
     return value
 
 
+def fund_strategy(payload, *, default="core"):
+    strategy = payload.get("strategy", default)
+    if not isinstance(strategy, str) or strategy not in portfolio_config.ALLOCATION_NAMES:
+        raise ValueError("请选择场外基金所属的配置策略")
+    return strategy
+
+
 def _fund_market_value(qty, nav):
     amount = Decimal(str(qty)) * Decimal(str(nav))
     return float(amount.quantize(Decimal(".01"), rounding=ROUND_HALF_UP))
@@ -99,15 +106,20 @@ def _fund_event(payload, view, day):
         pending = view["fund_pending"].get(pending_id)
         if not pending:
             raise ValueError("待确认申购不存在或已确认")
+        if fund_strategy(payload, default=pending["strategy"]) != pending["strategy"]:
+            raise ValueError("待确认申购属于其他策略")
         return {"code": pending["code"], "amount": pending["amount"],
-                "strategy": "core", "voided_pending_id": pending_id}
+                "strategy": pending["strategy"], "voided_pending_id": pending_id}
+    pending_id = payload.get("pending_id") if side == "fund_confirm" else None
+    pending = view["fund_pending"].get(pending_id) if side == "fund_confirm" else None
+    strategy = fund_strategy(payload, default=pending["strategy"] if pending else "core")
     code = fund_code(payload.get("code"))
     amount = payload.get("amount")
     if not positive(amount) or round(amount, 2) != amount:
         raise ValueError("实际金额须为正数，最多两位小数")
-    if side in {"fund_buy", "fund_pending"} and amount > view["cash_by_strategy"]["core"]:
-        raise ValueError("多资产配置现金不足，请先分配现金")
-    result = {"code": code, "amount": amount, "strategy": "core"}
+    if side in {"fund_buy", "fund_pending"} and amount > view["cash_by_strategy"][strategy]:
+        raise ValueError(f"{portfolio_config.ALLOCATION_NAMES[strategy]}现金不足，请先分配现金")
+    result = {"code": code, "amount": amount, "strategy": strategy}
     if side == "fund_pending":
         nav_date = validate_day(payload.get("nav_date", ""))
         if nav_date > day:
@@ -119,7 +131,7 @@ def _fund_event(payload, view, day):
     qty = payload.get("qty")
     if not positive(qty) or qty > 1e9 or round(qty, 6) != qty:
         raise ValueError("确认份额须为正数，最多六位小数")
-    if side == "fund_redeem" and qty > view["fund_positions"].get(code, {}).get("qty", 0):
+    if side == "fund_redeem" and qty > view["strategy_fund_positions"].get(strategy, {}).get(code, {}).get("qty", 0):
         raise ValueError("赎回份额超过已确认持仓")
     result["qty"] = qty
     if side in {"fund_buy", "fund_confirm"} and "subscription_fee" in payload:
@@ -130,10 +142,8 @@ def _fund_event(payload, view, day):
             raise ValueError("单位净值最多八位小数，净值日期不得晚于记账日")
         result.update(nav=nav, nav_date=nav_date)
     if side == "fund_confirm":
-        pending_id = payload.get("pending_id")
-        pending = view["fund_pending"].get(pending_id)
         if not pending or any(result.get(key) != pending[key]
-                              for key in ("code", "amount", "nav_date", "subscription_fee")):
+                              for key in ("strategy", "code", "amount", "nav_date", "subscription_fee")):
             raise ValueError("确认流水须对应同一笔待确认申购")
         result["pending_id"] = pending_id
     return result
@@ -212,6 +222,10 @@ def make_event(payload, request_id, day, view, *, config=None):
             funds = view["fund_positions"]
             if funds:
                 event["fund_valuation_prices"] = {code: row["book_price"] for code, row in funds.items()}
+            if any(key != "core" for key in view["strategy_fund_positions"]):
+                event["strategy_fund_valuation_prices"] = {
+                    key: {code: row["book_price"] for code, row in positions.items()}
+                    for key, positions in view["strategy_fund_positions"].items()}
     return event
 
 
@@ -271,29 +285,35 @@ class _Replay:
         confirmed = self.fund_trade_marks.get(code, ("", None))
         return max((confirmed, published), key=lambda mark: mark[0])
 
-    def _fund_positions(self, prices=None):
+    def _fund_positions(self, prices=None, strategy_prices=None):
         rows = {}
-        for code, qty in self.fund_shares.items():
+        for (strategy, code), qty in self.fund_shares.items():
             if qty <= 0:
                 continue
             nav_date, nav = self._fund_mark(code)
             # 缺净值时，内部资金流暂用成本单价，展示与收盘成绩标为待估值。
-            basis = nav if nav is not None else float(self.fund_cost[code] / qty)
-            value = _fund_market_value(qty, (prices or {}).get(code, basis))
-            rows[code] = {"code": code, "qty": float(qty), "nav": nav, "date": nav_date or None,
-                          "market_value": value, "book_price": basis}
+            basis = nav if nav is not None else float(self.fund_cost[strategy, code] / qty)
+            marks = (strategy_prices or {}).get(strategy, prices or {})
+            value = _fund_market_value(qty, marks.get(code, basis))
+            rows.setdefault(strategy, {})[code] = {
+                "code": code, "qty": float(qty), "nav": nav, "date": nav_date or None,
+                "market_value": value, "book_price": basis}
         return rows
 
-    def _pending_fund_value(self):
-        return round(math.fsum(row["amount"] for row in self.fund_pending.values()), 2)
+    def _pending_fund_values(self):
+        values = dict.fromkeys(portfolio_config.ALLOCATION_NAMES, 0.0)
+        for row in self.fund_pending.values():
+            values[row["strategy"]] += row["amount"]
+        return {key: round(value, 2) for key, value in values.items()}
 
-    def _strategy_assets(self, marks, fund_prices=None):
+    def _strategy_assets(self, marks, fund_prices=None, strategy_fund_prices=None):
         assets = dict(self.cash_by_strategy)
         for (strategy, code), row in self.held.items():
             if row["count"] > 0:
                 assets[strategy] += row["count"] * marks[code]
-        assets["core"] += (sum(row["market_value"] for row in self._fund_positions(fund_prices).values())
-                           + self._pending_fund_value())
+        funds = self._fund_positions(fund_prices, strategy_fund_prices)
+        for strategy, pending in self._pending_fund_values().items():
+            assets[strategy] += pending + sum(row["market_value"] for row in funds.get(strategy, {}).values())
         return assets
 
     def _flow_units(self, key, delta, assets):
@@ -306,28 +326,31 @@ class _Replay:
 
     def _apply_fund_trade(self, event):
         side = event["side"]
+        strategy = event.get("strategy", "core")
         if side == "fund_pending":
-            self.fund_pending[event["id"]] = {k: v for k, v in event.items() if k != "request"}
+            self.fund_pending[event["id"]] = {**{k: v for k, v in event.items() if k != "request"},
+                                               "strategy": strategy}
             change = -event["amount"]
         elif side == "fund_void":
             # 作废补偿流水：撤销在途申购，现金原路退回（扣款失败/误记）。
             del self.fund_pending[event["voided_pending_id"]]
             change = event["amount"]
         else:
-            change = self._apply_fund_shares(event)
+            change = self._apply_fund_shares(event, strategy)
         self.cash += change
-        self.cash_by_strategy["core"] += change
-        self.net_capital["core"] -= change
+        self.cash_by_strategy[strategy] += change
+        self.net_capital[strategy] -= change
 
-    def _apply_fund_shares(self, event):
+    def _apply_fund_shares(self, event, strategy):
         side = event["side"]
         code = event["code"]
+        key = (strategy, code)
         qty, amount = Decimal(str(event["qty"])), Decimal(str(event["amount"]))
-        held = self.fund_shares.get(code, Decimal(0))
-        cost = self.fund_cost.get(code, Decimal(0))
+        held = self.fund_shares.get(key, Decimal(0))
+        cost = self.fund_cost.get(key, Decimal(0))
         if side in {"fund_buy", "fund_confirm"}:
-            self.fund_shares[code] = held + qty
-            self.fund_cost[code] = cost + amount
+            self.fund_shares[key] = held + qty
+            self.fund_cost[key] = cost + amount
             if "nav" in event and event["nav_date"] >= self.fund_trade_marks.get(code, ("", None))[0]:
                 self.fund_trade_marks[code] = (event["nav_date"], event["nav"])
             if side == "fund_confirm":
@@ -336,8 +359,8 @@ class _Replay:
             return -float(amount)
         if qty > held:
             raise ValueError("赎回份额超过已确认持仓")
-        self.fund_shares[code] = held - qty
-        self.fund_cost[code] = cost * (held - qty) / held
+        self.fund_shares[key] = held - qty
+        self.fund_cost[key] = cost * (held - qty) / held
         return float(amount)
 
     def apply(self, event):
@@ -346,12 +369,11 @@ class _Replay:
         strategy = event.get("strategy", "unassigned")
         if side in {"deposit", "withdraw"}:
             self.marks.update(event.get("valuation_prices", {}))
-            equity = self.cash + sum(row["count"] * self.marks[row["code"]] for row in self.held.values())
-            equity += self._pending_fund_value() + sum(row["market_value"]
-                          for row in self._fund_positions(event.get("fund_valuation_prices")).values())
+            assets = self._strategy_assets(self.marks, event.get("fund_valuation_prices"),
+                                           event.get("strategy_fund_valuation_prices"))
+            equity = math.fsum(assets.values())
             delta = event["amount"] * (1 if side == "deposit" else -1)
-            self._flow_units(strategy, delta,
-                             self._strategy_assets(self.marks, event.get("fund_valuation_prices")))
+            self._flow_units(strategy, delta, assets)
             self.units += delta / (equity / self.units)
             self.cash += delta
             self.cash_by_strategy[strategy] += delta
@@ -434,23 +456,42 @@ class _Replay:
             total["avail_count"] += row["avail_count"]
             total["market_value"] = round(total["count"] * total["close"], 2)
         rows = list(combined.values())
-        funds = self._fund_positions()
-        pending_value = self._pending_fund_value()
-        fund_value = round(sum(row["market_value"] for row in funds.values()) + pending_value, 2)
+        strategy_funds = self._fund_positions()
+        pending_values = self._pending_fund_values()
+        strategy_fund_values = {key: round(pending + sum(
+            row["market_value"] for row in strategy_funds.get(key, {}).values()), 2)
+            for key, pending in pending_values.items()}
+        funds = {}
+        for positions in strategy_funds.values():
+            for code, row in positions.items():
+                if code not in funds:
+                    funds[code] = dict(row)
+                    continue
+                total = funds[code]
+                qty = round(total["qty"] + row["qty"], 6)
+                book_price = row["nav"] if row["nav"] is not None else (
+                    (total["qty"] * total["book_price"] + row["qty"] * row["book_price"]) / qty)
+                total.update(qty=qty, market_value=round(total["market_value"] + row["market_value"], 2),
+                             book_price=book_price)
+        pending_value = round(sum(pending_values.values()), 2)
+        fund_value = round(sum(strategy_fund_values.values()), 2)
         invested = round(sum(row["market_value"] for row in rows) + fund_value, 2)
         equity = round(self.cash + invested, 2)
         strategy_pnl = {
             key: round(sum(row["count"] * marks[row["code"]] for row in self.held.values()
-                           if row["strategy"] == key) + (fund_value if key == "core" else 0) - capital, 2) or 0.0
+                           if row["strategy"] == key) + strategy_fund_values.get(key, 0) - capital, 2) or 0.0
             for key, capital in self.net_capital.items()
         }
         strategy_assets = dict(self.cash_by_strategy)
         for row in strategy_rows:
             strategy_assets[row["strategy"]] += row["market_value"]
-        strategy_assets["core"] += fund_value
+        for key, value in strategy_fund_values.items():
+            strategy_assets[key] += value
         return {
             "positions": rows, "strategy_positions": strategy_rows, "fund_positions": funds,
+            "strategy_fund_positions": strategy_funds,
             "fund_pending": dict(self.fund_pending), "pending_fund_value": pending_value,
+            "strategy_pending_fund_value": pending_values,
             "cash": round(self.cash, 2),
             "invested": invested, "equity": equity, "units": self.units, "receivables": 0,
             "prices": marks, "strategy_pnl": strategy_pnl,
@@ -474,6 +515,8 @@ def snapshot(state, asof, prices=None):
 def replay_edit(state, index, payload, min_day, max_day):
     """应用更正并验证其余流水，返回可保存的完整流水序列。"""
     old = state["events"][index]
+    if old["side"] in FUND_TRADES and payload.get("side") in FUND_TRADES:
+        payload = {"strategy": old.get("strategy", "core"), **payload}
     if old["side"] in {"fund_pending", "fund_confirm"} or payload.get("side") in {"fund_pending", "fund_confirm"}:
         if old["side"] != payload.get("side"):
             raise ValueError("不能更改场外申购流水的类型")

@@ -12,7 +12,7 @@
 - 回看窗口：每次运行回看 CATCHUP_WINDOW_DAYS 个自然日内的到期日（不含当天，
   当天扣款由下次运行补记）；错过多天也能逐日补上，nav_date 各归各位。
 - 优先使用账户统一申购费用；未设置时沿用该基金最近登记的费用，两者都缺失则跳过并告警。
-  多资产配置现金不足时该笔记账失败并告警，不影响其他计划；
+  所属策略现金不足时该笔记账失败并告警，不影响其他计划；
   交易日历不可用时不猜测扣款日，整体跳过。
 - 待确认申购超过 AGING_TRADING_DAYS 个交易日未确认份额 → 告警（多为净值未公布）。
 
@@ -29,7 +29,7 @@ from datetime import date, timedelta
 from pathlib import Path
 from uuid import uuid4
 
-from src.account_replay import fund_code, positive
+from src.account_replay import fund_code, fund_strategy, positive
 from src.etf_account import (
     load as load_account,
     record_event,
@@ -92,7 +92,8 @@ def _validated_plan(payload):
     plan_id = str(payload.get("id") or "").strip()
     if plan_id and not _PLAN_ID_RE.fullmatch(plan_id):
         raise ValueError("定投计划标识无效")
-    return {"id": plan_id, "code": code, "amount": float(amount), "frequency": frequency,
+    return {"id": plan_id, "code": code, "strategy": fund_strategy(payload),
+            "amount": float(amount), "frequency": frequency,
             "anchor": anchor, "enabled": enabled, "note": note}
 
 
@@ -113,6 +114,8 @@ def save_plan(account_path, payload):
             if index is None:
                 raise ValueError("定投计划不存在，可能已被删除，请刷新")
             previous = plans[index]
+            if "strategy" not in payload:
+                plan["strategy"] = fund_strategy(previous)
             plan["created_on"] = previous.get("created_on") or _today().isoformat()
             old_frequency = previous["frequency"]
             if old_frequency != plan["frequency"] and "daily" in (old_frequency, plan["frequency"]):
@@ -227,6 +230,7 @@ def record_due_subscriptions(account_path):
             "request_id": request_id,
             "revision": revision(state),
             "side": "fund_pending",
+            "strategy": plan.get("strategy", "core"),
             "code": plan["code"],
             "amount": plan["amount"],
             "date": run_day.isoformat(),
@@ -261,6 +265,10 @@ def dca_status(account_path):
         logger.warning("定投计划读取失败，页面隐藏计划", exc_info=True)
         plans = []
     today = _today().isoformat()
-    recorded_today = [event["nav_date"] for event in load_account(account_path)["events"]
-                      if event["date"] == today and event["id"].startswith(DCA_REQUEST_PREFIX)]
-    return {"plans": plans, "recorded_today": recorded_today}
+    recorded_today, by_strategy = [], {}
+    for event in load_account(account_path)["events"]:
+        if event["date"] == today and event["id"].startswith(DCA_REQUEST_PREFIX):
+            nav_date = event["nav_date"]
+            recorded_today.append(nav_date)
+            by_strategy.setdefault(event.get("strategy", "core"), []).append(nav_date)
+    return {"plans": plans, "recorded_today": recorded_today, "recorded_today_by_strategy": by_strategy}

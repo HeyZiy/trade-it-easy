@@ -54,7 +54,7 @@ def test_initial_navs_and_benchmark_names(account):
     assert rows['quality']['2025-01-04']['nav'] == pytest.approx(1.0)
     assert rows['rotation']['2025-01-04']['nav'] is None  # 未入金的策略不画曲线
     names = {s['id']: s['benchmark_name'] for s in view['strategies']}
-    assert names == {'core': None, 'rotation': None, 'quality': '中证800'}
+    assert names == {'core': None, 'rotation': None, 'quality': '中证800', 'bond': None}
 
 
 def test_transfers_and_allocation_do_not_move_navs(account):
@@ -80,6 +80,18 @@ def test_deposit_withdraw_keep_nav_dividend_raises_it(account):
     assert rows['quality']['2025-01-06']['nav'] == pytest.approx(1.0)
     assert rows['quality']['2025-01-07']['nav'] == pytest.approx(1.1)
     assert state['records'][-1]['strategy_navs']['quality'] == pytest.approx(1.1)
+
+
+def test_transfer_into_bond_starts_strategy_nav_without_moving_account_nav(account):
+    before = collect_close(account, '2025-01-06', lambda *_: {'588000': 2})['records'][-1]
+    record_event(account, event(account, 'cash_transfer', from_strategy='core', strategy='bond', amount=200))
+    after = collect_close(account, '2025-01-06', lambda *_: {'588000': 2})['records'][-1]
+    assert after['equity'] == before['equity']
+    assert after['nav'] == before['nav']
+    assert after['cash_by_strategy']['core'] == 400
+    assert after['cash_by_strategy']['bond'] == 200
+    assert after['strategy_navs']['core'] == before['strategy_navs']['core']
+    assert before['strategy_navs']['bond'] is None and after['strategy_navs']['bond'] == 1.0
 
 
 def test_quality_benchmark_anchors_at_first_valid_nav(account):

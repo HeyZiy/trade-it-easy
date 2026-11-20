@@ -9,7 +9,8 @@ import re
 
 from src.json_store import locked, save
 
-STRATEGY_NAMES = {"core": "多资产配置", "rotation": "跨资产动量", "quality": "质量动量"}
+STRATEGY_NAMES = {"core": "多资产配置", "rotation": "跨资产动量", "quality": "质量动量", "bond": "债券组合"}
+ALLOCATION_NAMES = {key: STRATEGY_NAMES[key] for key in ("core", "bond")}
 
 FILENAME = "etf_config.json"
 DEFAULT_PATH = Path("data") / FILENAME
@@ -23,6 +24,10 @@ def fund_only(row):
 
 def grouped(row):
     return fund_only(row) or bool(row.get("etf_codes") or row.get("fund_codes"))
+
+
+def allocation_rows(config):
+    return (row for key in ALLOCATION_NAMES for row in config.get(key, ()))
 
 
 def path_for(account):
@@ -90,7 +95,8 @@ def _validate_rotation(rotation):
 
 def validate(config):
     required = {"schema_version", "budgets", "core"}
-    if not isinstance(config, dict) or not required <= config.keys() <= required | {"fund_subscription_fee", "trade_fees", "rotation"}:
+    optional = {*ALLOCATION_NAMES, "fund_subscription_fee", "trade_fees", "rotation"}
+    if not isinstance(config, dict) or not required <= config.keys() <= required | optional:
         raise ValueError("配置须包含 schema_version、budgets、core")
     if type(config["schema_version"]) is not int or config["schema_version"] != 1:
         raise ValueError("不支持的配置版本")
@@ -106,10 +112,18 @@ def validate(config):
     valid_weight = lambda value: type(value) in (int, float) and math.isfinite(value) and 0 <= value <= 1
     if any(not valid_weight(v) for v in budgets.values()) or sum(budgets.values()) > 1 + 1e-10:
         raise ValueError("策略目标比例合计不能超过100%")
-    rows = config["core"]
-    if not isinstance(rows, list) or not 1 <= len(rows) <= 50:
-        raise ValueError("多资产配置须有1至50项资产")
+    normalized = deepcopy(config)
+    for key, name in ALLOCATION_NAMES.items():
+        if key in normalized:
+            _normalize_allocation(normalized[key], name, valid_weight)
+    return normalized
+
+
+def _normalize_allocation(rows, name, valid_weight):
+    if not isinstance(rows, list) or len(rows) > 50:
+        raise ValueError(f"{name}须使用资产列表，最多50项（含现金）")
     used_listed, used_funds = set(), set()
+    cash = None
     required_fields = {"code", "weight", "asset_type", "tracked_index", "valuation_kind", "dividend_style", "volatility_rank"}
     allowed_fields = required_fields | {"label", "etf_codes", "fund_codes"}
     for row in rows:
@@ -155,9 +169,21 @@ def validate(config):
             raise ValueError("减仓顺序须为0至100的整数")
         if code == "CASH" and (row["valuation_kind"] != "none" or row["dividend_style"]):
             raise ValueError("现金不设置证券估值")
-    if "CASH" not in used_listed or not math.isclose(sum(r["weight"] for r in rows), 1, rel_tol=0, abs_tol=1e-8):
-        raise ValueError("多资产配置内部权重须合计100%，并包含一项CASH")
-    return deepcopy(config)
+        if code == "CASH":
+            cash = row
+    asset_weight = math.fsum(row["weight"] for row in rows if row["code"] != "CASH")
+    if asset_weight > 1 + 1e-8:
+        raise ValueError(f"{name}非现金资产权重合计不能超过100%")
+    cash_weight = max(0.0, 1.0 - asset_weight)
+    if cash is None:
+        if len(rows) == 50:
+            raise ValueError(f"{name}最多49项非现金资产")
+        rows.append({"code": "CASH", "weight": cash_weight, "asset_type": "cash",
+                     "tracked_index": None, "valuation_kind": "none", "dividend_style": False,
+                     "volatility_rank": 0})
+    # 保留已配平的旧配置精度，避免历史版本的哈希变化。
+    elif not math.isclose(asset_weight + cash["weight"], 1.0, rel_tol=0, abs_tol=1e-8):
+        cash["weight"] = cash_weight
 
 
 def _read(path):
@@ -249,13 +275,13 @@ def migrate(account):
         return config
 
 
-def allocations(config):
+def allocations(config, key="core"):
     from src.etf.config import AssetAllocation
     return [AssetAllocation(
         code=r["code"], asset_type=r["asset_type"], neutral_weight=r["weight"],
         volatility_rank=r["volatility_rank"], tracked_index=r["tracked_index"],
         valuation_kind=r["valuation_kind"], dividend_style=r["dividend_style"],
-    ) for r in config["core"] if not fund_only(r)]
+    ) for r in config.get(key, ()) if not fund_only(r)]
 
 
 def data(account):
