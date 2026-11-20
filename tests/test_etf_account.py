@@ -282,6 +282,51 @@ def test_fund_refresh_uses_latest_shares_and_keeps_same_date_confirmation(accoun
     assert "000124" not in positions
 
 
+def test_money_market_subscription_and_valuation_use_unit_nav(account, monkeypatch):
+    from types import SimpleNamespace
+
+    from src import etf_account as wallet
+
+    def fetch(_, *, params, **kwargs):
+        assert params["fundCode"] == "001821"
+        return SimpleNamespace(raise_for_status=lambda: None, json=lambda: {
+            "ErrCode": 0,
+            "Data": {
+                "FundType": "005", "Feature": None, "SYType": "每万份收益",
+                "LSJZList": [
+                    {"FSRQ": "2025-01-08", "DWJZ": "0.3481", "LJJZ": "1.2800"},
+                    {"FSRQ": "2025-01-07", "DWJZ": "0.3348", "LJJZ": "1.2690"},
+                    {"FSRQ": "2025-01-06", "DWJZ": "0.3452", "LJJZ": "1.2700"},
+                ],
+            },
+        })
+
+    monkeypatch.setattr("data_provider.fund_nav.requests.get", fetch)
+    wallet.record_event(account, event(account, "deposit", amount=2000, strategy="core"))
+    wallet.record_event(account, event(account, "fund_buy", code="001821", qty=2321, amount=2321,
+                                       nav=1, nav_date="2025-01-06"))
+    pending = wallet.record_event(account, event(
+        account, "fund_pending", date="2025-01-07", code="001821", amount=100, nav_date="2025-01-07",
+        subscription_fee={"kind": "none", "value": 0},
+    ))
+
+    result = wallet.refresh_fund_navs(account, "2025-01-07")
+    assert result["confirmed"] == [pending["id"]]
+    assert wallet.load(account)["events"][-1]["qty"] == 100
+    mark = wallet.lookup_fund_nav(account, {"code": "001821", "date": "2025-01-07"})
+    assert mark == {"date": "2025-01-07", "nav": 1.0}
+
+    assert wallet.refresh_fund_navs(account, "2025-01-08")["updated"] == ["001821"]
+    close = wallet.collect_close(account, "2025-01-08", lambda *_: {"588000": 2})["records"][-1]
+    position = close["fund_positions"]["001821"]
+    assert position["nav"] == 1.0
+    assert position["qty"] == position["market_value"] == 2421
+    assert close["equity"] == 5000 and close["nav"] == 1.0
+    assert wallet.refresh_fund_navs(account, "2025-01-08")["unchanged"] == ["001821"]
+    with pytest.raises(ValueError, match="买入日的单位净值暂不可用"):
+        wallet.lookup_fund_nav(account, {"code": "001821", "date": "2025-01-09"})
+
+
 def test_confirmed_fund_trades_use_core_cash_and_are_replayed_on_edit(account, monkeypatch):
     from src import etf_account as wallet
 

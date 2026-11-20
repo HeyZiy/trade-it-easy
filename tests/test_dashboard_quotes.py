@@ -301,21 +301,52 @@ def test_refresh_api_keeps_t1_and_updates_fund_nav_independently(account, monkey
 
 
 def test_fund_nav_source_selects_latest_valid_unit_nav_at_cutoff(monkeypatch):
-    import pandas as pd
+    from data_provider import fund_nav
 
-    from data_provider.fund_nav import latest_fund_nav
-
-    def fetch(_, code, *, pz, timeout):
-        assert code == "000051"
-        assert pz >= (date.today() - date(2025, 1, 7)).days + 1 and timeout > 0
-        return pd.DataFrame({
-            "日期": ["2025-01-04", "2025-01-07", "2025-01-08", "2025-01-06", "invalid"],
-            "单位净值": [1.2, float("nan"), 1.8, 1.4, 99],
-            "累计净值": [2.2, 2.3, 2.8, 2.4, 99],
+    def fetch(url, *, params, headers, timeout):
+        assert url == fund_nav.HISTORY_URL
+        assert params["fundCode"] == "000051" and params["endDate"] == "2025-01-07"
+        assert params["pageIndex"] == 1 and params["pageSize"] > 1
+        assert headers["Referer"].endswith("jjjz_000051.html") and timeout == (3, 5)
+        return SimpleNamespace(raise_for_status=lambda: None, json=lambda: {
+            "ErrCode": 0,
+            "Data": {
+                "FundType": "001", "Feature": "030,031,050,051,053", "SYType": None,
+                "LSJZList": [
+                    {"FSRQ": "2025-01-04", "DWJZ": "1.2", "LJJZ": "2.2"},
+                    {"FSRQ": "2025-01-07", "DWJZ": "NaN", "LJJZ": "2.3"},
+                    {"FSRQ": "2025-01-08", "DWJZ": "1.8", "LJJZ": "2.8"},
+                    {"FSRQ": "2025-01-06", "DWJZ": "0.9", "LJJZ": "2.4"},
+                    {"FSRQ": "invalid", "DWJZ": "99", "LJJZ": "99"},
+                ],
+            },
         })
 
-    monkeypatch.setattr("data_provider.fetchers.efinance_fetcher._ef_call_with_timeout", fetch)
-    assert latest_fund_nav("000051", "2025-01-07") == ("2025-01-06", 1.4)
+    monkeypatch.setattr(fund_nav.requests, "get", fetch)
+    assert fund_nav.latest_fund_nav("000051", "2025-01-07") == ("2025-01-06", 0.9)
+
+
+@pytest.mark.parametrize(("code", "feature", "income_type", "value", "expected"), [
+    ("007696", "070,080,200", "每万份收益", "102.0726", ("2025-01-07", 102.0726)),
+    ("511880", "070,200,201", None, "100.9810", ("2025-01-07", 100.981)),
+    ("511990", "100,201", "每百份收益", "0.2767", None),
+    ("001821", None, "每万份收益", "-0.0100", ("2025-01-07", 1.0)),
+    ("001821", None, "每万份收益", "--", None),
+    ("001821", None, None, "0.3348", None),
+])
+def test_money_market_nav_respects_quote_kind(monkeypatch, code, feature, income_type, value, expected):
+    from data_provider import fund_nav
+
+    monkeypatch.setattr(fund_nav.requests, "get", lambda *args, **kwargs: SimpleNamespace(
+        raise_for_status=lambda: None, json=lambda: {
+            "ErrCode": 0,
+            "Data": {
+                "FundType": "005", "Feature": feature, "SYType": income_type,
+                "LSJZList": [{"FSRQ": "2025-01-07", "DWJZ": value, "LJJZ": "1.27"}],
+            },
+        },
+    ))
+    assert fund_nav.latest_fund_nav(code, "2025-01-07") == expected
 
 
 def test_quote_refresh_checks_fund_with_only_a_pending_subscription(account, monkeypatch):
