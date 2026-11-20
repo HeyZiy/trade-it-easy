@@ -496,7 +496,8 @@ def account_data(path):
             "missing_security_names": _missing_security_names(state, view["positions"], strategies),
             "fund_names": {code: names.get(code) for code in sorted(fund_codes)},
             "performance": latest, "trades": [{**{k: v for k, v in e.items() if k != "request"},
-                         **({"name": names.get(e["code"], f"场外基金 {e['code']}") if e["side"] in FUND_TRADES
+                         **({"name": names.get(e["code"], f"场外基金 {e['code']}")
+                             if e["side"] in FUND_TRADES or e.get("kind") == "fund"
                              else security_name(e["code"])} if e.get("code") else {})}
                        for e in reversed(state["events"])],
             "start_date": state["initial"]["date"], "initial_equity": state["initial"]["equity"],

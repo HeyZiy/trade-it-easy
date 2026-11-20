@@ -55,9 +55,8 @@ def fund_strategy(payload, *, default="core"):
     return strategy
 
 
-def _fund_market_value(qty, nav):
-    amount = Decimal(str(qty)) * Decimal(str(nav))
-    return float(amount.quantize(Decimal(".01"), rounding=ROUND_HALF_UP))
+def _round_cents(value):
+    return value.quantize(Decimal(".01"), rounding=ROUND_HALF_UP)
 
 
 def _subscription_fee(fee, amount):
@@ -149,6 +148,34 @@ def _fund_event(payload, view, day):
     return result
 
 
+def _assignment(payload, view):
+    source, target = payload.get("from_strategy"), payload.get("strategy")
+    if source not in {*portfolio_config.STRATEGY_NAMES, "unassigned"} or target not in {*portfolio_config.STRATEGY_NAMES, "unassigned"} or source == target:
+        raise ValueError("请选择不同的分配来源和目标")
+    qty, kind = payload.get("qty"), payload.get("kind")
+    if kind == "fund":
+        if source not in portfolio_config.ALLOCATION_NAMES or target not in portfolio_config.ALLOCATION_NAMES:
+            raise ValueError("场外基金只能在配置组合之间划转")
+        code = fund_code(payload.get("code"))
+        held = view["strategy_fund_positions"].get(source, {}).get(code)
+        if not positive(qty) or round(qty, 6) != qty:
+            raise ValueError("划转份额须为正数，最多六位小数")
+        if not held or qty > held["qty"]:
+            raise ValueError("划转份额超过转出组合已确认的持仓")
+        if not positive(held["nav"]):
+            raise ValueError("场外基金缺少单位净值，请先更新估值")
+        return {"code": code, "kind": "fund", "qty": qty, "from_strategy": source,
+                "strategy": target, "transfer_price": held["nav"]}
+    if kind is not None:
+        raise ValueError("持仓类型无效")
+    code = canonical_stock_code(payload.get("code", ""))
+    held = next((r for r in view["strategy_positions"] if r["code"] == code and r["strategy"] == source), None)
+    if not positive(qty) or int(qty) != qty or not held or qty > held["count"]:
+        raise ValueError("分配份额无效或超过来源持仓")
+    return {"code": code, "name": held["name"], "qty": int(qty), "from_strategy": source,
+            "strategy": target, "transfer_price": view["prices"][code]}
+
+
 def make_event(payload, request_id, day, view, *, config=None):
     """用流水发生前的账户事实校验并生成流水。"""
     side = payload.get("side")
@@ -172,15 +199,7 @@ def make_event(payload, request_id, day, view, *, config=None):
             raise ValueError("划转金额无效或超过来源策略现金")
         event.update(from_strategy=source, strategy=target, amount=amount)
     elif side == "assign":
-        source, target = payload.get("from_strategy"), payload.get("strategy")
-        if source not in {*portfolio_config.STRATEGY_NAMES, "unassigned"} or target not in {*portfolio_config.STRATEGY_NAMES, "unassigned"} or source == target:
-            raise ValueError("请选择不同的分配来源和目标")
-        code, qty = canonical_stock_code(payload.get("code", "")), payload.get("qty")
-        held = next((r for r in view["strategy_positions"] if r["code"] == code and r["strategy"] == source), None)
-        if not positive(qty) or int(qty) != qty or not held or qty > held["count"]:
-            raise ValueError("分配份额无效或超过来源持仓")
-        event.update(code=code, name=held["name"], qty=int(qty), from_strategy=source, strategy=target,
-                     transfer_price=view["prices"][code])
+        event.update(_assignment(payload, view))
     elif side in {"buy", "sell"}:
         qty, price = payload.get("qty"), money(payload.get("price"))
         if not positive(qty) or int(qty) != qty or (side == "buy" and qty % 100):
@@ -287,6 +306,7 @@ class _Replay:
 
     def _fund_positions(self, prices=None, strategy_prices=None):
         rows = {}
+        totals = {}
         for (strategy, code), qty in self.fund_shares.items():
             if qty <= 0:
                 continue
@@ -294,7 +314,11 @@ class _Replay:
             # 缺净值时，内部资金流暂用成本单价，展示与收盘成绩标为待估值。
             basis = nav if nav is not None else float(self.fund_cost[strategy, code] / qty)
             marks = (strategy_prices or {}).get(strategy, prices or {})
-            value = _fund_market_value(qty, marks.get(code, basis))
+            # 先按基金合计再取整到分，让同一基金的估值与份额分布无关。
+            previous = totals.get(code, Decimal(0))
+            total = previous + qty * Decimal(str(marks.get(code, basis)))
+            totals[code] = total
+            value = float(_round_cents(total) - _round_cents(previous))
             rows.setdefault(strategy, {})[code] = {
                 "code": code, "qty": float(qty), "nav": nav, "date": nav_date or None,
                 "market_value": value, "book_price": basis}
@@ -363,6 +387,25 @@ class _Replay:
         self.fund_cost[key] = cost * (held - qty) / held
         return float(amount)
 
+    def _apply_fund_assignment(self, event):
+        source, target, code = event["from_strategy"], event["strategy"], event["code"]
+        source_key, target_key = (source, code), (target, code)
+        qty = Decimal(str(event["qty"]))
+        held, cost = self.fund_shares[source_key], self.fund_cost[source_key]
+        transferred_cost = cost if qty == held else cost * qty / held
+        mark = {code: event["transfer_price"]}
+        assets = self._strategy_assets(self.marks, mark)
+        self.fund_shares[source_key] = held - qty
+        self.fund_shares[target_key] = self.fund_shares.get(target_key, Decimal(0)) + qty
+        self.fund_cost[source_key] = cost - transferred_cost
+        self.fund_cost[target_key] = self.fund_cost.get(target_key, Decimal(0)) + transferred_cost
+        # 用持仓市值的变动额交接，避免分币舍入产生策略盈亏。
+        transfer_value = round(assets[source] - self._strategy_assets(self.marks, mark)[source], 2)
+        self._flow_units(source, -transfer_value, assets)
+        self._flow_units(target, transfer_value, assets)
+        self.net_capital[source] -= transfer_value
+        self.net_capital[target] += transfer_value
+
     def apply(self, event):
         self._advance(event["date"])
         side = event["side"]
@@ -398,6 +441,8 @@ class _Replay:
             self._flow_units(event["strategy"], event["amount"], assets)
             self.cash_by_strategy[event["from_strategy"]] -= event["amount"]
             self.cash_by_strategy[event["strategy"]] += event["amount"]
+        elif side == "assign" and event.get("kind") == "fund":
+            self._apply_fund_assignment(event)
         elif side == "assign":
             code, qty = event["code"], event["qty"]
             strategy = event["strategy"]

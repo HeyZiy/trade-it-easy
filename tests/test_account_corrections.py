@@ -194,6 +194,89 @@ def test_edit_replays_same_day_close_and_next_day_availability(path):
     assert after["strategy_pnl"] == {"core": -50, "rotation": 200, "quality": 0, "bond": 0, "unassigned": 0}
 
 
+def test_fund_assignment_preserves_account_value_and_moves_future_pnl(path):
+    account.record_event(path, payload(path, "cash_transfer", from_strategy="core", strategy="bond", amount=500))
+    purchase = account.record_event(path, payload(path, "fund_buy", strategy="bond", code="110020", qty=375.78,
+                                                  amount=300, nav=1.1, nav_date="2025-01-06"))
+    before = account.account_data(path)
+    request = payload(path, "assign", kind="fund", code="110020", qty=100.125, from_strategy="bond")
+    move = account.record_event(path, request)
+    assert account.record_event(path, request) == move
+    assert move["transfer_price"] == 1.1
+    assert move["kind"] == "fund"
+
+    after = account.account_data(path)
+    for key in ("cash_by_strategy", "equity", "pnl", "history", "strategy_pnl", "fund_positions"):
+        assert after[key] == before[key]
+    assert after["strategy_navs"] == pytest.approx(before["strategy_navs"])
+    assert after["strategy_fund_positions"]["core"]["110020"]["qty"] == 100.125
+    assert after["strategy_fund_positions"]["bond"]["110020"]["qty"] == 275.655
+    assert all(any(row["id"] == move["id"] for row in strategy["trades"])
+               for strategy in after["strategies"] if strategy["id"] in {"core", "bond"})
+
+    state = account.load(path)
+    state["fund_navs"] = {"110020": {"2025-01-07": 1.3}}
+    after_repricing = account.snapshot(state, "2025-01-07")
+    assert after_repricing["strategy_pnl"]["core"] == 20.02
+    assert after_repricing["strategy_pnl"]["bond"] == 168.49
+
+    context = account.event_context(path, {"event_id": move["id"], "revision": after["revision"]})
+    assert context["strategy_fund_positions"]["bond"]["110020"]["qty"] == 375.78
+    original = path.read_bytes()
+    with pytest.raises(ValueError, match="第3笔"):
+        account.edit_event(path, edit_payload(path, purchase, qty=100))
+    assert path.read_bytes() == original
+    account.edit_event(path, edit_payload(path, move, qty=375.78))
+    edited = account.account_data(path)
+    assert edited["strategy_fund_positions"]["core"]["110020"]["qty"] == 375.78
+    assert "bond" not in edited["strategy_fund_positions"]
+    assert edited["strategy_pnl"] == before["strategy_pnl"]
+
+
+def test_fund_assignment_preserves_total_value_when_shares_split_a_cent(path):
+    account.record_event(path, payload(path, "fund_buy", code="110020", qty=10.01, amount=10.01,
+                                       nav=1, nav_date="2025-01-06"))
+    before = account.account_data(path)
+    account.record_event(path, payload(path, "assign", kind="fund", code="110020", qty=5.005,
+                                       from_strategy="core", strategy="bond"))
+    after = account.account_data(path)
+    assert after["equity"] == before["equity"]
+    assert after["fund_positions"]["110020"]["market_value"] == 10.01
+    assert after["strategy_pnl"] == before["strategy_pnl"]
+
+
+def test_fund_assignment_checks_confirmed_shares_scope_and_valuation(path):
+    account.record_event(path, payload(path, "fund_buy", code="110020", qty=25.78, amount=25.78))
+    account.record_event(path, payload(path, "fund_pending", code="000051", amount=10, nav_date="2025-01-06",
+                                       subscription_fee={"kind": "none", "value": 0}))
+    request = payload(path, "assign", kind="fund", code="110020", qty=25.78,
+                      from_strategy="core", strategy="bond")
+    with pytest.raises(ValueError, match="单位净值"):
+        account.record_event(path, request)
+    state = account.load(path)
+    state["fund_navs"] = {"110020": {"2025-01-06": 1}}
+    account._save(path, state)
+    before = path.read_bytes()
+    for fields, error in [
+        ({"qty": 25.790001}, "超过转出"),
+        ({"qty": 1.0000001}, "六位小数"),
+        ({"strategy": "rotation"}, "配置"),
+        ({"code": "000051"}, "超过转出"),
+        ({"from_strategy": "bond"}, "不同"),
+    ]:
+        with pytest.raises(ValueError, match=error):
+            account.record_event(path, {**request, **fields})
+        assert path.read_bytes() == before
+
+    # 场内证券可与场外基金重码，历史划转未带 kind 时仍指场内。
+    account.record_event(path, payload(path, "buy", code="110020", qty=100, price=1, fee=0))
+    account.record_event(path, payload(path, "assign", code="110020", qty=100,
+                                       from_strategy="core", strategy="rotation"))
+    view = account.account_data(path)
+    assert view["strategy_fund_positions"]["core"]["110020"]["qty"] == 25.78
+    assert any(row["strategy"] == "rotation" and row["code"] == "110020" for row in view["strategy_positions"])
+
+
 def test_edit_cannot_cross_neighbor_dates(path):
     first = account.record_event(path, payload(path, 'deposit', amount=100))
     account.record_event(path, payload(path, 'dividend', amount=1, date='2025-01-07'))

@@ -326,9 +326,10 @@ function recordTable(rows) {
   if (!rows.length) return '<div class="empty">暂无流水</div>';
   const shown = showAllRecords ? rows : rows.slice(0,20);
   const body = shown.map(row => {
-    const name = isFundTrade(row.side) ? fundDisplayName(row.code) || '场外基金' : row.code ? data.accounts[0].positions.find(item=>item.code===row.code)?.name || row.name || row.code : '';
+    const fund = isFundTrade(row.side) || row.kind === 'fund';
+    const name = fund ? fundDisplayName(row.code) || '场外基金' : row.code ? data.accounts[0].positions.find(item=>item.code===row.code)?.name || row.name || row.code : '';
     let detail = [name, row.code && name!==row.code ? row.code : '', strategyName(row.strategy || (isFundTrade(row.side) ? 'core' : ''))].filter(Boolean).join(' · ') || '账户资金';
-    if (row.side === 'assign') detail = `${row.code} · ${strategyName(row.from_strategy)} → ${strategyName(row.strategy)}`;
+    if (row.side === 'assign') detail = [fund && name, row.code, `${strategyName(row.from_strategy)} → ${strategyName(row.strategy)}`].filter(Boolean).join(' · ');
     if (row.side === 'cash_transfer') detail = `${strategyName(row.from_strategy)} → ${strategyName(row.strategy)}`;
     if (row.side === 'cash_assign') {
       detail = Object.entries(row.cash_allocations).map(([key,amount]) => `${strategyName(key)} ${price(amount)} 元`).join(' · ');
@@ -338,7 +339,8 @@ function recordTable(rows) {
     const waiting = !!data.accounts[0].fund_pending?.[row.id];
     const label = pending ? (waiting ? '场外申购 · 待确认' : '场外申购扣款') : SIDES[row.side];
     const edit = !voided && (!pending || waiting) ? `<button type="button" class="text-button" data-edit-event="${esc(row.id)}">修改</button>` : '';
-    return `<tr><td>${esc(row.date)}</td><td>${esc(label)}<small>${esc(detail)}</small>${edit}</td><td>${isFundTrade(row.side) ? fundShares(row.qty) : number(row.qty)}</td><td>${price(row.price ?? row.amount)}</td><td>${price(row.fee)}</td></tr>`;
+    const recordPrice = row.kind === 'fund' ? row.transfer_price : row.price ?? row.amount;
+    return `<tr><td>${esc(row.date)}</td><td>${esc(label)}<small>${esc(detail)}</small>${edit}</td><td>${fund ? fundShares(row.qty) : number(row.qty)}</td><td>${price(recordPrice)}</td><td>${price(row.fee)}</td></tr>`;
   }).join('');
   return `${rows.length>20 ? `<button type="button" id="all-records" class="text-button">${showAllRecords?'收起':'查看全部'} ${rows.length} 笔流水</button>` : ''}<div class="table-wrap"><table><thead><tr><th>日期</th><th>类型 / 明细</th><th>份额</th><th>价格或金额 / 元</th><th>手续费 / 元</th></tr></thead><tbody>${body}</tbody></table></div>`;
 }
@@ -706,10 +708,24 @@ function openEntry(account, suggestion, strategy='unassigned', options={}) {
   }
   const securities = new Map(account.positions.map(row=>[row.code,row.name]));
   if(options.edit) for(const key of ['side','date','code','qty','price','fee','strategy','from_strategy','amount']) if(options.edit[key]!==undefined) field(key).value=options.edit[key];
+  const kind = field('kind');
+  kind.value = options.edit ? options.edit.kind || 'listed' : '';
+  const allocationIds = new Set(data.strategies.filter(isAllocation).map(row=>row.id));
   for (const item of data.strategies) {
     for (const code of Object.keys(item.target_weights || {})) if (code!=='CASH' && !securities.has(code)) securities.set(code, code);
   }
-  document.querySelector('#entry-securities').innerHTML = [...securities].map(([code,name])=>`<option value="${esc(code)}">${esc(name)}</option>`).join('');
+  let suggestionOwner;
+  function entryPosition() {
+    const assign = field('side').value === 'assign';
+    const owner = field(assign ? 'from_strategy' : 'strategy').value;
+    const code = field('code').value;
+    const listed = account.strategy_positions.find(row=>row.strategy===owner && row.code===code);
+    const fund = assign ? account.strategy_fund_positions?.[owner]?.[code] : null;
+    const ambiguous = Boolean(listed && fund);
+    const selectedFund = fund && (!listed || kind.value === 'fund') ? fund : null;
+    const held = ambiguous && !kind.value ? 0 : selectedFund ? selectedFund.qty : listed?.count || 0;
+    return {listed, fund:selectedFund, ambiguous, held};
+  }
   // 建议价格只用于估算，实际成交均价必须由用户填写。
   function update() {
     const side = field('side').value;
@@ -739,18 +755,39 @@ function openEntry(account, suggestion, strategy='unassigned', options={}) {
     source.parentElement.hidden = !internal; source.disabled = !internal;
     field('strategy').parentElement.firstChild.textContent = internal ? '转入策略' : '策略';
     document.querySelector('#entry-qty-label').textContent = assign ? '划转份额' : '成交份额';
-    field('qty').min = side==='buy' ? '100' : '1';
-    field('qty').step = side==='buy' ? '100' : '1';
+    const {listed, fund, ambiguous, held} = entryPosition();
+    kind.disabled = !ambiguous;
+    document.querySelector('#entry-kind-field').hidden = !ambiguous;
+    const shareStep = fund ? '0.000001' : side==='buy' ? '100' : '1';
+    field('qty').min = shareStep;
+    field('qty').step = shareStep;
     document.querySelector('[data-cash-field]').hidden = trade || assign;
     field('amount').disabled = trade || assign;
     field('amount').parentElement.firstChild.textContent = cashTransfer ? '划转金额 / 元' : side==='withdraw' ? '转出金额 / 元' : '到账金额 / 元';
     const owner = internal ? source.value : field('strategy').value;
-    const held = account.strategy_positions.find(row=>row.code===field('code').value && row.strategy===owner)?.count || 0;
     const cash = account.cash_by_strategy[owner];
     const ownerName = strategyName(owner);
-    const knownName = securities.get(field('code').value);
-    document.querySelector('#entry-security').textContent = knownName && knownName!==field('code').value ? knownName : field('code').value.length===6 ? '请核对证券代码' : '可输入代码，或从已有持仓中选择';
+    const code = field('code').value;
+    const nextSuggestionOwner = assign ? owner : null;
+    if (nextSuggestionOwner !== suggestionOwner) {
+      suggestionOwner = nextSuggestionOwner;
+      const choices = assign ? new Map(account.strategy_positions.filter(row=>row.strategy===owner)
+        .map(row=>[row.code,row.name])) : securities;
+      if (assign) for (const fundCode of Object.keys(account.strategy_fund_positions?.[owner] || {})) {
+        choices.set(fundCode, choices.has(fundCode) ? '场内证券 / 场外基金' : fundDisplayName(fundCode) || '场外基金');
+      }
+      document.querySelector('#entry-securities').innerHTML = [...choices]
+        .map(([value,name])=>`<option value="${esc(value)}">${esc(name)}</option>`).join('');
+    }
+    const chooseKind = ambiguous && !kind.value;
+    const knownName = fund ? fundDisplayName(code) || '场外基金' : assign ? listed?.name : securities.get(code);
+    document.querySelector('#entry-code-label').textContent = fund ? '基金代码' : assign ? '标的代码' : '证券代码';
+    document.querySelector('#entry-security').textContent = chooseKind ? '同一代码有两类持仓，请选择标的类型'
+      : knownName && knownName!==code ? knownName
+      : assign ? '可输入代码，或从转出组合的持仓中选择'
+      : code.length===6 ? '请核对证券代码' : '可输入代码，或从已有持仓中选择';
     for (const option of field('strategy').options) {
+      option.disabled = Boolean(fund && option.value && !allocationIds.has(option.value));
       if (option.value) option.textContent = internal ? strategyName(option.value) : `${strategyName(option.value)} · ${money(account.cash_by_strategy[option.value])} 元现金`;
     }
     const all = document.querySelector('#entry-all');
@@ -758,17 +795,17 @@ function openEntry(account, suggestion, strategy='unassigned', options={}) {
     all.textContent = assign ? '全部划转' : '全部卖出';
     all.disabled = held<=0;
     const context = document.querySelector('#entry-context');
-    context.textContent = !ownerName ? '请选择本笔记账所属的策略。' : assign ? field('code').value ? `${ownerName}可划转 ${number(held)} 份` : '选择证券后查看可划转份额。' : `${ownerName}现金 ${money(cash)} 元${trade && field('code').value ? ` · 持有 ${number(held)} 份` : ''}`;
+    const shares = (fund ? fundShares : number)(held);
+    context.textContent = !ownerName ? '请选择本笔记账所属的策略。' : assign ? code && !chooseKind ? `${ownerName}可划转 ${shares} 份` : '选择持仓后查看可划转份额。' : `${ownerName}现金 ${money(cash)} 元${trade && code ? ` · 持有 ${shares} 份` : ''}`;
     const amount = trade ? Number(field('qty').value) * Number(field('price').value) : Number(field('amount').value);
     const feeInput = field('fee');
-    const code = field('code').value;
-    const kind = Object.keys(account.trade_fee_code_prefixes || {}).find(kind =>
-      /^\d{6}$/.test(code) && account.trade_fee_code_prefixes[kind].some(prefix => code.startsWith(prefix)));
-    const rule = trade && !options.edit ? account.trade_fees?.[kind] : null;
+    const feeKind = Object.keys(account.trade_fee_code_prefixes || {}).find(key =>
+      /^\d{6}$/.test(code) && account.trade_fee_code_prefixes[key].some(prefix => code.startsWith(prefix)));
+    const rule = trade && !options.edit ? account.trade_fees?.[feeKind] : null;
     const roundMoney = value => Math.round(Number((value * 100).toPrecision(15))) / 100;
     const automaticFee = rule && feeInput.value === '';
     const commission = automaticFee && amount > 0 ? roundMoney(Math.max(rule.min_commission, amount * rule.commission_per_10000 / 10000)) : 0;
-    const stampDuty = automaticFee && kind === 'stock' && side === 'sell'
+    const stampDuty = automaticFee && feeKind === 'stock' && side === 'sell'
       ? roundMoney(amount * (account.trade_fees.stock_sell_stamp_duty_per_10000 ?? 0) / 10000) : 0;
     const fee = automaticFee ? roundMoney(commission + stampDuty) : trade ? Number(feeInput.value) : 0;
     document.querySelector('#entry-fee-label').textContent = rule ? '手续费 / 元（可按交割单修正）' : '手续费 / 元';
@@ -778,10 +815,19 @@ function openEntry(account, suggestion, strategy='unassigned', options={}) {
     const feeDetails = automaticFee ? ` · 佣金 ${money(commission)} 元${kind === 'stock' && side === 'sell' ? ` · 印花税 ${money(stampDuty)} 元` : ''}` : '';
     document.querySelector('#event-preview').textContent = `${trade ? `成交金额 ${money(amount)} 元 · 手续费 ${money(fee)} 元${feeDetails}。` : ''}现金${delta>=0?'增加':'减少'} ${money(Math.abs(delta))} 元；${ownerName || '所选策略'}记账后余额 ${finite(cash) ? money(cash+delta) : '—'} 元。`;
     if(cashTransfer && amount>0) document.querySelector('#event-preview').textContent=`${ownerName}划出 ${money(amount)} 元后剩余 ${money(cash-amount)} 元；${strategyName(field('strategy').value)}收到后余额 ${money(account.cash_by_strategy[field('strategy').value]+amount)} 元。账户总现金不变。`;
-    for (const name of ['qty','amount','price','strategy']) field(name).setCustomValidity('');
+    for (const name of ['code','qty','amount','price','strategy']) field(name).setCustomValidity('');
     let problem = '';
-    if (['sell','assign'].includes(side) && Number(field('qty').value)>held) {
-      problem = `份额超过${ownerName || '所选策略'}持仓（${number(held)} 份）。`;
+    if (assign && code.length===6 && !held && !chooseKind) {
+      problem = `${ownerName || '转出组合'}暂无此代码的已确认持仓。`;
+      field('code').setCustomValidity(problem);
+    } else if (fund && !finite(fund.nav)) {
+      problem = '场外基金缺少单位净值，请先更新估值。';
+      field('code').setCustomValidity(problem);
+    } else if (fund && field('strategy').value && !allocationIds.has(field('strategy').value)) {
+      problem = '场外基金只能在多资产配置和债券组合之间划转。';
+      field('strategy').setCustomValidity(problem);
+    } else if (['sell','assign'].includes(side) && Number(field('qty').value)>held) {
+      problem = `份额超过${ownerName || '所选策略'}持仓（${shares} 份）。`;
       field('qty').setCustomValidity(problem);
     } else if (side==='buy' && field('qty').value && Number(field('qty').value)%100!==0) {
       problem = '买入份额须为100份的整数倍。'; field('qty').setCustomValidity(problem);
@@ -794,7 +840,10 @@ function openEntry(account, suggestion, strategy='unassigned', options={}) {
     const validation = document.querySelector('#entry-validation');
     validation.hidden = !problem; validation.textContent = problem;
   }
-  form.oninput = () => { requestId=crypto.randomUUID(); error.hidden=true; update(); };
+  form.oninput = event => {
+    if (event?.target === field('code') || event?.target === field('from_strategy')) kind.value = '';
+    requestId=crypto.randomUUID(); error.hidden=true; update();
+  };
   form.onchange = form.oninput;
   document.querySelectorAll('[data-entry-mode]').forEach(button=>button.onclick=()=>{
     const mode = button.dataset.entryMode;
@@ -802,12 +851,12 @@ function openEntry(account, suggestion, strategy='unassigned', options={}) {
     // 先恢复选项，避免浏览器拒绝选中上一类别中被禁用的选项。
     for (const option of field('side').options) option.disabled=false;
     field('side').value = side;
+    kind.value = '';
     if (['assign','cash_transfer'].includes(mode) && field('from_strategy').value===field('strategy').value) field('strategy').value = field('from_strategy').value==='core' ? 'unassigned' : 'core';
     form.oninput();
   });
   document.querySelector('#entry-all').onclick = () => {
-    const owner = field('side').value==='assign' ? field('from_strategy').value : field('strategy').value;
-    field('qty').value = account.strategy_positions.find(row=>row.code===field('code').value && row.strategy===owner)?.count || '';
+    field('qty').value = entryPosition().held || '';
     form.oninput();
   };
   document.querySelector('#event-cancel').onclick = () => { if (!saving) dialog.close(); };
@@ -823,6 +872,7 @@ function openEntry(account, suggestion, strategy='unassigned', options={}) {
     if(options.edit) payload.event_id=options.edit.id;
     if (side==='assign') {
       Object.assign(payload, {code:field('code').value, qty:Number(field('qty').value), strategy:field('strategy').value, from_strategy:field('from_strategy').value});
+      if (entryPosition().fund) payload.kind = 'fund';
     } else if (['buy','sell'].includes(side)) {
       Object.assign(payload, {code:field('code').value, qty:Number(field('qty').value), price:Number(field('price').value), strategy:field('strategy').value});
       if (options.edit || field('fee').value !== '') payload.fee = Number(field('fee').value);
@@ -844,7 +894,8 @@ function openEntry(account, suggestion, strategy='unassigned', options={}) {
       saving = false;
       document.querySelector('#status').textContent = '记账已保存';
       if (keepOpen) {
-        const receipt = `${payload.date} · ${SIDES[side]}${payload.code ? ` ${payload.code} ${number(payload.qty)} 份` : ` ${money(payload.amount)} 元`}已保存。可继续记下一笔。`;
+        const shares = (payload.kind === 'fund' ? fundShares : number)(payload.qty);
+        const receipt = `${payload.date} · ${SIDES[side]}${payload.code ? ` ${payload.code} ${shares} 份` : ` ${money(payload.amount)} 元`}已保存。可继续记下一笔。`;
         openEntry(data.accounts[0], {side}, payload.strategy, {date:payload.date,fromStrategy:payload.from_strategy,success:receipt});
       } else dialog.close();
     }
