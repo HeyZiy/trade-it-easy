@@ -11,7 +11,7 @@ from src.config import setup_env
 from src.cron_entry import hard_exit
 from src.logging_config import setup_logging
 from src.trading_calendar import get_trading_dates
-from src.trade_ledger.closing_prices import ClosingPrices
+from data_provider.closing_prices import ClosingPrices
 
 logger = logging.getLogger(__name__)
 SHANGHAI = timezone(timedelta(hours=8))

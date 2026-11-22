@@ -69,7 +69,7 @@ def main():
     main_full.to_csv(OUT / "metrics_full_period.csv", index=False, encoding="utf-8-sig")
     pivot.round(4).to_csv(OUT / "pivot_full_period.csv", encoding="utf-8-sig")
     stats.round(2).to_csv(OUT / "medians_full_period.csv", encoding="utf-8-sig")
-    print("全期·跨标的中位数（12只ETF）\n" + stats.round(2).to_markdown())
+    print(f"全期·跨标的中位数（{main_full.code.nunique()}只ETF）\n" + stats.round(2).to_markdown())
     print("\n全期·分标的\n" + pivot[RET].round(2).to_markdown() +
           "\n\n全期·分标的回撤\n" + pivot[DD].round(2).to_markdown())
     r3, roll_stats = rolling_three_years()

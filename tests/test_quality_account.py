@@ -3,12 +3,12 @@
 from datetime import date
 from pathlib import Path
 from uuid import uuid4
+import json
 
 import pytest
 
 from src import etf_account as wallet, portfolio_config
 from src.quality_pool import config, feeds
-from src.trade_ledger.ledger import TradeRecord, append_trade
 from test_quality_pool_state import env, _patch_signal_data, _patch_execute_data
 
 
@@ -42,8 +42,10 @@ def test_plan_uses_ten_percent_budget_and_ignores_old_simulated_positions(accoun
     from dashboard import dashboard_data
 
     old_ledger = account.with_name("trade_ledger_quality_pool.jsonl")
-    append_trade(TradeRecord("2026-10-01", "600003", "模拟旧仓", "buy", 100, 10, account="quality_pool"),
-                 old_ledger)
+    old_ledger.write_text(
+        json.dumps({"date": "2026-10-01", "code": "600003", "name": "模拟旧仓",
+                    "side": "buy", "qty": 100, "price": 10, "account": "quality_pool"}),
+        encoding="utf-8")
     simulated = old_ledger.read_bytes()
     initial = wallet.account_data(account)
     wallet.publish_quality(DAY.isoformat(), path=account)
@@ -74,7 +76,7 @@ def test_partial_fill_consumes_only_remaining_plan_and_keeps_realized_pnl(accoun
 
 def test_actual_old_position_drives_exit_and_next_day_rechecks_entries(account, env):
     event(account, "buy", code="600003", qty=100, price=10, fee=0)
-    # 前一日持仓，允许本轮退出；模拟账户没有这只股票。
+    # 前一日持仓，允许本轮退出；旧模拟账本没有这只股票。
     env.setattr(wallet, "_today", lambda: date(2026, 10, 5))
     wallet.publish_quality("2026-10-05", path=account)
     orders = quality(account)["suggestions"]

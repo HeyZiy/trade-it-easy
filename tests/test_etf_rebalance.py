@@ -1,9 +1,9 @@
 # -*- coding: utf-8 -*-
-"""ETF 再平衡测试：整手口径单点（executor）+ compare 纯计算核（价格注入）+ RebalancePlan。
+"""ETF 再平衡测试：整手口径单点（executor）+ compare 纯计算核（价格注入）。
 
-全 fake 注入零网络：compare/build_plan 不再自取行情，测试直接传 prices dict。
+全 fake 注入零网络：compare 不自取行情，测试直接传 prices dict。
 """
-from src.etf.rebalancer import RebalancePlan, ETFRebalancer
+from src.etf.rebalancer import ETFRebalancer
 from src.etf import config as _config
 from src.mx.executor import floor_lot, round_lot
 
@@ -23,7 +23,7 @@ def test_floor_lot_can_go_to_zero():
 # ══════════════ compare：价格注入 + 卖侧钳制 ══════════════
 
 R = ETFRebalancer(_config.example_baseline())
-TARGET = R.calculate_target()
+TARGET = {a.code: a.neutral_weight for a in _config.example_baseline()}
 
 
 def _pos(code, name, count, price, mv=None):
@@ -86,7 +86,7 @@ def test_rebalance_is_market_state_free():
     本测试锁住契约本身：任何人再把状态参数加回来都会红。
     """
     import inspect
-    for fn in (R.compare, R.build_plan):
+    for fn in (R.compare,):
         assert "gate_state" not in inspect.signature(fn).parameters, fn.__name__
 
 
@@ -97,103 +97,7 @@ def test_gold_trimmed_regardless_of_market_state():
     assert "159934" in _orders_by_code(orders)
     assert _orders_by_code(orders)["159934"].action == "sell"
 
-
-# ══════════════ build_plan：纯值产物 ══════════════
-
-def _at_target(total=50_000.0, **overrides):
-    """构建"全部资产恰在目标权重"的组合；overrides 传 {code: 实际权重} 制造偏离。
-
-    注意必须先铺满组合：只放一只持仓会让其余基准资产变成巨额未持仓偏离，
-    测不到"小幅偏离"场景。
-    """
-    positions = []
-    for a in _config.example_baseline():
-        if a.code == "CASH":
-            continue
-        w = overrides.get(a.code, a.neutral_weight)
-        mv = w * total
-        positions.append(_pos(a.code, a.name, int(mv), 1.0, mv=mv))
-    return positions
-
-
-def test_build_plan_carries_trigger_verdict():
-    """plan 同时携带订单、触发层结论 should 与执行层结论 reason。"""
-    flat = R.build_plan(TARGET, _at_target(), 50_000)
-    assert isinstance(flat, RebalancePlan)
-    assert flat.orders == [] and flat.odd_lots == []
-    assert flat.should is False, flat.reason
-    assert "无指令" in flat.reason, flat.reason
-
-    # 未持仓 + 有行情 → 买入指令，总偏离巨大 → 触发层达线
-    plan = R.build_plan(TARGET, [], 100_000, prices={"563360": 1.0})
-    assert plan.orders and plan.should is True
-    # 卖出在前（高波动先减）、买入按波动率升序——纯结构断言不锁死具体顺序
-    assert all(o.action == "buy" for o in plan.orders)
-
-
-def test_reason_matches_execution_decision():
-    """文案与执行一致：破复核带且缺口够最小交易额 ⇒ 出指令且 should=True，
-    reason 不得说"无指令/无需"，如实写触发层。
-    """
-    # 513500 目标约 19.2%，+5pp 破绝对带(5pp)，缺口 2500 元≥400 → 出指令。
-    plan = R.build_plan(TARGET, _at_target(**{"513500": TARGET["513500"] + .05}), 50_000)
-    assert plan.orders, plan.reason
-    assert plan.should is True, plan.reason
-    assert "无指令" not in plan.reason and "无需" not in plan.reason, plan.reason
-    assert "笔指令" in plan.reason and "触发层" in plan.reason, plan.reason
-    assert "5.0%" in plan.reason, plan.reason
-
-
-def test_sub_band_drift_is_gated_from_execution():
-    """契约（2026-11-17 裁决）：复核带既分级也拦执行——未破带的漂移不出指令。
-    旧"触发层不拦执行、平 2pp 出指令"语义已被 5/25 带+最小交易额门取代。"""
-    # 513500 +3pp：绝对 3pp<5pp、相对 3/19.2≈15.6%<25% → 未破带 → 无指令。
-    plan = R.build_plan(TARGET, _at_target(**{"513500": TARGET["513500"] + .03}), 50_000)
-    assert plan.should is False and plan.orders == [], plan.reason
-
-
-def test_trigger_fires_on_magnitude_not_on_executability():
-    """总偏离够大就报 True，即使当时无单可出——不许出现"总偏离 71% 却 should=False"。"""
-    no_prices = R.build_plan(TARGET, [], 100_000)
-    assert no_prices.orders == [] and no_prices.should is True, no_prices.reason
-    assert "无指令" in no_prices.reason and "触发层" in no_prices.reason, no_prices.reason
-
-
-def test_relative_review_below_trade_amount():
-    """破相对带但缺口 < MIN_TRADE_AMOUNT：should=True（复核）却不出指令——
-    挡碎额的是金额门（400 元），而非旧的平 2pp。"""
-    asset = _config.AssetAllocation("513120", _config.AssetType.EQUITY, .012, 1)
-    engine = ETFRebalancer([asset])
-    # 目标 1200，现值 1500 → 缺口 300 元，相对偏离恰 25%（破带），300<400 → 不出指令。
-    positions = [_pos(asset.code, "港股创新药ETF", 1500, 1)]
-    plan = engine.build_plan(engine.calculate_target(), positions, 100_000)
-    assert plan.should is True and plan.orders == []
-    assert "相对偏离 25.0%" in plan.reason
-
-
-def test_micro_position_buyback_after_drawdown():
-    """回归（修复平 2pp 买方永久冻结）：1.2% 微仓跌 50%，绝对偏离仅 0.6pp（旧门永不买），
-    但相对偏离 50% 破带、缺口 600 元≥400 → 出买单补回。"""
-    asset = _config.AssetAllocation("513120", _config.AssetType.EQUITY, .012, 1)
-    engine = ETFRebalancer([asset])
-    # 目标 1200，现值 600（跌 50%）→ 缺口 -600，相对 50%。
-    positions = [_pos(asset.code, "港股创新药ETF", 600, 1)]
-    plan = engine.build_plan(engine.calculate_target(), positions, 100_000)
-    assert plan.should is True
-    o, = plan.orders
-    assert o.code == asset.code and o.action == "buy"
-    assert o.quantity == round_lot(600)
-
-
-def test_no_orders_reason_is_about_the_order_filter_not_absence_of_deviation():
-    """无指令时也不能说"无偏离"：偏离存在但未破复核带（或缺口不够最小交易额）。"""
-    plan = R.build_plan(TARGET, _at_target(**{"515180": 0.075}), 50_000)
-    assert plan.orders == [], plan.reason
-    assert "无指令" in plan.reason and "400" in plan.reason, plan.reason
-    assert "无偏离" not in plan.reason, plan.reason
-
-
-# ══════════════ 持仓归属拆分：看台账 account 标签，不看代码名单 ══════════════
+# ══════════════ 持仓归属拆分：看台账 strategy 归属，不看代码名单 ══════════════
 
 def test_split_rotation_uses_account_label():
     """非 core 标签的持仓进卫星侧；无标签（真实券商持仓）默认归核心。"""

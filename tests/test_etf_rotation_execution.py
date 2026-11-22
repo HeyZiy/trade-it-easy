@@ -8,9 +8,8 @@ import pytest
 from data_provider.etf import AMAZINGDATA, EASTMONEY
 from data_provider.fetchers.amazingdata import client, market
 from src.etf import rotation
-from src.etf.rotation import ACCOUNT, RotationRow, fetch_bars, plan_rotation
+from src.etf.rotation import RotationRow, fetch_bars, plan_rotation
 from src.etf.rotation_advice import make_signal
-from src.trade_ledger import BatchOrder, TradeRecord, append_trade, derive, execute_batch, load_trades
 
 
 def _em_frame(raw, hfq):
@@ -138,28 +137,9 @@ def test_rotation_signal_requires_qualified_backup_and_live_quote(monkeypatch, b
     assert diag["missing_bars"] == ([] if backup_ok else [code])
 
 
-def test_fee_is_deducted_from_cash_and_legacy_records_remain_fee_free(tmp_path):
-    path = tmp_path / 'ledger.jsonl'
-    append_trade(TradeRecord('2026-09-01', '510300', 'ETF', 'buy', 100, 10., account=ACCOUNT), path)
-    result = execute_batch([BatchOrder('510300', 'ETF', 'sell', 100, 11.)],
-                           account=ACCOUNT, trade_date='2026-09-02', path=path,
-                           commission_rate=.0002, min_commission=5.)
-    assert result.abort is None
-    assert load_trades(path)[-1].fee == 5.
-    assert derive(load_trades(path), '2026-09-02').cash == 1_000_095.
-
-
-def test_fee_shortfall_rejects_entire_batch_before_any_write(tmp_path):
-    path = tmp_path / 'ledger.jsonl'
-    orders = [BatchOrder('510300', 'ETF', 'buy', 100000, 10.)]
-    result = execute_batch(orders, account=ACCOUNT, trade_date='2026-09-02', path=path,
-                           commission_rate=.0002, min_commission=5.)
-    assert result.abort and not path.exists()
-
-
 def test_switch_uses_sale_proceeds_after_selling_fee():
     row = RotationRow('510300', 'ETF', '股票', 1., 1., 1., True, 1)
-    held = [dict(code='513100', name='旧仓', count=1000, current_price=10., account=ACCOUNT)]
+    held = [dict(code='513100', name='旧仓', count=1000, current_price=10., account='etf_rotation')]
     plan = plan_rotation([row], held, {'513100': 10.}, 7.)
     buy = plan['buys'][0]
     assert buy.amount + max(5., buy.amount * .0002) <= 10007. - 5.

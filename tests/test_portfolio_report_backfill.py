@@ -6,7 +6,7 @@ import pytest
 
 import portfolio_report as entry
 from src import etf_account as wallet, fund_plans
-from src.trade_ledger.closing_prices import ClosingPrices
+from data_provider.closing_prices import ClosingPrices
 
 NOW = datetime(2026, 9, 24, 8, 30, tzinfo=timezone(timedelta(hours=8)))
 

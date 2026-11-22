@@ -15,7 +15,7 @@ DIVE_RATIO = 0.95        # 近 3 个日环比任一 < 0.95 → score=0
 
 @dataclass
 class EtfOrder:
-    """ETF 策略调仓指令（入口映射为台账 BatchOrder）。"""
+    """ETF 策略调仓指令（建议展示与记账确认共用）。"""
     code: str
     name: str
     action: str           # buy / sell
@@ -26,7 +26,7 @@ class EtfOrder:
 
     @property
     def qty(self) -> int:
-        """执行层统一股数口径（与 RebalanceOrder.qty/BatchOrder 对齐）。"""
+        """执行层统一股数口径（与 RebalanceOrder.qty 对齐）。"""
         return self.shares
 
 

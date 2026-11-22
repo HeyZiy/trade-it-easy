@@ -7,7 +7,7 @@ import threading
 import time
 
 from src import etf_account
-from src.trade_ledger.closing_prices import ClosingPrices
+from data_provider.closing_prices import ClosingPrices
 
 logger = logging.getLogger(__name__)
 

@@ -4,7 +4,7 @@ from datetime import date, time, timedelta
 
 from src import portfolio_config
 from src.account_replay import positive, snapshot
-from src.trade_ledger.closing_prices import holding_closes
+from data_provider.closing_prices import holding_closes
 from src.trading_calendar import SHANGHAI, latest_trading_day_on_or_before
 
 # 同期基准：沪深300。起点为期初估值日（非交易日则取之前最近交易日）的指数收盘，

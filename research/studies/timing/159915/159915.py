@@ -92,11 +92,13 @@ def replay(code):
 def main():
     OUT.mkdir(parents=True, exist_ok=True)
     histories = {code: base.load_etf(code) for code in ("159915", "513180")}
+    # 共同窗口取恒生科技实际预热完成日：两只标的都从该日起以现金新建账户。
+    shared_start = base.window_start(histories["513180"])
     rows = []
     for code, history in histories.items():
         runners = {k: v for k, v in study.strategy_runners(history).items() if k in RULES}
         for label, start in (("各自全期", base.window_start(history)),
-                             ("共同窗口", pd.Timestamp("2022-03-18"))):
+                             ("共同窗口", max(shared_start, base.window_start(history)))):
             metrics, _, _ = study.evaluate_window(history.loc[start:"2026-09-30"], runners)
             rows.append(metrics.reset_index().assign(code=code, 窗口=label, start=str(start.date())))
     comparisons = pd.concat(rows, ignore_index=True)
@@ -132,7 +134,8 @@ def main():
              "数据截至2026-09-30；只读取既有东财后复权缓存，单边成本0.06%，"
              "收盘确认、下一交易日开盘成交。沿用一级代表规则，不调参。", "",
              "## 同时间、同规则比较", "",
-             "两只ETF均从2022-03-18以现金新建账户；窗口外历史只计算信号，不继承持仓。", "",
+             f"两只ETF均从{shared_start.date()}以现金新建账户；"
+             "窗口外历史只计算信号，不继承持仓。", "",
              common[["标的", "strategy", *cols]].round(2).to_markdown(index=False), "",
              "## 创业板全期最深回撤", "",
              f"唐奇安20/10前高 {peak.date()}，谷底 {trough.date()}，"

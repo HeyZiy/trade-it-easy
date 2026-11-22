@@ -12,7 +12,6 @@ import pytest
 
 import dashboard
 from dashboard import dashboard_data
-from src.trade_ledger.ledger import TradeRecord, append_trade
 
 
 def test_report_retains_readable_formatting_without_active_html(tmp_path):
@@ -52,9 +51,11 @@ def test_old_simulation_files_stay_out_of_the_dashboard(tmp_path):
     data = tmp_path / "data"
     initialize(data / "etf_account.json", asof="2025-01-02", cash=1000,
                positions=[dict(code="510300", name="核心ETF", count=100, price=3, strategy="core")])
-    append_trade(TradeRecord(date="2025-01-03", code="512500", name="轮动ETF",
-                             side="buy", qty=200, price=2.0, account="etf_rotation"),
-                 data / "trade_ledger_etf_rotation.jsonl")
+    # 旧模拟账本的行契约（append-only JSONL），验证其内容不再回流看板。
+    (data / "trade_ledger_etf_rotation.jsonl").write_text(
+        json.dumps({"date": "2025-01-03", "code": "512500", "name": "轮动ETF",
+                    "side": "buy", "qty": 200, "price": 2.0, "account": "etf_rotation"}),
+        encoding="utf-8")
     overview = dashboard_data(tmp_path)
     strategies = {s["id"]: s for s in overview["strategies"]}
     assert [p["code"] for p in strategies["core"]["positions"]] == ["510300"]
@@ -74,8 +75,10 @@ def test_strategy_positions_carry_t1_close(tmp_path, monkeypatch):
     initialize(path, asof="2025-01-01", cash=1000,
                positions=[dict(code="510300", name="核心ETF", count=100, price=3, strategy="core")])
     collect_close(path, "2025-01-02", lambda codes, day: {codes[0]: 3.3})
-    append_trade(TradeRecord("2025-01-02", "512500", "轮动ETF", "buy", 200, 2, account="etf_rotation"),
-                 path.with_name("trade_ledger_etf_rotation.jsonl"))
+    (path.with_name("trade_ledger_etf_rotation.jsonl")).write_text(
+        json.dumps({"date": "2025-01-02", "code": "512500", "name": "轮动ETF",
+                    "side": "buy", "qty": 200, "price": 2.0, "account": "etf_rotation"}),
+        encoding="utf-8")
     overview = dashboard_data(tmp_path)
     strategies = {s["id"]: s for s in overview["strategies"]}
     assert strategies["core"]["positions"][0]["close"] == 3.3

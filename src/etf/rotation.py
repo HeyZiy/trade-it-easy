@@ -77,7 +77,7 @@ def is_eligible(score: float) -> bool:
 def affordable_shares(cash: float, price: float) -> int:
     """资金可行性预检：在扣除佣金（万二、最低 5 元）后能买的最大整手股数。
 
-    台账执行会扣除同口径费用；此处保证计划金额包含买入费用。
+    台账记账会扣除同口径费用；此处保证计划金额包含买入费用。
     """
     if not (math.isfinite(cash) and math.isfinite(price)) or cash <= 0 or price <= 0:
         return 0

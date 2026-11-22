@@ -5,11 +5,11 @@ ETF 再平衡引擎
 ==================================
 
 职责（纯计算核，零 I/O）：
-1. 中性基准 → 目标配比（无偏移，不做动态择时，见 strategy/etf_allocation.md）
-2. 比较实际持仓 vs 目标 → 生成调仓指令（旧钱唯一动作）；行情价格经
-   compare(prices=...) 参数注入，取价由周度批次编排层（src/etf/allocation）完成
-3. 触发判定（should_rebalance）与订单一起装配为 RebalancePlan 纯值产物，
-   执行由周度批次统一完成（src/etf/allocation.run，本模块只出指令）
+1. 中性基准 → 目标配比（无偏移，不做动态择时）
+2. 偏离（allocation_deviation）→ 整手指令（orders_for_deviations）；
+   行情价格经 prices 参数注入，取数由消费方完成。
+   生产路径唯一消费方是 src/account_advice.suggestions：按偏离生成补仓/减仓
+   建议，执行由人工确认记账，仅建议不自动执行。
 
 **与市场状态完全无关**（不读环境参数，防护腿同规则减仓）。
 依据：组合层面 trending_down 无前瞻信息（后 20 日胜率
@@ -17,7 +17,6 @@ ETF 再平衡引擎
 
 整手口径单点在 src/mx/executor：买侧 round_lot（向下取整后强凑≥100）、
 卖侧 floor_lot(min(应卖, 持仓))（不足一手跳过该笔，残腿进 odd_lots 供报告列手动待办）。
-调仓指令由 src/etf/allocation 周报生成展示，仅建议不自动执行。
 """
 
 import logging
@@ -27,7 +26,6 @@ from typing import Dict, List, Optional, Tuple
 
 from src.etf.config import (
     MIN_TRADE_AMOUNT, REBALANCE_RELATIVE_THRESHOLD, REBALANCE_SINGLE_THRESHOLD,
-    REBALANCE_TOTAL_THRESHOLD,
 )
 from src.mx.executor import floor_lot, round_lot
 
@@ -74,7 +72,7 @@ def allocation_deviation(current_value: float | None, weight: float,
     return AllocationDeviation(current_value, target_value, gap, absolute, relative)
 
 
-@dataclass
+@dataclass(frozen=True)
 class RebalanceOrder:
     code: str
     name: str
@@ -91,29 +89,11 @@ class RebalanceOrder:
         return self.quantity
 
 
-@dataclass(frozen=True)
-class RebalancePlan:
-    """核心仓再平衡纯值产物（可独立校验，不含 client/rebalancer 等活对象）。
-
-    - `orders`：本次批次指令（执行门＝有指令即执行）。
-    - `should`：偏离是否达到复核线，供报告分级。
-    - `reason`：**执行层**结论，与实际动作逐字一致（不取触发层文案）。
-    - `odd_lots`：应卖但持仓不足一手的残腿 [{code, name, count}]，供报告列手动待办。
-    """
-    orders: List[RebalanceOrder]
-    total_deviation: float
-    should: bool
-    reason: str
-    odd_lots: List[dict]
-
-
 class ETFRebalancer:
     """ETF 再平衡引擎（纯计算：构造零依赖，行情经参数注入）"""
 
     def __init__(self, baseline):
         self.baseline = list(baseline)
-
-    # ── 计算目标配比 ──
 
     def calculate_target(self) -> Dict[str, float]:
         """目标配比 = 中性基准权重（无偏移；估值观点在基准里，环境不进目标）
@@ -123,13 +103,11 @@ class ETFRebalancer:
         """
         return {a.code: a.neutral_weight for a in self.baseline}
 
-    # ── 比较持仓 ──
-
     def split_rotation_positions(self, positions: List[dict]) -> Tuple[List[dict], float, List[dict]]:
         """拆分核心持仓与卫星（非核心）持仓。
 
-        归属看台账自带的 account 标签（写入侧由各策略 execute_batch 打标：
-        core/quality_pool/etf_rotation），不再用代码名单反推——名单会随池轮换失效。
+        归属看台账自带的 strategy 标签（投资账户流水 carry，持仓行按
+        core/quality_pool/etf_rotation 归属拆分），不用代码名单反推——名单会随池轮换失效。
         卫星持仓独立预算，不参与核心仓偏离计算；
         核心资金 = 总资产 − 卫星持仓市值。
 
@@ -150,7 +128,7 @@ class ETFRebalancer:
                 total_assets: float,
                 prices: Optional[Dict[str, float]] = None,
                 ) -> Tuple[List[RebalanceOrder], float, List[dict]]:
-        """返回调仓指令、总偏离和不足一手的卖出残腿。"""
+        """返回调仓指令、总偏离（报告参考）和不足一手的卖出残腿。"""
         orders, total_deviation, odd_lots, _ = self._evaluate(target, positions, total_assets, prices)
         return orders, total_deviation, odd_lots
 
@@ -220,40 +198,3 @@ class ETFRebalancer:
         orders = sells + buys
 
         return orders, odd_lots
-
-    # ── 判断是否触发再平衡（触发层；决策口径见 build_plan 与 config 阈值注释）──
-
-    def should_rebalance(self, deviations: Dict[str, AllocationDeviation],
-                         total_deviation: float) -> Tuple[bool, str]:
-        """根据全部配置标的的偏离判断是否达到复核线。"""
-        max_single = max((row.absolute or 0 for row in deviations.values()), default=0.0)
-
-        if total_deviation > REBALANCE_TOTAL_THRESHOLD:
-            return True, (f"总偏离 {total_deviation:.1%} > {REBALANCE_TOTAL_THRESHOLD:.0%}"
-                          f"（最大单类 {max_single:.1%}）")
-        if any(row.absolute_review for row in deviations.values()):
-            return True, f"最大单类偏离 {max_single:.1%} ≥ {REBALANCE_SINGLE_THRESHOLD:.0%}"
-        max_relative = max((row.relative for row in deviations.values() if row.relative_review), default=None)
-        if max_relative is not None:
-            return True, f"最大单类相对偏离 {max_relative:.1%} 达到 {REBALANCE_RELATIVE_THRESHOLD:.0%} 复核线"
-        return False, f"最大单类 {max_single:.1%}，总偏离 {total_deviation:.1%}，均未达到复核线"
-
-    def _execution_reason(self, orders: List[RebalanceOrder], total_deviation: float,
-                          should: bool, trigger_reason: str) -> str:
-        """汇总份额指令和偏离复核结论。"""
-        if not orders:
-            base = (f"无指令（无单类破复核带且缺口≥{MIN_TRADE_AMOUNT:.0f}元，或标的缺价；"
-                    f"总偏离 {total_deviation:.1%}）")
-            return base if not should else f"{base}；触发层：{trigger_reason}"
-        return f"{len(orders)} 笔指令；触发层：{trigger_reason}"
-
-    def build_plan(self, target: Dict[str, float], positions: List[dict],
-                   total_assets: float,
-                   prices: Optional[Dict[str, float]] = None) -> RebalancePlan:
-        """一次计算偏离，生成复核结论和份额指令。"""
-        orders, total_deviation, odd_lots, deviations = self._evaluate(
-            target, positions, total_assets, prices)
-        should, trigger_reason = self.should_rebalance(deviations, total_deviation)
-        reason = self._execution_reason(orders, total_deviation, should, trigger_reason)
-        return RebalancePlan(orders=orders, total_deviation=total_deviation,
-                             should=should, reason=reason, odd_lots=odd_lots)

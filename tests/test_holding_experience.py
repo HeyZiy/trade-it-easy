@@ -99,8 +99,8 @@ class HoldingExperienceTests(unittest.TestCase):
         pe = pd.Series(np.linspace(20, 5, 100), index=pd.date_range('2010-01-31', periods=100, freq='ME'))
         runners = h.strategy_runners(history, pe)
         px = history.iloc[230:]
-        actual, _ = runners['估值'](px)
-        expected, _ = b.sim_target(px, b.build_val_target(px, pe))
+        actual, _ = runners['PE分位'](px)
+        expected, _ = b.sim_target(px, b.build_val_target(px, pe, changes_only=False, lo=0.2, hi=0.8))
         pd.testing.assert_frame_equal(actual, expected)
         self.assertGreater(actual.shares.iloc[0], 0)
         for name, params in [('唐奇安20/10', (20, 10)), ('唐奇安55/20', (55, 20))]:
@@ -124,7 +124,7 @@ class HoldingExperienceTests(unittest.TestCase):
         self.assertTrue((cohorts.end >= cohorts.start + pd.DateOffset(months=11)).all())
 
     def test_short_asset_exports_full_metrics_without_inventing_long_windows(self):
-        dates = pd.bdate_range('2019-01-01', periods=260)
+        dates = pd.bdate_range('2019-01-01', periods=320)
         close = np.linspace(10, 12, len(dates))
         history = pd.DataFrame({'open': close, 'high': close + .1,
                                 'low': close - .1, 'close': close}, index=dates)
@@ -140,7 +140,7 @@ class HoldingExperienceTests(unittest.TestCase):
                 h.main()
                 grid.main()
             metrics = pd.read_csv(folder / 'experience/metrics_all.csv')
-            self.assertNotIn('估值', set(metrics.strategy))
+            self.assertNotIn('PE分位', set(metrics.strategy))
             self.assertIn('最长水下交易日', metrics.columns)
             self.assertTrue(pd.read_csv(folder / 'experience/rolling_summary.csv').empty)
             self.assertIn('窗口：', (folder / 'experience/summary.md').read_text(encoding='utf-8'))

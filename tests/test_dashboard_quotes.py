@@ -16,7 +16,7 @@ import pytest
 import dashboard
 from src import account_valuation, etf_account as wallet, trading_calendar
 from src.dashboard_quotes import QuoteRefresh
-from src.trade_ledger.closing_prices import ClosingPrices
+from data_provider.closing_prices import ClosingPrices
 
 TODAY = date(2025, 1, 7)
 PRICE_DAY = "2025-01-06"

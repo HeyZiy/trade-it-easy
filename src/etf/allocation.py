@@ -1,13 +1,13 @@
 # -*- coding: utf-8 -*-
-"""多资产配置的市场观察周报与配置参考计算。"""
+"""市场观察周报数据层：全市场 PE 五档 + 股债性价比 + ERP 分位。
+
+唯一消费者是根目录入口 etf_observe.py（周一 14:40 推送），只观察不交易。
+"""
 
 import logging
-from collections import Counter
-from dataclasses import dataclass, field
-from datetime import datetime, timedelta, timezone
-from typing import List, Optional
+from datetime import datetime
 
-from src.etf.config import AssetAllocation, AssetType, pe_level
+from src.etf.config import pe_level
 
 logger = logging.getLogger(__name__)
 
@@ -30,86 +30,6 @@ def _raw_erp_percentile():
     """风险溢价自身近 5 年分位（src.etf.amazing_factors）。"""
     from src.etf.amazing_factors import get_erp_percentile
     return get_erp_percentile()
-
-
-def _raw_valuation_rows(equity_etfs, y10):
-    """标的级估值行：跟踪指数 PE/股息率（src.etf.amazing_factors）。"""
-    from src.etf.amazing_factors import etf_valuation_rows
-    return etf_valuation_rows(equity_etfs, y10=y10)
-
-
-def _raw_snapshot():
-    """一次读取配置及核心策略事实；配置无效抛出，账户不可用返回空快照。"""
-    from src.etf_account import ACCOUNT_PATH, strategy_snapshot
-    return strategy_snapshot(ACCOUNT_PATH)
-
-
-def _raw_daily_close(code):
-    """补价日线收盘（data_provider.bars.get_etf_daily）。"""
-    from data_provider.bars import get_etf_daily
-    return get_etf_daily(code)
-
-
-def _raw_realtime_prices(codes):
-    from data_provider import realtime_prices
-    return realtime_prices(codes)
-
-
-# ── 持仓对照渲染数据 ──
-
-@dataclass(frozen=True)
-class WeekContext:
-    """持仓对照所需的配置、持仓及观察数据。"""
-    market_pe: Optional[dict]    # get_market_pe()：{pe, pe_pct, ...} 或 None
-    y10: Optional[float]         # 10 年期国债收益率（%）
-    erp_pct: Optional[float]     # 风险溢价自身近 5 年分位
-    alloc: Optional[dict]        # _compute_allocation 快照，见其返回值（None = 台账不可读）
-    baseline: List[AssetAllocation]  # 本批次配置，计算、观察和渲染共同使用
-    trends: dict = field(default_factory=dict)  # 标的自身唐奇安20/10观察快照
-    valuations: list = field(default_factory=list)  # 持仓表与估值明细共用
-
-
-def _fetch_trend_observations(baseline) -> dict:
-    from data_provider.etf import etf_daily_bars
-    from src.etf.trend import OBSERVATION_MIN_BARS, observation_cutoff, observe_donchian_history
-
-    now = datetime.now(timezone(timedelta(hours=8))).replace(tzinfo=None)
-    codes = [asset.code for asset in baseline if asset.code != "CASH"]
-    bars = etf_daily_bars(
-        codes, now.date().isoformat(), policy="observation",
-        completed_through=observation_cutoff(now), min_bars=OBSERVATION_MIN_BARS,
-    )
-    observations = {}
-    for code in codes:
-        series = bars.get(code)
-        if series is None:
-            observations[code] = {"state": None, "error": "行情不可用"}
-            continue
-        observations[code] = dict(observe_donchian_history(series.history), source=series.source)
-    counts = Counter(item.get("source", "不可用") for item in observations.values())
-    logger.info("唐奇安观察来源：%s", "，".join(f"{name} {n} 只" for name, n in counts.items()))
-    return observations
-
-
-def _valuation_cell(row: dict) -> str:
-    """现有估值事实＋锚来源前缀，不从绝对PE编造历史分位或买卖判断。
-    row 为空＝基准外无估值行（如黄金）；有行但锚与数值全缺＝无。"""
-    if not row:
-        return "—"
-    if not row.get("source_name") and row.get("pe") is None and row.get("div_yield") is None:
-        return "无"
-    parts = []
-    if row.get("source_name"):
-        parts.append(row["source_name"])
-    if row.get("pe") is not None:
-        parts.append(f"PE {row['pe']:.1f}")
-    if row.get("div_yield") is not None:
-        parts.append(f"股息 {row['div_yield']:.1f}%")
-    spread = row.get("div_yield_spread")
-    if row.get("dividend_style") and spread is not None:
-        note = "（偏低）" if spread >= 1.5 else ""
-        parts.append(f"利差 {spread:+.1f}pt{note}")
-    return " / ".join(parts)
 
 
 # ── 市场宏观 ──
@@ -142,160 +62,6 @@ def _market_overview(market_pe, y10, erp_pct) -> str:
             lines.append(f"- **10 年期国债收益率**：{y10:.2f}%")
 
     lines.append("")
-    return "\n".join(lines)
-
-
-# ── 持仓对照与调仓建议 ──
-
-def _fetch_missing_prices(baseline: List, positions: List[dict]) -> dict:
-    """为未持仓/缺价的基准 ETF 补价：日线收盘为主口径（盘后分析数据稳定），
-    实时报价兜底（失败代码收拢一批，行情源仅在真缺价时初始化）；
-    失败不补（compare 对无价标的自然跳过）。"""
-    held_price = {p.get("code", ""): (p.get("current_price", 0) or 0) for p in positions}
-    needed = [a.code for a in baseline if a.code != "CASH" and held_price.get(a.code, 0) <= 0]
-    if not needed:
-        return {}
-
-    logger.info(f"获取 {len(needed)} 只 ETF 的行情价格...")
-    prices = {}
-    missed = []
-    for code in needed:
-        try:
-            df = _raw_daily_close(code)
-            if df is not None and not df.empty:
-                price = float(df.iloc[-1]["close"])
-                if price > 0:
-                    prices[code] = price
-                    continue
-        except Exception as e:
-            logger.debug(f"日线收盘获取 {code} 价格失败: {e}")
-        missed.append(code)
-    if missed:
-        prices.update(_raw_realtime_prices(missed))
-    return prices
-
-
-def _compute_allocation(snap, baseline):
-    """计算目标配比与再平衡计划，供持仓对照和建议展示。
-
-    持仓、资金与基准均来自本批次快照；账户不可用时不生成持仓建议。
-    目标 = 中性基准，无动态择时（核心仓纯机械）。
-    行情取数在此编排层一次取齐（prices），决策核 rebalancer 保持零 I/O。
-
-    Returns:
-        dict；账户快照不可用时返回 None，持仓对照节显示跳过原因。
-    """
-    if snap is None:
-        return None
-
-    from src.etf.rebalancer import ETFRebalancer
-
-    positions = snap.positions
-    total_assets = snap.total_assets
-    rebalancer = ETFRebalancer(baseline)
-    target = rebalancer.calculate_target()
-
-    core_positions, _, _ = rebalancer.split_rotation_positions(positions)
-    # 台账缺价的持仓 + 未持仓基准 ETF 一并补价（compare 对无价标的自然跳过）
-    prices = _fetch_missing_prices(rebalancer.baseline, positions)
-    plan = rebalancer.build_plan(target, positions, total_assets, prices=prices)
-
-    return {
-        "cash": snap.cash,
-        "positions": positions,
-        "total_assets": total_assets,
-        "core_positions": core_positions,
-        "target": target,
-        "plan": plan,
-        "prices": prices,
-    }
-
-
-def _holding_overview(ctx: WeekContext) -> str:
-    """策略参考表：目标/实际/偏离/建议指令，唐奇安与估值两列独立参考（纯渲染 ctx.alloc）。"""
-    lines = ["## 策略参考", ""]
-
-    alloc = ctx.alloc
-    if alloc is None:
-        lines.append("- 成交台账不可用，跳过持仓对照")
-        return "\n".join(lines)
-
-    positions = alloc["positions"]
-    total_assets = alloc["total_assets"]
-    target = alloc["target"]
-    plan = alloc["plan"]
-    orders = plan.orders
-
-    # 当前持仓占比（资金占比即总占比；卫星等基准外持仓不产生偏离，由现金桶吸收）
-    current_map: dict = {}
-    for p in positions:
-        mv = float(p.get("market_value", 0) or 0)
-        if total_assets > 0:
-            current_map[p.get("code", "")] = mv / total_assets * 100
-
-    # 现金实际占比 = 剩余资金（台账持仓只含证券、不含现金项）
-    held_sum = sum(v for k, v in current_map.items() if k != "CASH")
-    current_map["CASH"] = max(0.0, 100.0 - held_sum)
-
-    lines.append("| 资产 | 目标% | 实际% | 偏离 | 再平衡建议 | 唐奇安20/10 | 估值 |")
-    lines.append("|------|-------|-------|------|------------|-------------|------|")
-
-    order_map = {o.code: o for o in orders}
-    valuation_map = {r["code"]: r for r in ctx.valuations}
-    for asset in ctx.baseline:
-        code = asset.code
-        tgt = target.get(code, 0.0) * 100
-        cur = current_map.get(code, 0.0)
-        dev = tgt - cur
-        order = order_map.get(code)
-        action = ""
-        if order:
-            side = "🟢买" if order.action == "buy" else "🔴卖"
-            action = f"{side} {order.quantity}股"
-        trend = ctx.trends.get(code, {})
-        state = trend.get("state")
-        if state is True:
-            trend_text = "√"
-        elif state is False:
-            trend_text = "×"
-        else:
-            trend_text = "—"
-        if code == "513180":
-            trend_text = f"**{trend_text} ★**"
-        valuation = _valuation_cell(valuation_map.get(code, {}))
-        lines.append(f"| {asset.name}（{code}） | {tgt:.1f}% | {cur:.1f}% | {dev:+.1f}% | {action} | {trend_text} | {valuation} |")
-
-    lines.append("")
-    lines.append("> 唐奇安：√＝规则持有，×＝规则空仓，—＝数据不足或状态未确定；"
-                 "收盘突破此前20日最高价入场、跌破此前10日最低价离场，通道内延续历史状态。")
-    lines.append("> ★ 恒生科技：当前样本中唐奇安20/10改善了持有体验，为重点观察规则。")
-
-    # 基准外持仓提示（未纳入对照表）
-    baseline_codes = {a.code for a in ctx.baseline}
-    extra = [f"{p.get('name', '')}({p.get('code', '')})" for p in alloc["core_positions"]
-             if p.get("code") not in baseline_codes]
-    if extra:
-        lines.append("")
-        lines.append(f"> 基准外持仓：{'、'.join(extra)}（未纳入对照）")
-
-    # 残腿：应卖但持仓不足一手，交易所只收整手——不出必拒卖单，列手动待办
-    for o in plan.odd_lots:
-        lines.append(f"- ⚠️ {o['name']}({o['code']}) 高于目标应减，但持仓 {o['count']} 股不足一手，"
-                     f"无法整手卖出，需手动处理")
-
-    lines.append("")
-    return "\n".join(lines)
-
-
-# ── 建议说明 ──
-
-def _recommendation_section(alloc: dict) -> str:
-    orders = [o for o in alloc["plan"].orders if o.action in ("sell", "buy")]
-    if not orders:
-        return "## 本次建议\n\n无调仓需求，保持当前持仓。"
-    lines = ["## 本次建议", ""]
-    lines.extend(f"- {o.action.upper()} {o.name}({o.code}) 约 {o.qty}份 ≈ {o.amount:,.0f}元（{o.reason}）"
-                 for o in orders)
     return "\n".join(lines)
 
 

@@ -1,4 +1,7 @@
-"""ETF 信号日线：按用途整段选源，不跨数据源拼接同一标的的日线。"""
+"""ETF 信号日线：按用途整段选源，不跨数据源拼接同一标的的日线。
+
+rotation 分支服务跨资产动量（src/etf/rotation.py），online_research 分支服务研究取数。
+"""
 
 import logging
 import math
@@ -16,7 +19,7 @@ logger = logging.getLogger(__name__)
 EASTMONEY = "东财"
 AMAZINGDATA = "AmazingData"
 OHLC = ("open", "high", "low", "close")
-HLC = OHLC[1:]
+
 _SOURCE_ORDER = (AMAZINGDATA, EASTMONEY)
 
 
@@ -76,21 +79,19 @@ def _amazingdata_rows(
 ) -> dict[str, pd.DataFrame]:
     from .fetchers.amazingdata import client, market
 
-    if policy != "observation" and not client.is_configured():
+    if not client.is_configured():
         return {}
     if policy == "rotation":
         decision = pd.Timestamp(end_date)
         begin = (decision - pd.Timedelta(days=90)).date().isoformat()
         end = min(decision - pd.Timedelta(days=1), pd.Timestamp(completed_through)).date().isoformat()
         return market.fetch_etf_hfq_bars(codes, end, begin_date=begin, include_raw_close=True)
-    if policy == "online_research":
-        return market.fetch_etf_hfq_bars(codes, end_date, begin_date="1990-01-01")
-    return market.fetch_etf_hfq_bars(codes, end_date)
+    return market.fetch_etf_hfq_bars(codes, end_date, begin_date="1990-01-01")
 
 
 def etf_daily_bars(
     codes: Sequence[str], end_date: str, *,
-    policy: Literal["rotation", "observation", "online_research"],
+    policy: Literal["rotation", "online_research"],
     completed_through: str | None = None, min_bars: int = 1,
     history_issue: Callable[[pd.DataFrame], str] | None = None,
     with_volume: bool = False,
@@ -99,14 +100,13 @@ def etf_daily_bars(
 
     优先从 AmazingData 批量取数，缺失或校验失败的标的才查东财。
     rotation 返回锚定至决策日前最后一根原始收盘的 close；若包含决策日行，仅供展示补价。
-    observation/online_research 返回截止 completed_through（默认 end_date）的后复权 HLC/OHLC。
+    online_research 返回截止 end_date 的后复权 OHLC。
     history_issue 返回非空原因时，拒绝整段历史并继续尝试下一来源。
     """
     requested = {code: normalize_stock_code(code) for code in codes
                  if is_etf_code(code) or (policy == "rotation" and is_sh_lof_code(code))}
     result: dict[str, EtfBars] = {}
     cutoff = min(end_date, completed_through) if completed_through is not None else end_date
-    fields = HLC if policy == "observation" else OHLC
     log_source_failure = logger.info if policy == "rotation" else logger.warning
     for source in _SOURCE_ORDER:
         pending = {code: bare_code for code, bare_code in requested.items() if code not in result}
@@ -130,7 +130,7 @@ def etf_daily_bars(
                 if policy == "rotation":
                     history = _rotation_history(rows, end_date, cutoff)
                 else:
-                    history = adjusted_etf_history(rows, cutoff, fields=fields, min_bars=min_bars,
+                    history = adjusted_etf_history(rows, cutoff, fields=OHLC, min_bars=min_bars,
                                                    with_volume=with_volume)
                 issue = history_issue(history) if history_issue is not None else ""
                 if issue:

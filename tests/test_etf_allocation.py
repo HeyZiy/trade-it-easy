@@ -15,13 +15,6 @@ def quotes(monkeypatch):
 
 
 def test_weekly_report_uses_market_data_only(monkeypatch):
-    def unexpected(*args, **kwargs):
-        pytest.fail("市场观察周报不应读取账户、配置或单只标的行情")
-
-    for name in ("_raw_snapshot", "_raw_valuation_rows", "_fetch_trend_observations",
-                 "_raw_daily_close", "_raw_realtime_prices"):
-        monkeypatch.setattr(allocation, name, unexpected)
-
     report = allocation.run()
 
     assert report.startswith("# 市场观察周报")
@@ -48,40 +41,3 @@ def test_erp_failure_tolerated_but_market_pe_failure_propagates(monkeypatch):
     monkeypatch.setattr(allocation, "_raw_market_pe", unavailable)
     with pytest.raises(RuntimeError, match="down"):
         allocation.run()
-
-
-def test_missing_prices_daily_first_realtime_only_for_missed(monkeypatch):
-    def _daily(code):
-        return pd.DataFrame({"close": [4.95]}) if code == "510300" else None
-
-    monkeypatch.setattr(allocation, "_raw_daily_close", _daily)
-    seen = []
-
-    def _fake_rt(codes):
-        seen.append(list(codes))
-        return {"510500": 6.1}
-
-    monkeypatch.setattr(allocation, "_raw_realtime_prices", _fake_rt)
-    baseline = [SimpleNamespace(code="510300"), SimpleNamespace(code="510500")]
-    prices = allocation._fetch_missing_prices(baseline, [])
-
-    assert prices == {"510300": 4.95, "510500": 6.1}
-    assert seen == [["510500"]]  # 日线命中的不再触达实时；失败代码收拢一批
-
-
-def test_missing_prices_batch_realtime_fallback(monkeypatch):
-    def _boom(code):
-        raise RuntimeError("日线不可用")
-
-    monkeypatch.setattr(allocation, "_raw_daily_close", _boom)
-    seen = []
-
-    def _fake_rt(codes):
-        seen.append(list(codes))
-        return {"510300": 4.9}
-
-    monkeypatch.setattr(allocation, "_raw_realtime_prices", _fake_rt)
-    prices = allocation._fetch_missing_prices([SimpleNamespace(code="510300")], [])
-
-    assert prices == {"510300": 4.9}
-    assert seen == [["510300"]]  # 全部日线失败 → 一批实时兜底

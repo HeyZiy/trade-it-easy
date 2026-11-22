@@ -69,7 +69,7 @@ def _ranked_rows(*rows) -> list:
 
 def _position(code: str, count: int = 1000, price: float = 10.0,
               account: str = ACCOUNT, name: str = None) -> dict:
-    """妙想同形持仓 dict（plan_rotation 的输入形状）。"""
+    """策略持仓 dict（plan_rotation 的输入形状）。"""
     return {"code": code, "name": name or f"ETF{code}", "count": count,
             "current_price": price, "cost_price": price,
             "market_value": count * price, "account": account}

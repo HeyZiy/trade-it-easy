@@ -15,12 +15,12 @@ def prices(rows, start='2020-01-02'):
 
 class TimingEngineRegressionTests(unittest.TestCase):
     def test_run_keeps_pre_window_trend_history(self):
-        index = pd.bdate_range('2019-01-01', periods=270)
+        index = pd.bdate_range('2019-01-01', periods=300)
         close = np.linspace(10, 20, len(index))
         px = pd.DataFrame({k: close for k in ['open', 'high', 'low', 'close']}, index=index)
         runners = h.strategy_runners(px, None)
         met, _, _ = h.evaluate_window(px.loc[h.base.window_start(px):], runners)
-        self.assertGreater(met.loc['月末MA200', '平均仓位%'], 50)
+        self.assertGreater(met.loc['MA200单线', '平均仓位%'], 50)
 
     def test_grid_starts_half_invested(self):
         res, _ = b.sim_grid(prices([(10, 10, 10, 10)]))

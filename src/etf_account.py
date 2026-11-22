@@ -16,7 +16,7 @@ from src.account_replay import (
     FUND_TRADES, cash_allocation, fund_code, holding_kind, make_event, money,
     net_subscription, positive, replay_edit, snapshot, validate_day,
 )
-from src.account_store import ACCOUNT_PATH, FILENAME, load, read_account, revision
+from src.account_store import ACCOUNT_PATH, FILENAME, load, revision
 from src.account_store import save as _save
 from src.account_valuation import valuation_day
 from src.json_store import locked as _locked
@@ -509,39 +509,6 @@ def account_data(path):
             "history": [{"date": r["date"], "nav": r["nav"] if r["date"] in valid_dates else None,
                          "benchmark_nav": r.get("benchmark_nav") if r["date"] in valid_dates else None}
                         for r in records]}
-
-
-def strategy_snapshot(path=None):
-    """读取同一批次的配置与核心账户事实，返回 (config, snapshot)。
-
-    配置校验失败直接抛出；账户不可用时 snapshot 为 None。
-    与网页写入共用账户锁，仅在读取期间持锁，派生计算在释放锁后完成。
-    """
-    from src.trade_ledger.ledger import LedgerSnapshot
-
-    path = Path(path or ACCOUNT_PATH)
-    with _locked(path):
-        config = portfolio_config.load(portfolio_config.path_for(path))
-        try:
-            state = read_account(path, config)
-        except Exception:
-            logger.warning("投资账户读取失败，跳过持仓对照", exc_info=True)
-            return config, None
-    try:
-        view = snapshot(state, _today().isoformat())
-        if view["strategy_fund_positions"].get("core") or view["strategy_pending_fund_value"]["core"] or any(
-            portfolio_config.grouped(row) for row in config["core"]
-        ):
-            return config, None
-        core = account_advice.strategy_facts(state, view, "core")
-        if core["status"] != "已分配":
-            raise ValueError("多资产配置：" + core["status"])
-        snap = LedgerSnapshot(positions=core["positions"], entry_map={}, cash=core["buying_power"],
-                              invested=core["invested"], total_assets=core["budget"])
-    except Exception:
-        logger.warning("投资账户快照不可用，跳过持仓对照", exc_info=True)
-        snap = None
-    return config, snap
 
 
 def render_summary(path=ACCOUNT_PATH):

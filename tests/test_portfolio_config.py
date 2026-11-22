@@ -157,7 +157,6 @@ def test_grouped_targets_include_fund_once_in_account(account):
     assert [(row["kind"], row["code"]) for row in group["products"]] == [
         ("listed", "512010"), ("listed", "510300"), ("fund", "512010")]
     assert not core["suggestions"]
-    assert wallet.strategy_snapshot(account)[1] is None
 
 def test_fund_only_target_remains_in_config_after_position_is_removed(account):
     active = config.data(account)

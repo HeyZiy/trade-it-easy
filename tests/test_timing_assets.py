@@ -9,6 +9,7 @@ import pandas as pd
 
 from research.studies.timing.assets import ASSETS, AssetSpec, ValuationSource
 from research.studies.timing import scan as l1
+from research.studies.timing import web_rules
 from research.studies.timing import fetch_data as f
 
 
@@ -48,14 +49,14 @@ class TimingAssetTests(unittest.TestCase):
         etf.assert_not_called()
 
     def test_asset_without_pe_runs_price_strategies_only(self):
-        dates = pd.bdate_range('2019-01-01', periods=260)
+        dates = pd.bdate_range('2019-01-01', periods=320)
         close = np.linspace(10, 12, len(dates))
         history = pd.DataFrame({'open': close, 'high': close + .1,
                                 'low': close - .1, 'close': close}, index=dates)
         runners = l1.strategy_runners(history, None)
         met, _, _ = l1.evaluate_window(history.loc[l1.base.window_start(history):], runners)
-        self.assertEqual(set(met.index), {'长拿', '网格', '月末MA200', '唐奇安20/10',
-                                          '唐奇安55/20', l1.ATR_CASE})
+        self.assertEqual(set(met.index),
+                         set(web_rules.FAMILY) - {'PE分位', '放量突破'})
 
 
 if __name__ == '__main__':

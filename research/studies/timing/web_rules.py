@@ -16,8 +16,7 @@ from .common import donchian as dc
 from .common import atr_channel as atr
 from .common import experience
 
-# 272 = 21（RV20 需 20 个日收益）+ 252（分位回看）- 1
-WARMUP = 272
+WARMUP = base.WARMUP   # 272 = 21（RV20 需 20 个日收益）+ 252（分位回看）- 1
 PE_LO, PE_HI = 0.20, 0.80
 
 FAMILY = {
@@ -51,10 +50,7 @@ def index_symbol(index_code):
 
 def window_start(history):
     """最慢规则（RV20 的 252 日分位）预热完成的首个交易日。"""
-    ready = history["close"].rolling(WARMUP, min_periods=WARMUP).count().ge(WARMUP)
-    if not ready.any():
-        raise ValueError(f"行情不足 {WARMUP} 个有效收盘价，无法确定回测窗口")
-    return ready.idxmax()
+    return base.window_start(history)
 
 
 def _exec(history, signal):

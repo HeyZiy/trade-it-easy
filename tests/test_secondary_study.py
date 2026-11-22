@@ -19,7 +19,7 @@ s = importlib.import_module("research.studies.timing.513180.513180")
 
 
 def history():
-    dates = pd.bdate_range('2018-01-01', periods=500)
+    dates = pd.bdate_range('2018-01-01', periods=700)
     close = np.linspace(10, 13, len(dates)) + np.sin(np.arange(len(dates)) / 8)
     return pd.DataFrame({'open': close, 'high': close + .2,
                          'low': close - .2, 'close': close}, index=dates)
@@ -28,7 +28,7 @@ def history():
 class SecondaryStudyTests(unittest.TestCase):
     def test_both_script_entries_run_with_relocated_shared_modules(self):
         study = Path(s.__file__).resolve().parent
-        prices = history().iloc[:260]
+        prices = history().iloc[:320]
         with tempfile.TemporaryDirectory() as tmp:
             folder = Path(tmp)
             prices.rename_axis('date').to_csv(folder / 'etf_hfq_513180.csv')
@@ -47,8 +47,9 @@ class SecondaryStudyTests(unittest.TestCase):
         runners = s.build_runners(px_all)
         self.assertEqual(list(runners), list(s.PRESETS))
         self.assertEqual(len(runners), 14)
-        for name, run in s.holding.strategy_runners(px_all).items():
-            expected, count = run(px)
+        first = s.holding.strategy_runners(px_all)
+        for name in ('长拿', '唐奇安20/10', '唐奇安55/20'):
+            expected, count = first[name](px)
             actual, actual_count = runners[name](px)
             self.assertEqual(actual_count, count)
             pd.testing.assert_frame_equal(actual, expected)

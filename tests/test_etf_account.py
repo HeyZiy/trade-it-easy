@@ -90,30 +90,18 @@ def test_core_replaces_simulation_without_adding_account(account):
 
 def test_missing_initialization_never_uses_old_core_ledger(tmp_path, monkeypatch):
     from dashboard import dashboard_data
-    from src.etf import allocation
-    from src.trade_ledger.ledger import TradeRecord, append_trade
     path = tmp_path / 'data' / 'etf_account.json'
     monkeypatch.setattr('src.etf_account.ACCOUNT_PATH', path)
     old = path.with_name('trade_ledger.jsonl')
-    append_trade(TradeRecord('2025-01-02', '510300', '旧持仓', 'buy', 100, 3), old)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    old.write_text(json.dumps({'date': '2025-01-02', 'code': '510300', 'name': '旧持仓',
+                               'side': 'buy', 'qty': 100, 'price': 3, 'account': 'core'}),
+                   encoding='utf-8')
     before = old.read_bytes()
     view = dashboard_data(tmp_path)['accounts'][0]
     assert view['error'] == '投资账户尚未初始化'
     assert not view['positions']
-    from src import portfolio_config
-    portfolio_config.create(portfolio_config.path_for(path), portfolio_config.example())
-    _, snap = allocation._raw_snapshot()
-    assert snap is None
     assert old.read_bytes() == before
-
-
-def test_legacy_core_writer_cannot_create_simulated_fills(account, monkeypatch):
-    from src.trade_ledger.ledger import LedgerError, TradeRecord, append_trade
-    monkeypatch.setattr('src.etf_account.ACCOUNT_PATH', account)
-    before = account.read_bytes()
-    with pytest.raises(LedgerError, match='网页确认成交'):
-        append_trade(TradeRecord('2025-01-06', '588000', 'ETF', 'buy', 100, 2))
-    assert account.read_bytes() == before
 
 
 def test_suggestions_do_not_trade_and_partial_fill_recalculates(account):
@@ -533,16 +521,6 @@ def test_old_fund_snapshot_is_excluded_from_account_ledger(account):
     assert view["fund_positions"] == {} and "fund" not in view["holdings_by_kind"]
 
 
-def test_core_cron_can_only_recommend_after_initialization(account, monkeypatch):
-    from src.etf import allocation
-    from src.etf.rebalancer import RebalancePlan
-    monkeypatch.setattr('src.etf_account.ACCOUNT_PATH', account)
-    before = account.read_bytes()
-    output = allocation._recommendation_section({'plan': RebalancePlan([], 0, False, '', [])})
-    assert '无调仓需求' in output
-    assert account.read_bytes() == before
-
-
 def test_write_api_requires_auth_and_custom_header(account, monkeypatch):
     import base64
     import dashboard
@@ -723,9 +701,10 @@ def test_budget_change_does_not_move_cash_positions_or_change_nav(account):
 
 def test_observation_holdings_never_enter_etf_account_or_funding(account):
     from dashboard import dashboard_data
-    from src.trade_ledger.ledger import TradeRecord, append_trade
-    append_trade(TradeRecord('2025-01-02', '510300', '观察ETF', 'buy', 100000, 2, account='etf_rotation'),
-                 account.with_name('trade_ledger_etf_rotation.jsonl'))
+    (account.with_name('trade_ledger_etf_rotation.jsonl')).write_text(
+        json.dumps({'date': '2025-01-02', 'code': '510300', 'name': '观察ETF',
+                    'side': 'buy', 'qty': 100000, 'price': 2, 'account': 'etf_rotation'}),
+        encoding='utf-8')
     view = dashboard_data(account.parent.parent)
     wallet = view['accounts'][0]
     rotation = next(s for s in view['strategies'] if s['id'] == 'rotation')
