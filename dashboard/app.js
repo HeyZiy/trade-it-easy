@@ -471,7 +471,7 @@ function render() {
   bar.innerHTML = barHtml;
   bar.hidden = !barHtml;
   const tabs = [{id:'etf',name:'账户总览'},...data.strategies];
-  document.querySelector('#tabs').innerHTML = tabs.map((tab,index) => `${index===0 ? '<span class="nav-label">投资账户</span>' : ''}<button type="button" role="tab" id="tab-${esc(tab.id)}" class="${index===selected ? 'active' : ''}" aria-selected="${index===selected}" aria-controls="account" tabindex="${index===selected ? 0 : -1}" data-index="${index}">${esc(accountName(tab))}</button>`).join('');
+  document.querySelector('#tabs').innerHTML = tabs.map((tab,index) => `<button type="button" role="tab" id="tab-${esc(tab.id)}" class="${index===selected ? 'active' : ''}" aria-selected="${index===selected}" aria-controls="account" tabindex="${index===selected ? 0 : -1}" data-index="${index}">${esc(accountName(tab))}</button>`).join('');
   function activateTab(index) {
     if (selected !== index) entryReceipt = '';
     selected=index; render();
@@ -960,7 +960,7 @@ function openEntry(account, suggestion, strategy='unassigned', options={}) {
       problem = '场外基金缺少单位净值，请先更新估值。';
       field('code').setCustomValidity(problem);
     } else if (fund && field('strategy').value && !allocationIds.has(field('strategy').value)) {
-      problem = '场外基金只能在多资产配置和债券组合之间划转。';
+      problem = `场外基金只能在${data.strategies.filter(row=>allocationIds.has(row.id)).map(row=>row.name).join('和')}之间划转。`;
       field('strategy').setCustomValidity(problem);
     } else if (['sell','assign'].includes(side) && Number(field('qty').value)>held) {
       problem = `份额超过${ownerName || '所选策略'}持仓（${shares} 份）。`;
@@ -1066,7 +1066,8 @@ function allocationRows(account) {
 }
 
 function strategyAllocation(account) {
-  const bars = allocationRows(account).map(row => {
+  const rows = allocationRows(account);
+  const bar = row => {
     const actual = finite(row.actual_pct) ? row.actual_pct * 100 : null;
     const target = finite(row.target) ? row.target * 100 : null;
     const gap = row.deviation;
@@ -1081,7 +1082,14 @@ function strategyAllocation(account) {
       <div class="allocation-track" aria-hidden="true">${actual === null ? '' : `<div class="allocation-fill allocation-${esc(row.id)}" style="width:${Math.max(0, Math.min(100, actual))}%"></div>`}${target === null ? '' : `<i class="allocation-target" style="left:${target}%"></i>`}</div>
       <div class="allocation-row-foot"><span>持仓 ${positions} · 现金 ${money(row.cash)} 元${pending ? ` · 在途 ${money(pending)} 元` : ''}</span><strong class="${emphasized ? 'allocation-gap' : ''}">${deviation}</strong></div>
     </div>`;
-  }).join('');
+  };
+  const layer = (title, hint, groupRows) => `<div class="allocation-layer"><div class="allocation-layer-head"><h3>${title}</h3><span>${hint}</span></div>${groupRows.map(bar).join('')}</div>`;
+  const allocation = rows.filter(row => isAllocation(row));
+  const satellites = rows.filter(row => row.id !== 'unassigned' && !isAllocation(row));
+  const unassigned = rows.filter(row => row.id === 'unassigned');
+  const bars = [layer('配置层', '股债配置两腿，低频复核', allocation),
+    satellites.length ? layer('量化卫星', '小预算试验，错了砍预算', satellites) : '',
+    unassigned.map(bar).join('')].join('');
   return `<section class="section strategy-panel" aria-labelledby="strategy-allocation-title">
     <div class="section-heading"><h2 id="strategy-allocation-title">策略配比</h2>
       <div class="allocation-actions"><button type="button" data-cash-rebalance class="text-button">现金再平衡</button><button type="button" id="budget-settings" class="text-button">编辑配置</button></div>

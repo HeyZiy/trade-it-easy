@@ -50,14 +50,12 @@
 | --- | --- |
 | 行情与 PE 缓存 | `python -m research.studies.timing.fetch_data` |
 | 9 只 ETF 的 26 条规则行与 1/3/5 年多起点 | `python -m research.studies.timing.scan` |
-| 恒生科技的固定参数组 | `python -m research.studies.timing.513180.513180` |
 | 唐奇安参数族 | `python -m research.studies.timing.common.donchian` |
 | ATR 通道参数族 | `python -m research.studies.timing.common.atr_channel` |
 | RSRS 族 | `python -m research.studies.timing.common.rsrs` |
 | 网格中枢频率对照 | `python -m research.studies.timing.experiments.grid_reanchor` |
 | 前置结构诊断（Hurst/方差比/自相关） | `python -m research.studies.timing.experiments.regime_diagnosis` |
 | 创业板回撤诊断 | `python -m research.studies.timing.159915.159915` |
-| Cycle 单 ETF 择时对照 | `python -m research.studies.timing.experiments.cycle_timing` |
 | 唐奇安/ATR/RSRS 主组跨标的汇总 | `python -m research.studies.timing.experiments.compare_timing` |
 
 [标的配置](assets.py)定义批量复现的覆盖范围。

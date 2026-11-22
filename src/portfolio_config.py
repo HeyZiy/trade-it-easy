@@ -9,7 +9,7 @@ import re
 
 from src.json_store import locked, save
 
-STRATEGY_NAMES = {"core": "多资产配置", "rotation": "跨资产动量", "quality": "质量动量", "bond": "债券组合"}
+STRATEGY_NAMES = {"core": "权益组合", "rotation": "跨资产动量", "quality": "质量动量", "bond": "固收组合"}
 ALLOCATION_NAMES = {key: STRATEGY_NAMES[key] for key in ("core", "bond")}
 
 FILENAME = "etf_config.json"

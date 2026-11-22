@@ -113,7 +113,7 @@ def _report_files(root) -> list:
     """最近报告清单：按前缀取最新一份，供总览与 /report/ 白名单共用。"""
     report_dir = root / "reports"
     reports = []
-    for prefix, label in (("etf_weekly", "多资产配置"),
+    for prefix, label in (("etf_weekly", STRATEGY_NAMES["core"]),
                           ("etf_rotation_advice", "跨资产动量"), ("quality_pool_advice", "质量动量")):
         files = sorted(report_dir.glob(prefix + "_????????.md"), reverse=True)
         if files:

@@ -3,7 +3,7 @@
 9 只 ETF、26 条固定规则行（PE 分位、放量突破需要额外数据）、同一预热起点（第 272 个有效收盘）
 的全期与每月多起点结果。所有数字来自
 [`data/timing_reports/archive/`](../../../data/timing_reports/archive/) 的归档 CSV；
-逐条规则的完整指标见 [level1/summary.md](../../../data/timing_reports/archive/level1/summary.md)。
+逐条规则的完整指标见 [level1/metrics_all.csv](../../../data/timing_reports/archive/level1/metrics_all.csv)。
 
 ## 一、筛选口径
 
