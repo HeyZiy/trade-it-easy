@@ -17,7 +17,7 @@ from dashboard import dashboard_data
 def test_report_retains_readable_formatting_without_active_html(tmp_path):
     reports = tmp_path / "reports"
     reports.mkdir()
-    name = "etf_weekly_20250102.md"
+    name = "quality_pool_advice_20250102.md"
     (reports / name).write_text(
         "# 周报\n\n## 决策\n\n**继续持有**\n\n"
         "| 标的 | 评分 |\n| --- | --- |\n| ETF | 1 |\n\n"

@@ -19,7 +19,7 @@ const HOLDING_NAMES = {etf:'ETF', stock:'股票', other:'其他持仓', fund:'�
 const ASSET_NAMES = {...HOLDING_NAMES, pending:'申购在途', cash:'现金'};
 const isFundTrade = side => typeof side === 'string' && side.startsWith('fund_');
 const fundShares = value => finite(value) ? value.toLocaleString('zh-CN', {maximumFractionDigits:6}) : '—';
-const REPORT_PREFIX = {core:'etf_weekly_', rotation:'etf_rotation_advice_', quality:'quality_pool_advice_'};
+const REPORT_PREFIX = {rotation:'etf_rotation_advice_', quality:'quality_pool_advice_'};
 const ALLOCATION_TOLERANCE = 0.01;
 const allocationToleranceNote = `${ALLOCATION_TOLERANCE*100} 个百分点内视为配平`;
 const isAllocationBalanced = deviation => Math.abs(deviation) <= ALLOCATION_TOLERANCE + Number.EPSILON;
@@ -533,7 +533,7 @@ async function selectReport(file) {
   reportRequest?.abort();
   selectedReport=file;
   const report=data.reports.find(row => row.file===file);
-  document.querySelector('#report-kind').textContent=file.startsWith(REPORT_PREFIX.core) ? '市场观察' : '策略日报';
+  document.querySelector('#report-kind').textContent='策略日报';
   document.querySelector('#report-name').textContent=report.name;
   document.querySelector('#report-date').textContent=reportDate(report.date);
   document.querySelector('#report-reader').classList.remove('expanded','overflowing');

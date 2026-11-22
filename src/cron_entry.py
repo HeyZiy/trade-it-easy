@@ -3,12 +3,12 @@
 cron 入口装具 — 交易日政策与硬退出的单点
 ===================================
 
-三个 cron 入口（quality_pool / etf_rotation / etf_observe，
+两个 cron 入口（quality_pool / etf_rotation，
 另 portfolio_report 仅用 hard_exit）共用的运行政策件：
 
 - add_standard_flags：四个标准旗标（--debug/--no-notify/--dry-run/--force）
   与帮助文案单点；质量池入口的子命令旗标是真差异，不用此件；
-  （三个标准入口 quality_pool / etf_rotation / etf_observe 共用此件；
+  （两个标准入口 quality_pool / etf_rotation 共用此件；
   portfolio_report 仅用 hard_exit）
 - resolve_run_gate：交易日闸门与「非交易日 --force 一律只读」推导——
   非交易日不可能有真实成交，硬记账就是假日假账；政策只在装具改一处，
@@ -32,7 +32,7 @@ from src.trading_calendar import is_trading_day
 
 
 def add_standard_flags(parser: argparse.ArgumentParser) -> None:
-    """ETF 侧三个入口共用的标准旗标（帮助文案单点）。"""
+    """ETF 侧两个入口共用的标准旗标（帮助文案单点）。"""
     parser.add_argument('--debug', action='store_true', help='启用调试模式')
     parser.add_argument('--no-notify', action='store_true', help='不发送推送通知')
     parser.add_argument('--dry-run', action='store_true', help='只检测不记账（调试用）')

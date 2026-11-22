@@ -4,7 +4,7 @@
 A 股交易日历（公共模块）
 ===================================
 
-提供交易日判断与区间查询，供各入口脚本（etf_observe / quality_pool 等）复用。
+提供交易日判断与区间查询，供各入口脚本（etf_rotation / quality_pool 等）复用。
 
 数据来源：akshare `tool_trade_date_hist_sina()`（新浪交易日历）。
 设计：

@@ -58,18 +58,3 @@ REBALANCE_RELATIVE_THRESHOLD = 0.25   # 单类相对偏离复核带
 #   A>4000 元后费率恒为 1bp。场外基金申购费 0，当前基准各基金腿复核带缺口均 >400 元，门不绑定。
 #   作用：微仓（w≤2%）破带后缺口够 400 元即可补回，修复平 2pp 造成的买方永久冻结。
 MIN_TRADE_AMOUNT = 400.0              # 缺口低于此值不出指令（碎额噪声过滤）
-
-
-# ── 全市场 PE 分位 → 估值档位（唯一 producer：src/etf/allocation 市场宏观节展示）。
-#    只吃市场级分位（amazing_factors.get_market_pe）；无标的级分位口径。
-def pe_level(pe_pct: float) -> str:
-    """全市场 PE 近 5 年分位(%) → 五档估值水平标签。"""
-    if pe_pct < 20:
-        return "极度低估"
-    if pe_pct < 40:
-        return "低估"
-    if pe_pct < 60:
-        return "合理"
-    if pe_pct < 80:
-        return "偏贵"
-    return "高估"
