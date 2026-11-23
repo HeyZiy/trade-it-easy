@@ -41,5 +41,5 @@
 #    股票和 ETF 优先用 AmazingData，ETF 缺价时依次改用东财、新浪；
 #    场外净值取估值日或之前最新已公布值，晚间未公布沿用前一日净值、不阻塞当日成绩；
 #    仅收盘价/净值完全缺失才标待估值（次日晚回补），成绩曲线只取完整记录；
-#    不交易、不推送、不生成日报（成绩看板在 dashboard）──
+#    估值与定投补记后，生成权益/固收组合再平衡建议，有操作才保存并推送报告──
 30 18 * * 1-5 cd /root/trade-it-easy && flock -n /tmp/portfolio-report.lock /root/miniconda/envs/rt/bin/python portfolio_report.py > /dev/null 2>> logs/cron_error.log

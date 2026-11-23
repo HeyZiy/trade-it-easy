@@ -123,6 +123,7 @@ def test_evening_scheduled_report_collects_same_day(account, monkeypatch):
     days = [date.fromisoformat(PRICE_DAY), TODAY]
     monkeypatch.setattr(entry, "get_trading_dates", lambda start, end: [d for d in days if start <= d <= end])
     monkeypatch.setattr("src.etf_account.ACCOUNT_PATH", account)
+    monkeypatch.setattr(entry.allocation_report, "publish", lambda *args, **kwargs: True)
     calls = []
 
     def fetch(self, codes, day):

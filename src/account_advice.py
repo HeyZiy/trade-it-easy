@@ -146,6 +146,32 @@ def strategy_facts(state, view, key):
             "deviation": round(assets - budget, 2) if budget is not None and assets is not None else None, "status": status}
 
 
+def allocation_view(state, view, key, *, names=None):
+    """配置组合的金额偏离及建议，供看板和收盘报告共用。"""
+    from src.etf.rebalancer import allocation_deviation
+
+    row = strategy_facts(state, view, key)
+    row.update(fund_positions=view["strategy_fund_positions"].get(key, {}),
+               fund_pending={order_id: order for order_id, order in view["fund_pending"].items()
+                             if order["strategy"] == key},
+               pending_fund_value=view["strategy_pending_fund_value"][key],
+               allocation_budget=row["budget"], allocation_assets=row["assets"])
+    assets = state["_config"].get(key, ())
+    groups = _allocation_groups(assets, row, view["prices"], names or {})
+    deviations = {}
+    for group in groups:
+        deviation = allocation_deviation(group["market_value"], group["weight"], row["budget"])
+        deviations[group["id"]] = deviation
+        group.update(target_value=deviation.target_value, gap_amount=deviation.gap,
+                     absolute_deviation=deviation.absolute, relative_deviation=deviation.relative,
+                     absolute_review=deviation.absolute_review, relative_review=deviation.relative_review,
+                     trade_eligible=deviation.trade_eligible)
+    row["allocation_groups"] = groups
+    if assets and row["status"] == "已分配" and row["budget"] > 0:
+        row["suggestions"] = suggestions(state, view, view["valuation"]["date"], deviations, row)
+    return row
+
+
 def strategy_history(state, key, today):
     """策略收益曲线：账户成绩有效且策略指纹（含划转）一致时才展示当日净值。"""
     from src.account_store import revision
@@ -173,7 +199,8 @@ def strategy_views(state, view, *, today, names=None):
     ) else view
     result = []
     for key in portfolio_config.STRATEGY_NAMES:
-        row = strategy_facts(state, view, key)
+        row = (allocation_view(state, view, key, names=names) if key in portfolio_config.ALLOCATION_NAMES
+               else strategy_facts(state, view, key))
         row["history"] = strategy_history(state, key, today.isoformat())
         if key == "rotation":
             from src.etf.rotation_advice import advice
@@ -187,27 +214,6 @@ def strategy_views(state, view, *, today, names=None):
                 state.get("quality_signal"), strategy_facts(state, signal_view, key), today,
                 dismissed=state["dismissed"])
             row["signal_date"] = state.get("quality_signal", {}).get("date")
-        if key in portfolio_config.ALLOCATION_NAMES:
-            from src.etf.rebalancer import allocation_deviation
-
-            row.update(fund_positions=view["strategy_fund_positions"].get(key, {}),
-                       fund_pending={order_id: order for order_id, order in view["fund_pending"].items()
-                                     if order["strategy"] == key},
-                       pending_fund_value=view["strategy_pending_fund_value"][key],
-                       allocation_budget=row["budget"], allocation_assets=row["assets"])
-            assets = state["_config"].get(key, ())
-            groups = _allocation_groups(assets, row, view["prices"], names or {})
-            deviations = {}
-            for group in groups:
-                deviation = allocation_deviation(group["market_value"], group["weight"], row["budget"])
-                deviations[group["id"]] = deviation
-                group.update(target_value=deviation.target_value, gap_amount=deviation.gap,
-                             absolute_deviation=deviation.absolute, relative_deviation=deviation.relative,
-                             absolute_review=deviation.absolute_review, relative_review=deviation.relative_review,
-                             trade_eligible=deviation.trade_eligible)
-            row["allocation_groups"] = groups
-            if assets and row["status"] == "已分配" and row["budget"] > 0:
-                row["suggestions"] = suggestions(state, view, view["valuation"]["date"], deviations, row)
         result.append(row)
     return result
 

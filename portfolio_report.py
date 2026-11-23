@@ -1,4 +1,4 @@
-"""采集投资账户收盘估值，默认回补最近五个交易日。"""
+"""采集投资账户收盘估值，回补历史记录并生成再平衡建议。"""
 
 import argparse
 from collections.abc import Callable
@@ -6,6 +6,7 @@ from datetime import date, datetime, timedelta, timezone
 import logging
 import math
 
+from src import account_valuation, allocation_report
 from src.account_store import revision
 from src.config import setup_env
 from src.cron_entry import hard_exit
@@ -87,7 +88,7 @@ def _backfill_notes(healed: list[str], lingering: list[str]) -> list[str]:
     return notes
 
 
-def run(*, asof=None, dry_run=False, now=None, backfill=False):
+def run(*, asof=None, dry_run=False, now=None, backfill=False, no_notify=False):
     now = now or datetime.now(SHANGHAI)
     today = now.astimezone(SHANGHAI).date()
     latest = closed_date(now)
@@ -166,21 +167,46 @@ def run(*, asof=None, dry_run=False, now=None, backfill=False):
         errors += 1
     if notes:
         sections += ["## 本次回补（目标日之前）", "", *notes]
+    after_close = now.astimezone(SHANGHAI).time() >= account_valuation.VALUATION_CUTOFF
+    if not errors and asof is None and target == today and after_close:
+        try:
+            if not dry_run:
+                state = load_core(path)
+            day_key = target.isoformat()
+            if _current_record(state, _record(state, day_key)):
+                if dry_run:
+                    known = account_valuation.closing_prices(state, day_key)
+                    needed = account_valuation.valuation_codes(state, target) - known.keys()
+                    if needed:
+                        fetched = feed.close_prices(sorted(needed), day_key)
+                        account_valuation.merge_closing_prices(state, day_key, needed, fetched)
+                actions = allocation_report.allocation_actions(state, target)
+                if actions is not None:
+                    if dry_run:
+                        sections.append(allocation_report.render_report(day_key, actions, {})
+                                        if actions else "权益组合与固收组合暂无再平衡建议。")
+                    elif not allocation_report.publish(day_key, actions, no_notify=no_notify):
+                        errors += 1
+            else:
+                logger.warning("收盘记录待重新估值，跳过再平衡报告")
+        except Exception:
+            logger.exception("收盘再平衡报告生成失败")
+            errors += 1
     if dry_run:
         sections.append("试运行：未保存收盘记录。")
     return "\n\n".join(sections), errors
 
 
 def main():
-    parser = argparse.ArgumentParser(description="采集投资账户收盘估值")
+    parser = argparse.ArgumentParser(description="采集投资账户收盘估值并生成再平衡建议")
     parser.add_argument("--date", help="补采已收盘交易日，YYYY-MM-DD（只采指定日）")
     parser.add_argument("--dry-run", action="store_true", help="仅展示，不保存记录")
+    parser.add_argument("--no-notify", action="store_true", help="有再平衡建议时只保存报告，不推送")
     args = parser.parse_args()
     setup_env()
     setup_logging(log_prefix="portfolio_report")
-    report, errors = run(asof=args.date, dry_run=args.dry_run, backfill=args.date is None)
+    report, errors = run(asof=args.date, dry_run=args.dry_run, backfill=args.date is None, no_notify=args.no_notify)
     if args.dry_run:
-        # 预览采集结果；正式运行静默采集——成绩看板在 dashboard，不再生成收盘日报。
         import io
         import sys
         sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding="utf-8")
