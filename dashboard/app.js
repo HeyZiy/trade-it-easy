@@ -1150,7 +1150,7 @@ function strategyAllocation(account) {
     unassigned.map(bar).join('')].join('');
   return `<section class="section strategy-panel" aria-labelledby="strategy-allocation-title">
     <div class="section-heading"><h2 id="strategy-allocation-title">策略配比</h2>
-      <div class="allocation-actions"><button type="button" data-cash-rebalance class="text-button">现金再平衡</button><button type="button" id="budget-settings" class="text-button">编辑配置</button></div>
+      <div class="allocation-actions"><button type="button" data-cash-rebalance class="text-button">现金再平衡</button><button type="button" id="budget-settings" class="text-button">编辑配置</button><a class="text-button" href="/api/etf/export">导出配置与持仓</a></div>
     </div><div class="strategy-allocation-rows">${bars}</div></section>`;
 }
 

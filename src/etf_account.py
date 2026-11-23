@@ -496,12 +496,31 @@ def _asset_allocation(config, view, names):
             for key, amounts in values.items() if amounts}
 
 
+def valued_holdings(state, day, price_day):
+    """读取同一账户快照的持仓、估值、产品名称和资产分类。"""
+    view = account_valuation.valuation_view(state, day, price_day)
+    for row in view["positions"]:
+        row["kind"] = holding_kind(row["code"])
+    fund_codes = {event["code"] for event in state["events"] if event["side"] in FUND_TRADES}
+    fund_codes.update(code for asset in portfolio_config.allocation_rows(state["_config"])
+                      for code in asset.get("fund_codes", []))
+    names = fund_names.names_for(fund_codes)
+    strategy_funds = [row for positions in view["strategy_fund_positions"].values()
+                      for row in positions.values()]
+    for row in [*view["fund_positions"].values(), *strategy_funds, *view["fund_pending"].values()]:
+        if row["code"] in names:
+            row["name"] = names[row["code"]]
+    view["asset_allocation"] = _asset_allocation(state["_config"], view, names)
+    view["fund_names"] = {code: names.get(code) for code in sorted(fund_codes)}
+    return view, names
+
+
 def account_data(path):
     state = load(path)
     day = _today()
     today = day.isoformat()
     price_day = valuation_day(day, now=_now())
-    view = account_valuation.valuation_view(state, day, price_day)
+    view, names = valued_holdings(state, day, price_day)
     records, valid = account_valuation.valid_records(state, today)
     valid_dates = {r["date"] for r in valid}
     latest = valid[-1] if valid else None
@@ -510,7 +529,6 @@ def account_data(path):
         warnings.append("最新成绩待重新估值，曲线保留最近有效数据。")
     grouped_values = {"etf": [], "stock": [], "other": []}
     for row in view["positions"]:
-        row["kind"] = holding_kind(row["code"])
         grouped_values[row["kind"]].append(row["market_value"])
     funds = view["fund_positions"]
     if funds:
@@ -520,28 +538,16 @@ def account_data(path):
     net_contributed = round(state["initial"]["equity"] + math.fsum(
         event["amount"] if event["side"] == "deposit" else -event["amount"]
         for event in state["events"] if event["date"] <= today and event["side"] in {"deposit", "withdraw"}), 2)
-    fund_codes = {event["code"] for event in state["events"] if event["side"] in FUND_TRADES}
-    fund_codes.update(code for asset in portfolio_config.allocation_rows(state["_config"])
-                      for code in asset.get("fund_codes", []))
-    names = fund_names.names_for(fund_codes)
-    strategy_funds = [row for positions in view["strategy_fund_positions"].values()
-                      for row in positions.values()]
-    for row in [*funds.values(), *strategy_funds, *view["fund_pending"].values()]:
-        if row["code"] in names:
-            row["name"] = names[row["code"]]
-    asset_allocation = _asset_allocation(state["_config"], view, names)
     strategies = strategy_views(state, view, today=day, names=names)
     fund_subscription_fees = subscription_fees(state)
     benchmark = account_benchmarks.benchmark_navs(state, "etf", state["initial"]["date"])
     return {"id": "etf", "name": "投资账户", "can_record": True, **view,
             "holdings_by_kind": holdings_by_kind, "net_contributed": net_contributed,
-            "asset_allocation": asset_allocation,
             "fund_subscription_fee": state["_config"].get("fund_subscription_fee"),
             "fund_subscription_fees": fund_subscription_fees,
             "trade_fees": state["_config"].get("trade_fees", {}),
             "trade_fee_code_prefixes": {"stock": A_STOCK_PREFIXES, "etf": FUND_FEE_PREFIXES},
             "missing_security_names": _missing_security_names(state, view["positions"], strategies),
-            "fund_names": {code: names.get(code) for code in sorted(fund_codes)},
             "performance": latest, "trades": [{**{k: v for k, v in e.items() if k != "request"},
                          **({"name": names.get(e["code"], f"场外基金 {e['code']}")
                              if e["side"] in FUND_TRADES or e.get("kind") == "fund"

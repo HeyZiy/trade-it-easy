@@ -1,7 +1,9 @@
 import base64
+from datetime import datetime
 import gzip
 import json
 from http.server import ThreadingHTTPServer
+from io import BytesIO
 from pathlib import Path
 import threading
 import urllib.error
@@ -102,6 +104,88 @@ def serve():
     return server
 
 
+def test_portfolio_export_download_uses_current_config_and_reconciles_holdings(tmp_path, monkeypatch):
+    from openpyxl import load_workbook
+
+    from data_provider import fund_names
+    from src import portfolio_config
+    from src.etf_account import collect_close, initialize, load, record_event, revision
+
+    class ExportTime(datetime):
+        @classmethod
+        def now(cls, tz):
+            return cls(2025, 1, 7, 20, tzinfo=tz)
+
+    path = tmp_path / "data" / "etf_account.json"
+    initialize(path, asof="2025-01-02", cash=400, targets={"510300": 0.5},
+               budgets={"core": 0.6, "rotation": 0.2}, cash_allocations={"core": 250, "rotation": 50},
+               positions=[dict(code="510300", count=100, price=3, strategy="core"),
+                          dict(code="510300", count=200, price=3, strategy="rotation")])
+    config_path = portfolio_config.path_for(path)
+    config = portfolio_config.load(config_path)
+    target = next(row for row in config["core"] if row["code"] == "510300")
+    old_revision = portfolio_config.revision(config)
+    target.update(weight=0.7, fund_codes=["000001", "000002"], label="=组合标签")
+    portfolio_config.save_config(config_path, config, old_revision)
+    record_event(path, {"request_id": "fund-buy", "revision": revision(load(path)),
+                        "date": "2025-01-06", "side": "fund_buy", "code": "000001",
+                        "qty": 80.123456, "amount": 100, "nav": 1.25, "nav_date": "2025-01-06"})
+    record_event(path, {"request_id": "fund-pending", "revision": revision(load(path)),
+                        "date": "2025-01-07", "side": "fund_pending", "code": "000002",
+                        "amount": 25, "nav_date": "2025-01-07", "subscription_fee": {"kind": "none", "value": 0}})
+    collect_close(path, "2025-01-07", lambda codes, _: {code: 3.5 for code in codes})
+    before = path.read_bytes(), config_path.read_bytes()
+    monkeypatch.setattr(fund_names, "names_for", lambda codes: {code: f"基金{code}" for code in codes})
+    monkeypatch.setattr(dashboard, "ROOT", tmp_path)
+    monkeypatch.setattr(dashboard, "datetime", ExportTime)
+    monkeypatch.setenv("TRADE_DASHBOARD_PASSWORD", "secret")
+    monkeypatch.delenv("TRADE_DASHBOARD_TAILSCALE_LOGIN", raising=False)
+    server = serve()
+    try:
+        endpoint = f"http://127.0.0.1:{server.server_port}/api/etf/export"
+        request = urllib.request.Request(endpoint, headers={"Authorization": basic("trader", "secret")})
+        with urllib.request.urlopen(request) as response:
+            assert response.headers["Content-Disposition"] == 'attachment; filename="portfolio-20250107-200000.xlsx"'
+            assert response.headers["Cache-Control"] == "no-store"
+            book = load_workbook(BytesIO(response.read()))
+    finally:
+        server.shutdown()
+        server.server_close()
+
+    summary = dict(book["账户摘要"].values)
+    assert summary["持仓日期"] == summary["场内估值日期"] == "2025-01-07"
+    assert summary["账面现金 / 元"] == 275 and summary["总资产 / 元"] == 1450.15
+    assert summary["待确认申购 / 元"] == 25
+    holdings = book["账户持仓"]
+    assert holdings["A2"].value == "000001" and holdings["A2"].data_type == "s"
+    assert [holdings[f"{col}2"].value for col in "EFGH"] == [80.123456, 1.25, "2025-01-06", 100.15]
+    assert [holdings[f"{col}3"].value for col in "AEGH"] == ["510300", 300, "2025-01-07", 1050]
+    strategy_rows = list(book["策略持仓"].values)[1:]
+    assert {(row[0], row[5]) for row in strategy_rows if row[1] == "510300"} == {("权益组合", 100), ("跨资产动量", 200)}
+    target_sheet = book["组合配置"]
+    assert target_sheet["C2"].value == "=组合标签" and target_sheet["C2"].data_type == "s"
+    assert [target_sheet[f"{col}2"].value for col in "FGHI"] == ["000001、000002", 0.7, 0.42, 475.15]
+    assert list(book["待确认申购"].values)[1] == ("权益组合", "000002", "基金000002", "2025-01-07", "2025-01-07", 25)
+    assert (path.read_bytes(), config_path.read_bytes()) == before
+
+
+def test_portfolio_export_leaves_missing_valuations_blank(tmp_path):
+    from openpyxl import load_workbook
+
+    from src.etf_account import initialize
+    from src.portfolio_export import export_workbook
+    from src.trading_calendar import SHANGHAI
+
+    path = tmp_path / "etf_account.json"
+    initialize(path, asof="2025-01-02", cash=100,
+               positions=[dict(code="510300", count=100, price=3, strategy="core")])
+    book = load_workbook(BytesIO(export_workbook(path, now=datetime(2025, 1, 7, 10, tzinfo=SHANGHAI))))
+    summary = dict(book["账户摘要"].values)
+    assert summary["总资产 / 元"] is None and summary["账面现金 / 元"] == 100
+    row = list(book["账户持仓"].values)[1]
+    assert row[4:] == (100, None, None, None, None, "待估值")
+
+
 def test_dashboard_bulk_fills_missing_listed_names(tmp_path, monkeypatch):
     from data_provider import bars, security_names
     from data_provider.fetchers.amazingdata import basics
@@ -175,7 +259,8 @@ def test_handler_requires_auth_before_routing(monkeypatch):
     server = serve()
     try:
         base = f"http://127.0.0.1:{server.server_port}"
-        for path in ("/api/overview", "/", "/report/nope.md", "/api/report/nope.md", "/assets/app.js", "/unknown"):
+        for path in ("/api/overview", "/api/etf/export", "/", "/report/nope.md", "/api/report/nope.md",
+                     "/assets/app.js", "/unknown"):
             with pytest.raises(urllib.error.HTTPError) as denied:
                 urllib.request.urlopen(base + path)
             assert denied.value.code == 401

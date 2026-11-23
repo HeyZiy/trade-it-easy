@@ -59,7 +59,7 @@ def suggestions(state, view, price_day, deviations, strategy):
     return result
 
 
-def _allocation_groups(assets, strategy, prices, names):
+def allocation_groups(assets, strategy, prices, names):
     ungrouped_listed = {row["code"]: row for row in strategy["positions"]}
     ungrouped_funds = dict(strategy["fund_positions"])
     for order in strategy["fund_pending"].values():
@@ -157,7 +157,7 @@ def allocation_view(state, view, key, *, names=None):
                pending_fund_value=view["strategy_pending_fund_value"][key],
                allocation_budget=row["budget"], allocation_assets=row["assets"])
     assets = state["_config"].get(key, ())
-    groups = _allocation_groups(assets, row, view["prices"], names or {})
+    groups = allocation_groups(assets, row, view["prices"], names or {})
     deviations = {}
     for group in groups:
         deviation = allocation_deviation(group["market_value"], group["weight"], row["budget"])

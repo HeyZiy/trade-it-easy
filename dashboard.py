@@ -266,6 +266,24 @@ class Handler(BaseHTTPRequestHandler):
                                                             "/api/etf/fund/names", "/api/etf/security/names"} else {"ok": True},
                                 ensure_ascii=False).encode(), "application/json; charset=utf-8")
 
+    def download_portfolio(self):
+        from src.portfolio_export import export_workbook
+
+        now = datetime.now(SHANGHAI)
+        try:
+            body = export_workbook(ROOT / "data" / ETF_FILENAME, now=now)
+        except FileNotFoundError:
+            self.respond("投资账户尚未初始化。".encode(), "text/plain; charset=utf-8", status=404)
+            return
+        except Exception:
+            logging.exception("导出投资账户失败")
+            self.respond("无法导出配置和持仓，请检查账户数据后重试。".encode(),
+                         "text/plain; charset=utf-8", status=500)
+            return
+        filename = f"portfolio-{now:%Y%m%d-%H%M%S}.xlsx"
+        self.respond(body, "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                     headers={"Content-Disposition": f'attachment; filename="{filename}"'})
+
     def do_GET(self):
         if not self.check_access():
             return
@@ -279,6 +297,8 @@ class Handler(BaseHTTPRequestHandler):
                              "application/json; charset=utf-8", status=400)
                 return
             self.respond(json.dumps(result, ensure_ascii=False).encode(), "application/json; charset=utf-8")
+        elif self.path == "/api/etf/export":
+            self.download_portfolio()
         elif self.path == "/":
             self.respond((APP_ROOT / "dashboard" / "index.html").read_bytes(), "text/html; charset=utf-8")
         elif self.path == TIMING_URL or re.fullmatch(TIMING_URL + r"/[0-9]{6}", self.path):
