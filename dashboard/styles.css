@@ -102,17 +102,19 @@ h2 { font-size: 17px; font-weight: 650; letter-spacing: .01em; margin: 0; }
 .reconciliation-top strong { font-family: "DIN Alternate", "Avenir Next", sans-serif; font-size: 34px; letter-spacing: -.025em; }
 .reconciliation-top .is-gain { color: var(--gain); }
 .reconciliation-top .is-loss { color: var(--loss); }
-#account-cash-toggle { margin-left: -6px; padding: 3px 6px; text-align: left; }
+#account-cash-toggle { display: block; padding: 0; border: 0; background: none; text-align: left; }
+#account-cash-toggle:hover b { text-decoration: underline; text-underline-offset: 4px; }
 .reconciliation-cash { display: grid; grid-template-columns: repeat(auto-fit, minmax(108px,1fr)); gap: 10px; margin: 12px 0 0; }
 .reconciliation-cash dt { color: var(--muted); font-size: 12px; }
 .reconciliation-cash dd { margin: 3px 0 0; font-variant-numeric: tabular-nums; }
 .asset-composition { margin-top: 18px; }
 .asset-strip { display: flex; height: 7px; border-radius: 6px; overflow: hidden; }
 .asset-strip i + i { border-left: 1px solid white; }
-.asset-etf { background: #477d69; }
-.asset-stock { background: #477d9f; }
-.asset-fund { background: #886e96; }
-.asset-other { background: #8a938b; }
+.asset-equity { background: #477d69; }
+.asset-bond { background: #477d9f; }
+.asset-commodity { background: #b4894d; }
+.asset-mixed { background: #886e96; }
+.asset-unknown { background: #8a938b; }
 .asset-pending { background: #c49859; }
 .asset-cash { background: #bbccbc; }
 .asset-labels { display: flex; flex-wrap: wrap; gap: 2px 10px; margin-top: 6px; font-size: 12px; }

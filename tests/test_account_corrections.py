@@ -23,6 +23,48 @@ def payload(path, side, **fields):
             'date': '2025-01-06', 'side': side, 'strategy': 'core', **fields}
 
 
+def test_asset_allocation_aggregates_products_and_keeps_pending_separate(path, monkeypatch):
+    monkeypatch.setattr(account.fund_names, "names_for", lambda codes: {
+        "001821": "兴全天添益货币B", "588000": "测试混合基金"})
+    account.record_event(path, payload(path, "fund_buy", code="001821", qty=100, amount=100,
+                                       nav=1, nav_date="2025-01-06"))
+    account.record_event(path, payload(path, "fund_buy", code="588000", qty=100, amount=100,
+                                       nav=1, nav_date="2025-01-06"))
+    account.record_event(path, payload(path, "fund_pending", code="000051", amount=10,
+                                       nav_date="2025-01-06", subscription_fee={"kind": "none", "value": 0}))
+    before = path.read_bytes()
+    view = account.account_data(path)
+    assert view["asset_allocation"] == {"equity": 2000, "cash": 890, "mixed": 100}
+    assert view["positions"][0]["asset_class"] == "equity"
+    assert view["fund_positions"]["588000"]["asset_class"] == "mixed"
+    assert view["fund_positions"]["001821"]["asset_class"] == "cash"
+    assert sum(view["asset_allocation"].values()) + view["pending_fund_value"] == view["equity"]
+    assert path.read_bytes() == before
+
+
+def test_asset_allocation_uses_product_class_and_preserves_missing_values():
+    config = {"core": [{"code": "518880", "asset_type": "gold", "etf_codes": ["159934"],
+                         "fund_codes": ["000001"]}],
+              "bond": [{"code": "FUND:110020", "asset_type": "equity", "fund_codes": ["110020"]}],
+              "rotation": {"pool": [{"code": "511010", "group": "利率"}]}}
+    view = {"cash": 50, "positions": [
+        {"code": "159934", "kind": "etf", "market_value": 100},
+        {"code": "511010", "kind": "etf", "market_value": 200},
+        {"code": "600519", "kind": "stock", "market_value": 300},
+        {"code": "999999", "kind": "other", "market_value": 40}],
+        "fund_positions": {code: {"code": code, "market_value": value} for code, value in
+                           [("000001", 10), ("110020", 20), ("001821", 30), ("111111", None)]}}
+    names = {"001821": "测试货币基金", "111111": "测试债券基金"}
+    assert account._asset_allocation(config, view, names) == {
+        "equity": 320, "bond": None, "commodity": 110, "cash": 80, "unknown": 40}
+    config["bond"] = []
+    names["110020"] = "易方达沪深300ETF联接A"
+    assert account._asset_allocation(config, view, names)["equity"] == 320
+    config["bond"].append({"code": "518880", "asset_type": "bond", "etf_codes": ["159934"]})
+    account._asset_allocation(config, view, names)
+    assert view["positions"][0]["asset_class"] == "unknown"
+
+
 def test_same_day_deposit_keeps_known_prices_and_profit(path):
     account.collect_close(path, '2025-01-06', lambda *_: {'588000': 3})
     before = account.account_data(path)
@@ -327,6 +369,12 @@ def test_correction_api_context_and_edit_are_authenticated_and_idempotent(path, 
         assert post('/api/etf/event/edit', change) == {'ok': True}
         assert post('/api/etf/event/edit', change) == {'ok': True}
         assert account.account_data(api_path)['cash'] == 1200
+        classified = {'revision': account.account_data(api_path)['config_revision'],
+                      'kind': 'listed', 'code': '588000', 'asset_class': 'commodity'}
+        ledger = api_path.read_bytes()
+        assert post('/api/etf/asset/classify', classified) == {'ok': True}
+        assert account.account_data(api_path)['positions'][0]['asset_class'] == 'commodity'
+        assert api_path.read_bytes() == ledger
     finally:
         server.shutdown()
         server.server_close()

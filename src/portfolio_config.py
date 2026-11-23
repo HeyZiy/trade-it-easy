@@ -11,6 +11,7 @@ from src.json_store import locked, save
 
 STRATEGY_NAMES = {"core": "权益组合", "rotation": "跨资产动量", "quality": "质量动量", "bond": "固收组合"}
 ALLOCATION_NAMES = {key: STRATEGY_NAMES[key] for key in ("core", "bond")}
+ASSET_CLASSES = {"equity", "bond", "commodity", "cash", "mixed"}
 
 FILENAME = "etf_config.json"
 DEFAULT_PATH = Path("data") / FILENAME
@@ -95,7 +96,7 @@ def _validate_rotation(rotation):
 
 def validate(config):
     required = {"schema_version", "budgets", "core"}
-    optional = {*ALLOCATION_NAMES, "fund_subscription_fee", "trade_fees", "rotation"}
+    optional = {*ALLOCATION_NAMES, "fund_subscription_fee", "trade_fees", "rotation", "asset_classes"}
     if not isinstance(config, dict) or not required <= config.keys() <= required | optional:
         raise ValueError("配置须包含 schema_version、budgets、core")
     if type(config["schema_version"]) is not int or config["schema_version"] != 1:
@@ -106,6 +107,12 @@ def validate(config):
         validate_subscription_fee(config["fund_subscription_fee"])
     if "trade_fees" in config:
         _validate_trade_fees(config["trade_fees"])
+    classes = config.get("asset_classes", {})
+    if not isinstance(classes, dict) or any(
+            not isinstance(product, str) or not re.fullmatch(r"(?:listed|fund):[0-9]{6}", product)
+            or not isinstance(category, str) or category not in ASSET_CLASSES
+            for product, category in classes.items()):
+        raise ValueError("产品资产分类无效")
     budgets = config["budgets"]
     if not isinstance(budgets, dict) or set(budgets) - STRATEGY_NAMES.keys():
         raise ValueError("策略目标比例无效")
@@ -300,3 +307,16 @@ def data(account):
 def update(account, payload):
     with locked(account):
         save_config(path_for(account), payload["config"], payload.get("revision"))
+
+
+def classify_asset(account, payload):
+    kind, code, category = payload.get("kind"), payload.get("code"), payload.get("asset_class")
+    if kind not in {"listed", "fund"} or not isinstance(code, str) or not re.fullmatch(r"[0-9]{6}", code):
+        raise ValueError("请选择有效的持仓产品")
+    if not isinstance(category, str) or category not in ASSET_CLASSES:
+        raise ValueError("请选择有效的资产类别")
+    with locked(account):
+        path = path_for(account)
+        config = load(path)
+        config.setdefault("asset_classes", {})[f"{kind}:{code}"] = category
+        save_config(path, config, payload.get("revision"))

@@ -1,121 +1,105 @@
-# -*- coding: utf-8 -*-
-"""投资账户沪深300同期基准：采集计算、看板透出与历史回补。
-
-基准起点锚定期初估值日（非交易日收敛到之前最近交易日，conftest 按周一~五回退）；
-指数取数失败只留空基准，不得影响账户净值有效性。
-"""
+"""账户基准按日复利，与账户流水及估值独立。"""
 
 from datetime import date
 
 import pytest
 
-from src.etf_account import (
-    account_data, backfill_benchmarks, collect_close, initialize, load,
-)
+from src.etf_account import account_data, backfill_benchmarks, collect_close, initialize, load
+from src.account_store import save
 
-INDEX_CLOSES = {"2025-01-03": 4000.0, "2025-01-06": 4040.0, "2025-01-07": 3960.0}
-
-
-@pytest.fixture(autouse=True)
-def account_day(monkeypatch):
-    monkeypatch.setattr('src.etf_account._today', lambda: date(2025, 1, 7))
+SESSIONS = ["2025-01-03", "2025-01-06", "2025-01-07", "2025-01-08"]
+DAILY_RETURNS = {
+    "H00300": {"2025-01-06": .10, "2025-01-07": -.10, "2025-01-08": .05},
+    "H11001": {"2025-01-06": .01, "2025-01-07": .02, "2025-01-08": -.01},
+    "513500": {"2025-01-06": .20, "2025-01-07": -.04},
+    "159934": {"2025-01-06": -.02, "2025-01-07": .06},
+    "001821": {"2025-01-06": .001, "2025-01-07": .0002},
+}
 
 
 @pytest.fixture
-def account(tmp_path):
-    path = tmp_path / 'data' / 'etf_account.json'
-    initialize(path, asof='2025-01-04', cash=1000,
-               positions=[dict(code='588000', name='ETF', count=1000, price=2, strategy='core')],
-               targets={'588000': .4}, budgets={'core': 1}, cash_allocations={'core': 1000})
+def account(tmp_path, monkeypatch):
+    monkeypatch.setattr("src.etf_account._today", lambda: date(2025, 1, 8))
+    monkeypatch.setattr("src.account_benchmarks.get_trading_dates", lambda start, end: [
+        date.fromisoformat(day) for day in SESSIONS if start.isoformat() <= day <= end.isoformat()])
+    path = tmp_path / "data" / "etf_account.json"
+    initialize(path, asof="2025-01-04", cash=1000,
+               positions=[{"code": "588000", "count": 1000, "price": 2, "strategy": "core"}],
+               targets={"588000": .4}, budgets={"core": 1}, cash_allocations={"core": 1000})
     return path
 
 
-def index_feed(closes=None):
-    closes = INDEX_CLOSES if closes is None else closes
-    return lambda codes, day: {c: closes[day] for c in codes if day in closes}
+def close(path, day, prices=None):
+    collect_close(path, day, lambda *_: {"588000": 2} if prices is None else prices)
 
 
-def test_benchmark_ratio_and_frozen_baseline(account):
-    state = collect_close(account, '2025-01-06', lambda *_: {'588000': 2},
-                          index_prices=index_feed())
-    # 期初 2025-01-04 为周六，基准起点收敛到 2025-01-03 收盘。
-    assert state['benchmark'] == {'name': '沪深300', 'index': '000300',
-                                  'baseline_date': '2025-01-03', 'baseline_price': 4000.0}
-    assert state['records'][-1]['benchmark_nav'] == pytest.approx(4040 / 4000)
-    # 起点冻结：之后基准价变化不重写已保存的起点。
-    state = collect_close(account, '2025-01-07', lambda *_: {'588000': 2},
-                          index_prices=index_feed({**INDEX_CLOSES, '2025-01-03': 3000.0}))
-    assert state['benchmark']['baseline_price'] == 4000.0
-    assert state['records'][-1]['benchmark_nav'] == pytest.approx(3960 / 4000)
-
-
-def test_index_failure_keeps_account_nav_valid(account):
-    state = collect_close(account, '2025-01-06', lambda *_: {'588000': 2},
-                          index_prices=lambda *_: {})
-    row = state['records'][-1]
-    assert row['nav'] == pytest.approx(1.0) and not row['issues']
-    assert row['benchmark_nav'] is None
-    assert 'benchmark' not in state  # 起点未建立，下次采集重试
-
-
-def test_no_index_feed_keeps_legacy_behavior(account):
-    state = collect_close(account, '2025-01-06', lambda *_: {'588000': 2})
-    assert state['records'][-1]['benchmark_nav'] is None
-    assert state['records'][-1]['nav'] == pytest.approx(1.0)
-
-
-def test_account_data_exposes_benchmark(account):
-    collect_close(account, '2025-01-06', lambda *_: {'588000': 2}, index_prices=index_feed())
-    view = account_data(account)
-    assert view['benchmark_name'] == '沪深300'
-    history = {row['date']: row for row in view['history']}
-    assert history['2025-01-06']['benchmark_nav'] == pytest.approx(1.01)
-    assert history['2025-01-04']['benchmark_nav'] is None  # 期初记录待回补
-
-
-def test_backfill_fills_history_without_recollecting(account):
-    collect_close(account, '2025-01-06', lambda *_: {'588000': 2})
-    collect_close(account, '2025-01-07', lambda *_: {'588000': 3})
+def test_composites_chain_daily_and_continue_from_last_saved_level(account):
+    close(account, "2025-01-06")
+    close(account, "2025-01-07")
     calls = []
 
-    def feed(codes, day):
-        calls.append(day)
-        return index_feed()(codes, day)
+    def feed(codes, sessions):
+        calls.append((codes, sessions))
+        return DAILY_RETURNS
 
     state = backfill_benchmarks(account, feed)
-    rows = {r['date']: r for r in state['records']}
-    assert rows['2025-01-04']['benchmark_nav'] == 1.0
-    assert rows['2025-01-06']['benchmark_nav'] == pytest.approx(1.01)
-    assert rows['2025-01-07']['benchmark_nav'] == pytest.approx(0.99)
-    # 期初记录不取数；已补齐后再跑一遍不重复取数。
-    assert '2025-01-04' not in calls
+    assert calls == [(["001821", "159934", "513500", "H00300", "H11001"], SESSIONS[:3])]
+    assert state["benchmark_series"]["etf"]["navs"] == pytest.approx({
+        "2025-01-04": 1, "2025-01-06": 1.064, "2025-01-07": 1.064 * .948})
+    core = 1 + .30 * .10 + .35 * .20 + .05 * -.02 + .30 * .001
+    assert state["benchmark_series"]["core"]["navs"]["2025-01-06"] == pytest.approx(core)
+    assert account_data(account)["history"][-1]["benchmark_nav"] == pytest.approx(1.064 * .948)
     calls.clear()
     backfill_benchmarks(account, feed)
     assert not calls
+
+    close(account, "2025-01-08")
+    state = backfill_benchmarks(account, feed)
+    assert calls[0][1] == SESSIONS[-2:]
+    assert state["benchmark_series"]["etf"]["navs"]["2025-01-08"] == pytest.approx(1.064 * .948 * 1.026)
+
+
+def test_legacy_price_benchmark_is_not_displayed_under_new_label(account):
+    close(account, "2025-01-06")
+    state = load(account)
+    state["benchmark"] = {"name": "沪深300", "index": "000300", "baseline_price": 4000}
+    state["records"][-1]["benchmark_nav"] = 1.06
+    save(account, state)
+
     view = account_data(account)
-    assert all(row['benchmark_nav'] is not None for row in view['history'])
+    assert view["benchmark_name"] == "沪深300全收益60% + 中证全债40%"
+    assert view["history"][-1]["benchmark_nav"] is None
+    state = backfill_benchmarks(account, lambda *_: DAILY_RETURNS)
+    assert state["records"][-1]["benchmark_nav"] == 1.06
+    assert account_data(account)["history"][-1]["benchmark_nav"] == pytest.approx(1.064)
 
 
-def test_backfill_keeps_missing_dates_for_retry(account):
-    collect_close(account, '2025-01-06', lambda *_: {'588000': 2})
-    collect_close(account, '2025-01-07', lambda *_: {'588000': 2})
-    partial = {k: v for k, v in INDEX_CLOSES.items() if k != '2025-01-07'}
-    state = backfill_benchmarks(account, index_feed(partial))
-    rows = {r['date']: r for r in state['records']}
-    assert rows['2025-01-06']['benchmark_nav'] == pytest.approx(1.01)
-    assert rows['2025-01-07']['benchmark_nav'] is None
-    state = backfill_benchmarks(account, index_feed())
-    rows = {r['date']: r for r in state['records']}
-    assert rows['2025-01-07']['benchmark_nav'] == pytest.approx(0.99)
+def test_missing_intermediate_session_blocks_compounding_and_retries(account):
+    close(account, "2025-01-07")  # 6 日没有账户估值，基准仍要按交易日复利。
+    records = load(account)["records"]
+    incomplete = {**DAILY_RETURNS, "H11001": {"2025-01-07": .02}}
+    state = backfill_benchmarks(account, lambda *_: incomplete)
+    assert state["records"] == records
+    assert state["benchmark_series"]["etf"]["navs"] == {"2025-01-04": 1}
+    assert state["benchmark_series"]["core"]["navs"]["2025-01-07"] > 1
+    assert account_data(account)["history"][-1]["benchmark_nav"] is None
+
+    state = backfill_benchmarks(account, lambda *_: DAILY_RETURNS)
+    assert state["records"] == records
+    assert state["benchmark_series"]["etf"]["navs"]["2025-01-07"] == pytest.approx(1.064 * .948)
 
 
-def test_invalid_nav_record_still_gets_benchmark(account):
-    collect_close(account, '2025-01-06', lambda *_: {})  # 缺持仓收盘价，nav 无效
-    state = backfill_benchmarks(account, index_feed())
-    row = next(r for r in state['records'] if r['date'] == '2025-01-06')
-    assert row['nav'] is None and row['issues']
-    assert row['benchmark_nav'] == pytest.approx(1.01)
-    # 无效日期的基准不对外展示，与 nav 同一有效性口径。
-    view = account_data(account)
-    history = {r['date']: r for r in view['history']}
-    assert history['2025-01-06']['benchmark_nav'] is None
+def test_invalid_account_close_is_excluded_from_comparison(account):
+    close(account, "2025-01-06", prices={})
+    close(account, "2025-01-07")
+    state = backfill_benchmarks(account, lambda *_: DAILY_RETURNS)
+    assert state["records"][1]["nav"] is None
+    assert account_data(account)["history"][1]["benchmark_nav"] is None
+    assert account_data(account)["history"][2]["benchmark_nav"] == pytest.approx(1.064 * .948)
+
+
+def test_explicit_collection_cutoff_does_not_calculate_future_records(account):
+    close(account, "2025-01-06")
+    close(account, "2025-01-07")
+    state = backfill_benchmarks(account, lambda *_: DAILY_RETURNS, through="2025-01-06")
+    assert state["benchmark_series"]["etf"]["navs"] == pytest.approx({"2025-01-04": 1, "2025-01-06": 1.064})

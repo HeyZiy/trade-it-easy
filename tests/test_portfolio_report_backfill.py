@@ -23,6 +23,9 @@ def account(tmp_path, monkeypatch):
                       positions=[{"code": "510300", "count": 100, "price": 10, "strategy": "core"}])
     monkeypatch.setattr(wallet, "ACCOUNT_PATH", path)
     monkeypatch.setattr(entry, "get_trading_dates", calendar)
+    monkeypatch.setattr("src.account_benchmarks.get_trading_dates", calendar)
+    monkeypatch.setattr(entry, "benchmark_returns", lambda codes, sessions: {
+        code: {day: .01 for day in sessions[1:]} for code in codes})
     monkeypatch.setattr(wallet, "refresh_fund_navs", lambda *args: {"updated": 0, "failed": 0})
     monkeypatch.setattr(fund_plans, "record_due_subscriptions", lambda *args: 0)
     monkeypatch.setattr(wallet, "refresh_close_prices", lambda *args: [])
@@ -42,6 +45,7 @@ def test_next_morning_repairs_previous_gap_and_keeps_old_simulation_results(acco
     assert [(r["date"], r["nav"]) for r in recent] == [
         ("2026-09-22", pytest.approx(1.0)), ("2026-09-23", pytest.approx(1.0))]
     assert errors == 0 and "已补齐" in report
+    assert saved["benchmark_series"]["etf"]["navs"]["2026-09-23"] == pytest.approx(1.01 ** 2)
     assert old_ledger.read_text(encoding="utf-8") == 'retired simulation'
     assert not old_ledger.with_suffix(".performance.json").exists()
 

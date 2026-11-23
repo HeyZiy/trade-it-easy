@@ -10,7 +10,7 @@ from uuid import uuid4
 from data_provider import canonical_stock_code, fund_names, security_names
 from data_provider.codes import A_STOCK_PREFIXES, FUND_FEE_PREFIXES, normalize_stock_code
 from data_provider.security_names import security_name
-from src import account_advice, account_valuation, portfolio_config
+from src import account_advice, account_benchmarks, account_valuation, portfolio_config
 from src.account_advice import strategy_views
 from src.account_replay import (
     FUND_TRADES, cash_allocation, fund_code, holding_kind, make_event, money,
@@ -60,8 +60,7 @@ def initialize(path, *, asof, cash, positions, targets=None, budgets=None, cash_
                          "positions": rows, "equity": equity},
              "targets": targets, "budgets": budgets, "events": [], "records": [], "dismissed": []}
     mark = snapshot(state, asof)
-    state["records"] = [{**mark, "date": asof, "nav": 1.0, "benchmark_nav": None,
-                         "strategy_benchmark_navs": {},
+    state["records"] = [{**mark, "date": asof, "nav": 1.0,
                          "strategy_revision": revision(state, asof, include_transfers=True),
                          "issues": [], "source": "用户确认的期初估值",
                          "revision": revision(state, asof)}]
@@ -363,7 +362,7 @@ def dismiss(path, payload):
         _save(path, state)
 
 
-def collect_close(path, asof, close_prices, *, dry_run=False, index_prices=None):
+def collect_close(path, asof, close_prices, *, dry_run=False):
     with _locked(path):
         state = load(path)
         if asof <= state["initial"]["date"]:
@@ -371,7 +370,6 @@ def collect_close(path, asof, close_prices, *, dry_run=False, index_prices=None)
         record = account_valuation.close_record(
             state, asof, close_prices, revision=revision(state, asof),
             strategy_revision=revision(state, asof, include_transfers=True),
-            index_prices=index_prices,
         )
         state["records"] = sorted([r for r in state["records"] if r["date"] != asof] + [record],
                                   key=lambda r: r["date"])
@@ -380,37 +378,37 @@ def collect_close(path, asof, close_prices, *, dry_run=False, index_prices=None)
         return state
 
 
-def backfill_benchmarks(path, index_prices):
-    """为已有收盘记录补齐基准净值与策略成绩：只补基准/策略，不重采持仓估值。
-
-    期初记录的账户基准净值恒为 1（基准起点锚定期初估值）；策略净值按流水重放推导，
-    划转更正后指纹变化即重算。取数失败保留空值，下次运行继续补。
-    """
+def backfill_benchmarks(path, load_returns, *, through=None):
+    """补齐策略净值和基准，耗时的基准取数在账户锁之外发生。"""
+    through = through or _today().isoformat()
     with _locked(path):
         state = load(path)
         changed = False
         for record in state["records"]:
-            if not positive(record.get("benchmark_nav")):
-                if record["date"] <= state["initial"]["date"]:
-                    record["benchmark_nav"] = 1.0
-                    changed = True
-                else:
-                    nav = account_valuation.benchmark_nav(state, record["date"], index_prices)
-                    if nav is not None:
-                        record["benchmark_nav"] = nav
-                        changed = True
+            if record["date"] > through:
+                continue
             expected = revision(state, record["date"], include_transfers=True)
             if "strategy_navs" in record and record.get("strategy_revision") == expected:
                 continue
-            view = snapshot(state, record["date"])
+            view = snapshot(state, record["date"], record.get("closing_prices"))
             navs = (view["strategy_navs"] if not record["issues"]
                     else dict.fromkeys(portfolio_config.STRATEGY_NAMES))
             record["strategy_navs"] = navs
-            record["strategy_benchmark_navs"] = account_valuation.strategy_benchmark_navs(
-                state, record["date"], navs, index_prices)
             record["strategy_revision"] = expected
             changed = True
         if changed:
+            _save(path, state)
+        plans = account_benchmarks.pending_benchmarks(state, through)
+    collected = account_benchmarks.collect_benchmarks(plans, load_returns)
+    if not collected:
+        return state
+    with _locked(path):
+        state = load(path)
+        current = {plan.key: plan for plan in account_benchmarks.pending_benchmarks(state, through)}
+        updates = {plan.key: collected[plan.key] for plan in plans if current.get(plan.key) == plan}
+        saved = state.get("benchmark_series", {})
+        if any(saved.get(key) != value for key, value in updates.items()):
+            state["benchmark_series"] = {**saved, **updates}
             _save(path, state)
     return state
 
@@ -452,6 +450,52 @@ def _missing_security_names(state, positions, strategies):
     return sorted(listed - security_names.names_for(listed).keys())
 
 
+def _asset_allocation(config, view, names):
+    configured = {}
+    categories = {"equity": "equity", "bond": "bond", "gold": "commodity"}
+    for asset in portfolio_config.allocation_rows(config):
+        category = categories.get(asset["asset_type"])
+        if category is None:
+            continue
+        products = [("listed", code) for code in [asset["code"], *asset.get("etf_codes", ())]
+                    if code != "CASH" and not code.startswith("FUND:")]
+        products.extend(("fund", code) for code in asset.get("fund_codes", ()))
+        for product in products:
+            configured.setdefault(product, set()).add(category)
+    groups = {"国内权益": "equity", "海外权益": "equity", "商品": "commodity", "利率": "bond"}
+    for product in config.get("rotation", {}).get("pool", ()):
+        category = groups.get(product["group"])
+        if category:
+            configured.setdefault(("listed", product["code"]), set()).add(category)
+
+    values = {key: [] for key in ("equity", "bond", "commodity", "cash", "mixed", "unknown")}
+    values["cash"].append(view["cash"])
+    for kind, rows in (("listed", view["positions"]), ("fund", view["fund_positions"].values())):
+        for row in rows:
+            classes = configured.get((kind, row["code"]), set())
+            category = "unknown"
+            override = config.get("asset_classes", {}).get(f"{kind}:{row['code']}")
+            if override:
+                category = override
+            elif kind == "listed" and row["kind"] == "stock":
+                category = "equity"
+            elif len(classes) == 1:
+                category = next(iter(classes))
+            elif not classes:
+                name = names.get(row["code"], "") if kind == "fund" else row.get("name", "")
+                for keyword, candidate in (("货币", "cash"), ("混合", "mixed"), ("债券", "bond"),
+                                           ("黄金ETF", "commodity"), ("原油", "commodity"),
+                                           ("商品", "commodity"), ("股票", "equity"),
+                                           ("沪深300", "equity")):
+                    if keyword in (name or ""):
+                        category = candidate
+                        break
+            row["asset_class"] = category
+            values[category].append(row["market_value"])
+    return {key: round(math.fsum(amounts), 2) if None not in amounts else None
+            for key, amounts in values.items() if amounts}
+
+
 def account_data(path):
     state = load(path)
     day = _today()
@@ -485,10 +529,13 @@ def account_data(path):
     for row in [*funds.values(), *strategy_funds, *view["fund_pending"].values()]:
         if row["code"] in names:
             row["name"] = names[row["code"]]
+    asset_allocation = _asset_allocation(state["_config"], view, names)
     strategies = strategy_views(state, view, today=day, names=names)
     fund_subscription_fees = subscription_fees(state)
+    benchmark = account_benchmarks.benchmark_navs(state, "etf", state["initial"]["date"])
     return {"id": "etf", "name": "投资账户", "can_record": True, **view,
             "holdings_by_kind": holdings_by_kind, "net_contributed": net_contributed,
+            "asset_allocation": asset_allocation,
             "fund_subscription_fee": state["_config"].get("fund_subscription_fee"),
             "fund_subscription_fees": fund_subscription_fees,
             "trade_fees": state["_config"].get("trade_fees", {}),
@@ -504,10 +551,10 @@ def account_data(path):
             "revision": revision(state), "config_revision": state["_config_revision"], "suggestions": [],
             "strategies": strategies, "valuation_date": price_day,
             "has_events": bool(state["events"]),
-            "benchmark_name": (state.get("benchmark") or account_valuation.BENCHMARK)["name"],
+            "benchmark_name": account_benchmarks.benchmark_name("etf"),
             "warnings": warnings,
             "history": [{"date": r["date"], "nav": r["nav"] if r["date"] in valid_dates else None,
-                         "benchmark_nav": r.get("benchmark_nav") if r["date"] in valid_dates else None}
+                         "benchmark_nav": benchmark.get(r["date"]) if r["date"] in valid_dates else None}
                         for r in records]}
 
 

@@ -144,6 +144,16 @@
         <button type="submit" class="primary-button" id="dca-save">保存计划</button>
       </form>
     </dialog>
+    <dialog id="asset-class-dialog" aria-labelledby="asset-class-title">
+      <form id="asset-class-form">
+        <div class="section-heading"><h2 id="asset-class-title">设置资产类别</h2><button id="asset-class-cancel" type="button" class="text-button">关闭</button></div>
+        <p id="asset-class-product" class="subtle"></p>
+        <label>资产类别<select name="asset_class" required></select></label>
+        <p class="subtle">现金类包含货币基金；同时投资股债的基金可选择混合。</p>
+        <p id="asset-class-error" class="warning" role="alert" hidden></p>
+        <button id="asset-class-save" type="submit" class="primary-button">保存分类</button>
+      </form>
+    </dialog>
     <dialog id="cash-dialog" aria-labelledby="cash-title">
       <form id="cash-form">
         <div class="section-heading"><h2 id="cash-title">分配现金</h2><button id="cash-cancel" type="button" class="text-button">关闭</button></div>

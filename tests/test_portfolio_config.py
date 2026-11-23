@@ -32,6 +32,40 @@ def test_only_config_file_stores_current_weights_and_budget(account):
     assert c['core'][0]['code']=='512010' and c['core'][0]['weight']==.5
 
 
+def test_product_classification_persists_without_changing_account_facts(account):
+    wallet.record_event(account, {"request_id": "classify-fund-entry", "revision": wallet.revision(wallet.load(account)),
+                                 "date": "2025-01-06", "side": "fund_buy", "strategy": "core", "code": "512010",
+                                 "qty": 10, "amount": 10, "nav": 1, "nav_date": "2025-01-06"})
+    before = wallet.account_data(account)
+    ledger = account.read_bytes()
+    current = config.data(account)
+    config.classify_asset(account, {"revision": current["revision"], "kind": "fund", "code": "512010", "asset_class": "cash"})
+    after = wallet.account_data(account)
+    assert after["fund_positions"]["512010"]["asset_class"] == "cash"
+    assert after["positions"][0]["asset_class"] == "equity"
+    assert after["asset_allocation"]["cash"] == before["cash"] + 10
+    assert account.read_bytes() == ledger
+    for key in ("cash", "equity", "pnl", "history", "cash_by_strategy"):
+        assert after[key] == before[key]
+    saved = config.data(account)
+    assert saved["config"]["asset_classes"] == {"fund:512010": "cash"}
+    saved["config"]["budgets"]["core"] = .7
+    config.update(account, {"revision": saved["revision"], "config": saved["config"]})
+    assert wallet.account_data(account)["fund_positions"]["512010"]["asset_class"] == "cash"
+    with pytest.raises(ValueError, match="配置"):
+        config.classify_asset(account, {"revision": current["revision"], "kind": "listed", "code": "512010", "asset_class": "bond"})
+    assert wallet.account_data(account)["positions"][0]["asset_class"] == "equity"
+
+
+@pytest.mark.parametrize("fields", [{"kind": "stock"}, {"code": "51201"}, {"asset_class": "unknown"}, {"asset_class": None}])
+def test_invalid_product_classification_keeps_config(account, fields):
+    before = config.path_for(account).read_bytes()
+    payload = {"revision": config.data(account)["revision"], "kind": "listed", "code": "512010", "asset_class": "equity", **fields}
+    with pytest.raises(ValueError):
+        config.classify_asset(account, payload)
+    assert config.path_for(account).read_bytes() == before
+
+
 def test_editing_targets_preserves_cash_shares_pnl_and_history(account):
     before=wallet.account_data(account);raw=account.read_bytes()
     c=config.data(account)

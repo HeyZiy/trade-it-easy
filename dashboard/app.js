@@ -16,7 +16,7 @@ const strategyOptions = (strategies = data.strategies) => strategies.map(({id, n
 const strategyName = id => id==='unassigned' ? '未分配' : data.strategies.find(row=>row.id===id)?.name;
 const isAllocation = strategy => !!strategy.target_weights;
 const HOLDING_NAMES = {etf:'ETF', stock:'股票', other:'其他持仓', fund:'场外基金'};
-const ASSET_NAMES = {...HOLDING_NAMES, pending:'申购在途', cash:'现金'};
+const ASSET_NAMES = {equity:'权益', bond:'债券', commodity:'商品', cash:'现金类', mixed:'混合', unknown:'待分类'};
 const isFundTrade = side => typeof side === 'string' && side.startsWith('fund_');
 const fundShares = value => finite(value) ? value.toLocaleString('zh-CN', {maximumFractionDigits:6}) : '—';
 const REPORT_PREFIX = {rotation:'etf_rotation_advice_', quality:'quality_pool_advice_'};
@@ -138,7 +138,10 @@ function chartSection(account) {
   const hasBenchmark = !!account?.benchmark_name && history.some(row=>finite(row.benchmark_nav) && row.benchmark_nav>0);
   const start = account?.start_date || account?.history?.[0]?.date;
   let basis = '';
-  if (hasBenchmark) basis = `基准：${esc(account.benchmark_name)}`;
+  const lastClose = history.findLast(row => finite(row.nav) && row.nav > 0);
+  if (account?.benchmark_name && hasHistory) {
+    basis = `基准：${esc(account.benchmark_name)}${finite(lastClose.benchmark_nav) ? '' : ' · 待更新'}`;
+  }
   else if (start) basis = `起始日期：${esc(start)}`;
   return `<section class="section chart-section" aria-labelledby="chart-title">
     <div class="section-heading"><div><h2 id="chart-title">${esc(accountName(account))} · 收盘收益</h2></div>
@@ -289,24 +292,21 @@ function entryActions(view) {
   </div><p id="entry-receipt" class="subtle" role="status">${entryReceipt ? esc(entryReceipt) : ''}</p></div>`;
 }
 
-function profitNote() {
-  return '<details class="calculation-note"><summary>盈亏怎么算</summary><p>累计盈亏从账户期初估值开始计算，包含已实现盈亏、持仓涨跌、分红与手续费，入出金及内部现金划转不计盈利。持仓划转前的盈亏留在原策略，之后归接收策略。期初估值并非历史买入成本。</p><p>全部持仓统一使用同一估值日的收盘价，或同一轮完整获取的行情。成交价不补入展示估值；缺少同日价格时，相关市值和盈亏显示待估值。现金及持仓数量使用最新账目。下方收盘收益率只使用有效收盘记录。</p></details>';
-}
-
 function assetComposition(account) {
-  const assets = Object.entries({...account.holdings_by_kind, pending:account.pending_fund_value, cash:account.cash})
+  const assets = Object.entries(account.asset_allocation || {})
     .filter(([, amount]) => amount === null || amount > 0);
   const sized = account.equity > 0 && assets.every(([, amount]) => finite(amount));
+  const pending = account.pending_fund_value || 0;
   const bar = sized ? `<div class="asset-strip" aria-hidden="true">${assets.map(([kind, amount]) =>
-    `<i class="asset-${kind}" style="flex-grow:${amount}"></i>`).join('')}</div>` : '';
+    `<i class="asset-${kind}" style="flex-grow:${amount / account.equity}"></i>`).join('')}${pending ? `<i class="asset-pending" style="flex-grow:${pending / account.equity}"></i>` : ''}</div>` : '';
   const labels = assets.map(([kind, amount]) => {
     const value = finite(amount) ? `${money(amount)} 元` : '待估值';
-    const label = `<i class="asset-${kind}"></i>${ASSET_NAMES[kind]} <b>${sized && kind !== 'pending' ? ratio(amount, account.equity) : value}</b>`;
-    if (kind === 'pending') return `<a href="#fund-pending">${label}</a>`;
-    if (kind === 'cash') return `<span title="${value}">${label}</span>`;
-    return `<button type="button" data-holding-filter="${kind}" aria-controls="account-holdings" title="${value}">${label}</button>`;
+    const detail = kind === 'cash' && finite(amount) ? `账面现金 ${money(account.cash)} 元 · 货币基金 ${money(amount - account.cash)} 元` : value;
+    const label = `<i class="asset-${kind}"></i>${ASSET_NAMES[kind]} <b>${sized ? ratio(amount, account.equity) : value}</b>`;
+    return `<button type="button" data-holding-filter="class:${kind}" aria-controls="account-holdings" title="${detail}">${label}</button>`;
   }).join('');
   return `<div class="asset-composition" role="group" aria-label="资产构成">${bar}<div class="asset-labels">${labels}
+    ${pending ? `<a href="#fund-pending"><i class="asset-pending"></i>申购在途 <b>${money(pending)} 元</b></a>` : ''}
     <button type="button" class="all-holdings-link" data-holding-filter="" aria-controls="account-holdings">查看持仓</button>
   </div></div>`;
 }
@@ -314,14 +314,15 @@ function assetComposition(account) {
 function accountSummary(account) {
   const latest = (account.history || []).findLast(row => finite(row.nav) && row.nav > 0);
   const pnl = finite(account.pnl) ? `${account.pnl > 0 ? '+' : ''}${money(account.pnl)}` : '待估值';
-  const cash = [...data.strategies, {id:'unassigned', name:'未分配'}].map(({id, name}) =>
+  const cash = [...data.strategies, {id:'unassigned', name:'未分配'}]
+    .filter(({id}) => id !== 'unassigned' || account.cash_by_strategy[id] !== 0).map(({id, name}) =>
     `<div><dt>${esc(name)}</dt><dd>${money(account.cash_by_strategy[id])}</dd></div>`).join('');
   return `<section class="reconciliation" aria-label="账户摘要">
     <div class="reconciliation-top">
       <div><span>总资产 / 元</span><strong>${finite(account.equity) ? money(account.equity) : '待估值'}</strong><small>${esc(valuationLabel(account.valuation))}</small></div>
       <div><span>累计盈亏 / 元</span><b class="${account.pnl > 0 ? 'is-gain' : account.pnl < 0 ? 'is-loss' : ''}">${pnl}</b></div>
       <div><span>累计收益率</span><b>${percent(latest?.nav)}</b>${latest ? `<small>收盘 · ${esc(latest.date)}</small>` : ''}</div>
-      <div><span>账面现金 / 元</span><b>${money(account.cash)}</b><button type="button" id="account-cash-toggle" class="text-button" aria-controls="account-cash-detail" aria-expanded="false">未分配 ${money(account.cash_by_strategy.unassigned)}</button></div>
+      <div><span>账面现金 / 元</span><button type="button" id="account-cash-toggle" aria-label="查看各策略现金明细" aria-controls="account-cash-detail" aria-expanded="false"><b>${money(account.cash)}</b></button>${account.cash_by_strategy.unassigned ? `<small>未分配 ${money(account.cash_by_strategy.unassigned)} 元</small>` : ''}</div>
     </div>
     <dl id="account-cash-detail" class="reconciliation-cash" aria-label="各策略现金（元）" hidden>${cash}</dl>
     ${assetComposition(account)}
@@ -352,23 +353,30 @@ function holdingOwnership(code, owners, kind) {
   return owners.length === 1 ? ownerRows : `<details class="holding-owners"><summary>${owners.length} 个策略</summary>${ownerRows}</details>`;
 }
 
+function assetClassButton(row, kind) {
+  return `<button type="button" class="text-button" data-classify-asset data-code="${esc(row.code)}" data-kind="${kind}" data-category="${row.asset_class || 'unknown'}" aria-label="设置 ${esc(row.code)} 的资产类别">${row.asset_class && row.asset_class !== 'unknown' ? ASSET_NAMES[row.asset_class] : '设置分类'}</button>`;
+}
+
 function accountDetails(account) {
+  const assetFilters = Object.keys(account.asset_allocation || {}).map(kind => `<option value="class:${kind}">${ASSET_NAMES[kind]}</option>`).join('');
   const filters = Object.keys(account.holdings_by_kind).map(kind => `<option value="${kind}">${HOLDING_NAMES[kind]}</option>`).join('');
   const rows = account.positions.map(row => {
     const owners = account.strategy_positions.filter(item=>item.code===row.code && item.count>0);
-    const ownership = holdingOwnership(row.code, owners.map(owner => ({strategy:owner.strategy, shares:number(owner.count)})), 'listed');
-    return `<tr data-holding-kind="${row.kind}"><td>${esc(row.name)}<small>${esc(row.code)}<span class="holding-mobile-count"> · ${number(row.count)} 份</span></small>${ownership}</td><td>${number(row.count)}</td><td>${quotePrice(row)}</td><td>${finite(row.market_value) ? money(row.market_value) : '待估值'}</td><td>${ratio(row.market_value,account.equity)}</td><td>${positionActions(row.code, owners.length===1 ? owners[0].strategy : '')}</td></tr>`;
+    const ownership = holdingOwnership(row.code, owners.map(owner => ({strategy:owner.strategy, shares:number(owner.count)})), 'listed') + assetClassButton(row, 'listed');
+    return `<tr data-holding-kind="${row.kind}" data-asset-class="${row.asset_class || 'unknown'}"><td>${esc(row.name)}<small>${esc(row.code)}<span class="holding-mobile-count"> · ${number(row.count)} 份</span></small>${ownership}</td><td>${number(row.count)}</td><td>${quotePrice(row)}</td><td>${finite(row.market_value) ? money(row.market_value) : '待估值'}</td><td>${ratio(row.market_value,account.equity)}</td><td>${positionActions(row.code, owners.length===1 ? owners[0].strategy : '')}</td></tr>`;
   }).join('');
   const fundRows = Object.values(account.fund_positions || {}).map(row => {
     const owners = Object.entries(account.strategy_fund_positions || {})
       .filter(([, positions]) => positions[row.code]?.qty > 0)
       .map(([strategy, positions]) => ({strategy, shares:fundShares(positions[row.code].qty)}));
-    const ownership = holdingOwnership(row.code, owners, 'fund');
-    return `<tr data-holding-kind="fund"><td>${esc(fundDisplayName(row.code) || '场外基金')}<small>${esc(row.code)}<span class="holding-mobile-count"> · ${fundShares(row.qty)} 份</span></small>${ownership}</td><td>${fundShares(row.qty)}</td><td>${fundMark(row)}</td><td>${finite(row.market_value) ? money(row.market_value) : '待估值'}</td><td>${ratio(row.market_value,account.equity)}</td><td>${fundActions(row.code,true)}</td></tr>`;
+    const ownership = holdingOwnership(row.code, owners, 'fund') + assetClassButton(row, 'fund');
+    return `<tr data-holding-kind="fund" data-asset-class="${row.asset_class || 'unknown'}"><td>${esc(fundDisplayName(row.code) || '场外基金')}<small>${esc(row.code)}<span class="holding-mobile-count"> · ${fundShares(row.qty)} 份</span></small>${ownership}</td><td>${fundShares(row.qty)}</td><td>${fundMark(row)}</td><td>${finite(row.market_value) ? money(row.market_value) : '待估值'}</td><td>${ratio(row.market_value,account.equity)}</td><td>${fundActions(row.code,true)}</td></tr>`;
   }).join('');
   return `${accountSummary(account)}${entryActions(account)}
     ${strategyAllocation(account)}${chartSection(account)}${pendingFundSection(account)}
-    <section id="account-holdings" class="section" aria-labelledby="account-holdings-title" tabindex="-1"><div class="section-heading"><h2 id="account-holdings-title">账户持仓</h2><select id="holding-filter" aria-label="持仓类别"><option value="">全部持仓</option>${filters}</select></div><div class="table-wrap"><table class="account-holdings-table"><thead><tr><th scope="col">标的</th><th scope="col">份额</th><th scope="col">价格 / 元</th><th scope="col">市值 / 元</th><th scope="col">资产占比</th><th scope="col">记账</th></tr></thead><tbody>${rows}${fundRows}<tr id="holdings-empty" hidden><td colspan="6" class="empty">暂无持仓</td></tr></tbody></table></div></section>
+    <section id="account-holdings" class="section" aria-labelledby="account-holdings-title" tabindex="-1"><div class="section-heading"><h2 id="account-holdings-title">账户持仓</h2><select id="holding-filter" aria-label="持仓类别"><option value="">全部持仓</option><optgroup label="资产类别">${assetFilters}</optgroup><optgroup label="产品类型">${filters}</optgroup></select></div>
+      <p id="cash-class-detail" class="subtle" hidden>账面现金 ${money(account.cash)} 元 · 货币基金 ${finite(account.asset_allocation?.cash) ? `${money(account.asset_allocation.cash - account.cash)} 元` : '待估值'}</p>
+      <div class="table-wrap"><table class="account-holdings-table"><thead><tr><th scope="col">标的</th><th scope="col">份额</th><th scope="col">价格 / 元</th><th scope="col">市值 / 元</th><th scope="col">资产占比</th><th scope="col">记账</th></tr></thead><tbody>${rows}${fundRows}<tr id="holdings-empty" hidden><td colspan="6" class="empty">暂无持仓</td></tr></tbody></table></div></section>
     ${recordSection(account, account.trades)}`;
 }
 
@@ -430,7 +438,7 @@ function fundedStrategyPage(strategy) {
     ? `<div class="core-actions"><button type="button" data-fund-side="fund_buy" data-code="" data-strategy="${esc(strategy.id)}" class="text-button">场外申购</button><button type="button" id="dca-settings" class="text-button">定投计划</button><button type="button" id="core-settings" class="text-button">编辑配置</button></div>` : '';
   const pending = allocation ? pendingFundSection(strategy, data.accounts[0].dca?.recorded_today_by_strategy?.[strategy.id]) : '';
   return `<div class="stats">${stats.map(([value,label])=>`<div class="stat"><span>${label}</span><b>${esc(value)}</b></div>`).join('')}</div>
-    ${profitNote()}${canRecord ? entryActions(strategy) : ''}${chartSection(strategy)}
+    ${canRecord ? entryActions(strategy) : ''}${chartSection(strategy)}
     <section class="section"><div class="section-heading"><h2>${allocation ? '持仓与目标配比' : '持仓与调仓建议'}</h2>${actions}</div>${status}${strategyPositionTable(strategy)}</section>
     ${pending}${canRecord ? recordSection(strategy, trades) : ''}`;
 }
@@ -699,6 +707,9 @@ function bindAccountActions(view) {
     const {code, kind, strategy} = button.dataset;
     button.onclick = () => openEntry(account, {side:'assign', code, kind}, strategy);
   }
+  for (const button of document.querySelectorAll('[data-classify-asset]')) {
+    button.onclick = () => openAssetClassification(account, button.dataset);
+  }
   for (const button of document.querySelectorAll('[data-strategy-tab]')) {
     button.onclick = () => document.getElementById(`tab-${button.dataset.strategyTab}`).click();
   }
@@ -778,9 +789,11 @@ function bindReconciliation(account) {
   const filter = document.querySelector('#holding-filter');
   const rows = [...document.querySelectorAll('[data-holding-kind]')];
   function showHoldings(kind) {
-    holdingKind = Object.hasOwn(account.holdings_by_kind, kind) ? kind : '';
+    const assetClass = kind.startsWith('class:') ? kind.slice(6) : '';
+    holdingKind = Object.hasOwn(account.holdings_by_kind, kind) || Object.hasOwn(account.asset_allocation || {}, assetClass) ? kind : '';
     filter.value = holdingKind;
-    for (const row of rows) row.hidden = !!holdingKind && row.dataset.holdingKind !== holdingKind;
+    for (const row of rows) row.hidden = !!holdingKind && (assetClass ? row.dataset.assetClass !== assetClass : row.dataset.holdingKind !== holdingKind);
+    document.querySelector('#cash-class-detail').hidden = holdingKind !== 'class:cash';
     document.querySelector('#holdings-empty').hidden = rows.some(row => !row.hidden);
   }
   function jumpTo(id) {
@@ -798,6 +811,48 @@ function bindReconciliation(account) {
     cash.hidden = !cash.hidden;
     event.currentTarget.setAttribute('aria-expanded', String(!cash.hidden));
   };
+}
+
+function openAssetClassification(account, {code, kind, category}) {
+  const dialog = document.querySelector('#asset-class-dialog');
+  const form = document.querySelector('#asset-class-form');
+  const field = form.elements.namedItem('asset_class');
+  const save = document.querySelector('#asset-class-save');
+  const error = document.querySelector('#asset-class-error');
+  const name = kind === 'fund' ? fundDisplayName(code) : account.positions.find(row => row.code === code)?.name;
+  document.querySelector('#asset-class-product').textContent = [name, code].filter(Boolean).join(' · ');
+  field.innerHTML = '<option value="">请选择</option>' + Object.entries(ASSET_NAMES)
+    .filter(([value]) => value !== 'unknown').map(([value, label]) => `<option value="${value}">${label}</option>`).join('');
+  field.value = category === 'unknown' ? '' : category;
+  field.disabled = false;
+  save.disabled = false;
+  save.textContent = '保存分类';
+  error.hidden = true;
+  let saving = false, saved = false;
+  document.querySelector('#asset-class-cancel').onclick = () => { if (!saving) dialog.close(); };
+  dialog.oncancel = event => { if (saving) event.preventDefault(); };
+  form.onsubmit = async event => {
+    event.preventDefault();
+    if (saving || (!saved && !form.reportValidity())) return;
+    saving = true; save.disabled = true; field.disabled = true; error.hidden = true;
+    try {
+      if (!saved) {
+        await accountRequest('/api/etf/asset/classify', {revision:account.config_revision, kind, code, asset_class:field.value});
+        saved = true;
+      }
+      await reloadAccount();
+      dialog.close();
+      document.querySelector('#status').textContent = `${code} 已归入${ASSET_NAMES[field.value]}`;
+    } catch (failure) {
+      error.textContent = saved ? '分类已保存，页面更新失败。请点击刷新账户。' : failure.message;
+      error.hidden = false;
+    } finally {
+      saving = false; save.disabled = false; field.disabled = saved;
+      save.textContent = saved ? '刷新账户' : '保存分类';
+    }
+  };
+  dialog.showModal();
+  field.focus();
 }
 
 function openEntry(account, suggestion, strategy='unassigned', options={}) {
@@ -933,6 +988,9 @@ function openEntry(account, suggestion, strategy='unassigned', options={}) {
     const context = document.querySelector('#entry-context');
     const shares = (fund ? fundShares : number)(held);
     context.textContent = !ownerName ? '请选择本笔记账所属的策略。' : assign ? code && !chooseKind ? `${ownerName}可划转 ${shares} 份` : '选择持仓后查看可划转份额。' : `${ownerName}现金 ${money(cash)} 元${trade && code ? ` · 持有 ${shares} 份` : ''}`;
+    if (assign && held > 0) {
+      context.textContent += '。划转前的盈亏归转出策略，之后归转入策略。';
+    }
     const amount = trade ? Number(field('qty').value) * Number(field('price').value) : Number(field('amount').value);
     const feeInput = field('fee');
     const feeKind = Object.keys(account.trade_fee_code_prefixes || {}).find(key =>
@@ -1086,7 +1144,7 @@ function strategyAllocation(account) {
   const layer = (title, hint, groupRows) => `<div class="allocation-layer"><div class="allocation-layer-head"><h3>${title}</h3><span>${hint}</span></div>${groupRows.map(bar).join('')}</div>`;
   const allocation = rows.filter(row => isAllocation(row));
   const satellites = rows.filter(row => row.id !== 'unassigned' && !isAllocation(row));
-  const unassigned = rows.filter(row => row.id === 'unassigned');
+  const unassigned = rows.filter(row => row.id === 'unassigned' && row.assets !== 0);
   const bars = [layer('配置层', '股债配置两腿，低频复核', allocation),
     satellites.length ? layer('量化卫星', '小预算试验，错了砍预算', satellites) : '',
     unassigned.map(bar).join('')].join('');
@@ -1815,6 +1873,7 @@ async function openConfiguration(key='core') {
     const cashIndex=draft[key]?.findIndex(row=>row.code==='CASH') ?? -1;
     if (cashIndex>=0) assets.splice(cashIndex,0,draft[key][cashIndex]);
     const config={schema_version:1,budgets,[key]:assets};
+    if (draft.asset_classes) config.asset_classes = draft.asset_classes;
     for (const {id} of data.strategies.filter(isAllocation)) {
       if (id!==key && draft[id]) config[id]=draft[id];
     }

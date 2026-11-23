@@ -7,6 +7,7 @@
 """
 
 from datetime import date
+from itertools import pairwise
 from uuid import uuid4
 
 import pytest
@@ -22,6 +23,8 @@ INDEX_CLOSES = {'2025-01-03': 5000.0, '2025-01-06': 5050.0, '2025-01-07': 4950.0
 @pytest.fixture(autouse=True)
 def account_day(monkeypatch):
     monkeypatch.setattr('src.etf_account._today', lambda: date(2025, 1, 7))
+    monkeypatch.setattr('src.account_benchmarks.get_trading_dates', lambda start, end: [
+        date.fromisoformat(day) for day in INDEX_CLOSES if start.isoformat() <= day <= end.isoformat()])
 
 
 @pytest.fixture
@@ -39,8 +42,9 @@ def event(path, side, **fields):
                 date='2025-01-06', side=side) | fields
 
 
-def index_feed(codes, day):
-    return {c: INDEX_CLOSES[day] for c in codes if day in INDEX_CLOSES}
+def index_feed(codes, sessions):
+    return {code: {day: INDEX_CLOSES[day] / INDEX_CLOSES[previous] - 1
+                   for previous, day in pairwise(sessions)} for code in codes}
 
 
 def histories(view):
@@ -54,7 +58,10 @@ def test_initial_navs_and_benchmark_names(account):
     assert rows['quality']['2025-01-04']['nav'] == pytest.approx(1.0)
     assert rows['rotation']['2025-01-04']['nav'] is None  # 未入金的策略不画曲线
     names = {s['id']: s['benchmark_name'] for s in view['strategies']}
-    assert names == {'core': None, 'rotation': None, 'quality': '中证800', 'bond': None}
+    assert set(names) == {'core', 'rotation', 'quality', 'bond'}
+    assert all(names.values())
+    assert names['quality'] == '中证800全收益'
+    assert names['rotation'] == '沪深300全收益'
 
 
 def test_transfers_and_allocation_do_not_move_navs(account):
@@ -94,18 +101,22 @@ def test_transfer_into_bond_starts_strategy_nav_without_moving_account_nav(accou
     assert before['strategy_navs']['bond'] is None and after['strategy_navs']['bond'] == 1.0
 
 
-def test_quality_benchmark_anchors_at_first_valid_nav(account):
-    state = collect_close(account, '2025-01-06', lambda *_: {'588000': 2}, index_prices=index_feed)
-    frozen = state['strategy_benchmarks']['quality']
-    assert frozen == {'name': '中证800', 'index': '000906',
-                      'baseline_date': '2025-01-06', 'baseline_price': 5050.0}
-    row = state['records'][-1]
-    assert row['strategy_benchmark_navs'] == {'quality': pytest.approx(1.0)}
-    state = collect_close(account, '2025-01-07', lambda *_: {'588000': 2}, index_prices=index_feed)
-    assert state['records'][-1]['strategy_benchmark_navs']['quality'] == pytest.approx(4950 / 5050)
+def test_strategy_benchmark_anchors_at_its_own_first_valid_nav(account):
+    record_event(account, event(account, 'cash_transfer', from_strategy='core', strategy='rotation', amount=300))
+    collect_close(account, '2025-01-06', lambda *_: {'588000': 2})
+    collect_close(account, '2025-01-07', lambda *_: {'588000': 2})
+    state = backfill_benchmarks(account, index_feed)
+    rotation = state['benchmark_series']['rotation']
+    assert rotation['weights'] == {'H00300': 1.0}
+    assert rotation['anchor'] == '2025-01-06'
+    assert rotation['navs'] == pytest.approx({'2025-01-06': 1.0, '2025-01-07': 4950 / 5050})
+    quality = state['benchmark_series']['quality']
+    assert quality['weights'] == {'H00906': 1.0}
+    assert quality['anchor'] == '2025-01-04'
     rows = histories(account_data(account))
-    assert rows['quality']['2025-01-07']['benchmark_nav'] == pytest.approx(4950 / 5050)
-    assert rows['rotation']['2025-01-07']['benchmark_nav'] is None
+    assert rows['quality']['2025-01-07']['benchmark_nav'] == pytest.approx(4950 / 5000)
+    assert rows['rotation']['2025-01-04']['benchmark_nav'] is None
+    assert rows['rotation']['2025-01-07']['benchmark_nav'] == pytest.approx(4950 / 5050)
 
 
 def test_backfill_recomputes_old_records_and_anchors_at_initial(account):
@@ -120,12 +131,11 @@ def test_backfill_recomputes_old_records_and_anchors_at_initial(account):
     state = backfill_benchmarks(account, index_feed)
     rows = {r['date']: r for r in state['records']}
     # 期初就有质量策略现金 → 基准锚定期初日（周六收敛到周五收盘）。
-    assert state['strategy_benchmarks']['quality']['baseline_date'] == '2025-01-03'
+    assert state['benchmark_series']['quality']['anchor'] == '2025-01-04'
     assert rows['2025-01-04']['strategy_navs']['quality'] == pytest.approx(1.0)
-    assert rows['2025-01-04']['strategy_benchmark_navs']['quality'] == pytest.approx(1.0)
-    assert rows['2025-01-06']['strategy_benchmark_navs']['quality'] == pytest.approx(5050 / 5000)
-    assert rows['2025-01-07']['strategy_benchmark_navs']['quality'] == pytest.approx(4950 / 5000)
-    assert rows['2025-01-06']['benchmark_nav'] == pytest.approx(5050 / 5000)
+    assert state['benchmark_series']['quality']['navs'] == pytest.approx({
+        '2025-01-04': 1.0, '2025-01-06': 5050 / 5000, '2025-01-07': 4950 / 5000})
+    assert state['benchmark_series']['etf']['navs']['2025-01-06'] == pytest.approx(5050 / 5000)
     # 幂等：再跑一遍不重算。
     before = {r['date']: r.get('strategy_revision') for r in state['records']}
     state = backfill_benchmarks(account, index_feed)

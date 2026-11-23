@@ -5,7 +5,7 @@ import logging
 from pathlib import Path
 
 from data_provider.security_names import security_name
-from src import account_valuation, portfolio_config
+from src import account_benchmarks, account_valuation, portfolio_config
 from src.account_replay import FUND_TRADES, snapshot
 from src.account_store import load, revision, save
 from src.advice_identity import short_digest
@@ -141,7 +141,7 @@ def strategy_facts(state, view, key):
                                            or e.get("from_strategy") == key
                                            or (e["side"] == "cash_assign" and key in e["cash_allocations"])],
             "history": [], "performance": None,
-            "benchmark_name": account_valuation.STRATEGY_BENCHMARKS.get(key, {}).get("name"),
+            "benchmark_name": account_benchmarks.benchmark_name(key),
             "cash": cash, "assets": assets, "actual_pct": assets / view["equity"] if view["equity"] and assets is not None else None,
             "deviation": round(assets - budget, 2) if budget is not None and assets is not None else None, "status": status}
 
@@ -151,15 +151,17 @@ def strategy_history(state, key, today):
     from src.account_store import revision
     records, valid = account_valuation.valid_records(state, today)
     valid_dates = {r["date"] for r in valid}
+    benchmarks = None
     history = []
     for r in records:
         current = (r["date"] in valid_dates
                    and r.get("strategy_revision") == revision(state, r["date"], include_transfers=True))
-        navs = r.get("strategy_navs") or {}
-        benchmarks = r.get("strategy_benchmark_navs") or {}
+        nav = (r.get("strategy_navs") or {}).get(key) if current else None
+        if benchmarks is None and nav is not None:
+            benchmarks = account_benchmarks.benchmark_navs(state, key, r["date"])
         history.append({"date": r["date"],
-                        "nav": navs.get(key) if current else None,
-                        "benchmark_nav": benchmarks.get(key) if current else None})
+                        "nav": nav,
+                        "benchmark_nav": (benchmarks or {}).get(r["date"]) if nav is not None else None})
     return history
 
 

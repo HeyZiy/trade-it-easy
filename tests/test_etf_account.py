@@ -194,6 +194,8 @@ def test_scheduled_report_recollects_changed_actual_history(account, monkeypatch
     monkeypatch.setattr(entry, 'closed_date', lambda now: days[-1])
     monkeypatch.setattr(entry, 'get_trading_dates', lambda start, end: [d for d in days if start <= d <= end])
     monkeypatch.setattr(entry.ClosingPrices, 'close_prices', lambda self, codes, day: {c: 3 for c in codes})
+    monkeypatch.setattr(entry, "benchmark_returns", lambda *_: {})
+    monkeypatch.setattr("src.account_benchmarks.get_trading_dates", entry.get_trading_dates)
     collect_close(account, '2025-01-06', lambda codes, day: {codes[0]: 3})
     record_event(account, event(account, 'sell', code='588000', name='ETF', qty=100, price=3, fee=1))
     report, errors = entry.run(backfill=True)
@@ -217,6 +219,8 @@ def test_daily_report_refreshes_fund_nav_once_and_preserves_backfill_boundary(ac
     monkeypatch.setattr(entry, "closed_date", lambda _: target)
     monkeypatch.setattr(entry, "get_trading_dates", lambda start, end: [d for d in days if start <= d <= end])
     monkeypatch.setattr(entry.ClosingPrices, "close_prices", lambda self, codes, day: {c: 2 for c in codes})
+    monkeypatch.setattr(entry, "benchmark_returns", lambda *_: {})
+    monkeypatch.setattr("src.account_benchmarks.get_trading_dates", entry.get_trading_dates)
     record_event(account, event(account, "fund_buy", code="000051", qty=100.5,
                                 amount=120.6, nav=1.2, nav_date="2025-01-06"))
     order = record_event(account, event(account, "fund_pending", date="2025-01-07", code="000051",

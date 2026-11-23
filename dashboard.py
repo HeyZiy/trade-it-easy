@@ -225,8 +225,9 @@ class Handler(BaseHTTPRequestHandler):
                     "/api/etf/event/context": event_context, "/api/etf/fund/nav": lookup_fund_nav,
                     "/api/etf/cash/rebalance": cash_rebalance, "/api/etf/fund/names": lookup_fund_names,
                     "/api/etf/security/names": lookup_security_names}
-        from src.portfolio_config import update
+        from src.portfolio_config import classify_asset, update
         handlers["/api/etf/config"] = update
+        handlers["/api/etf/asset/classify"] = classify_asset
         handlers["/api/etf/dca/save"] = fund_plans.save_plan
         handlers["/api/etf/dca/delete"] = fund_plans.delete_plan
         if self.path == "/api/etf/refresh":

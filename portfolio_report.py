@@ -11,6 +11,7 @@ from src.config import setup_env
 from src.cron_entry import hard_exit
 from src.logging_config import setup_logging
 from src.trading_calendar import get_trading_dates
+from data_provider.benchmark_returns import benchmark_returns
 from data_provider.closing_prices import ClosingPrices
 
 logger = logging.getLogger(__name__)
@@ -109,8 +110,7 @@ def run(*, asof=None, dry_run=False, now=None, backfill=False):
     path = ACCOUNT_PATH
 
     def collect_day(day: date) -> dict:
-        return collect_core_close(path, day.isoformat(), feed.close_prices,
-                                  index_prices=feed.index_prices, dry_run=dry_run)
+        return collect_core_close(path, day.isoformat(), feed.close_prices, dry_run=dry_run)
 
     try:
         state = load_core(path)
@@ -139,7 +139,7 @@ def run(*, asof=None, dry_run=False, now=None, backfill=False):
         if not dry_run:
             try:
                 # 历史记录的基准净值只补基准，不重采持仓估值；失败保留空值下次再补。
-                backfill_benchmarks(path, feed.index_prices)
+                backfill_benchmarks(path, benchmark_returns, through=target.isoformat())
             except Exception:
                 logger.exception("基准收益回补失败，保留已有基准")
         notes = _backfill_notes(healed, lingering)
