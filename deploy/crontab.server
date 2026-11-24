@@ -27,15 +27,15 @@
 #   - 日志由脚本自行写入 logs/<prefix>.log（含 _debug.log），cron 不重复重定向；
 #     stdout 丢弃，仅 stderr（启动失败/未捕获异常）追加到 logs/cron_error.log
 #   - flock 防止任务重入（节假日/周末任务重叠等）
-#   - 质量动量每天 09:30 按昨收信号与实时行情生成实际账户建议和报告。
+#   - 质量动量与跨资产动量共用 14:40 一轮，串行执行：先 etf_rotation（约 1 分钟），
+#     后 quality_pool（约 7 分钟，T-1 财务扫描占大头）。质量动量必须在 15:00 前拿到
+#     当天执行快照（now-120s 时效窗，收盘后无新成交 → fail-closed 不出单），
+#     不得再往后挪；两个任务各自 flock，任一失败不影响另一个。
 #     flock 覆盖完整流程，脚本检查交易日，cron 用 1-5 限定即可
 # =============================================
 
-# ── 质量动量：每交易日 09:30 更新实际账户建议，有买卖建议时推送 ──
-30 9 * * 1-5 cd /root/trade-it-easy && flock -n /tmp/quality-pool.lock /root/miniconda/envs/rt/bin/python quality_pool.py > /dev/null 2>> logs/cron_error.log
-
-# ── 跨资产动量：每交易日 14:50 更新实际账户建议并推送 ──
-50 14 * * 1-5 cd /root/trade-it-easy && flock -n /tmp/etf-rotation.lock /root/miniconda/envs/rt/bin/python etf_rotation.py > /dev/null 2>> logs/cron_error.log
+# ── 卫星仓：每交易日 14:40 先跨资产动量、后质量动量，各自更新实际账户建议并推送 ──
+40 14 * * 1-5 cd /root/trade-it-easy && { flock -n /tmp/etf-rotation.lock /root/miniconda/envs/rt/bin/python etf_rotation.py; flock -n /tmp/quality-pool.lock /root/miniconda/envs/rt/bin/python quality_pool.py; } > /dev/null 2>> logs/cron_error.log
 
 # ── 收盘成绩：当日18:30（北京时间）采集投资账户当日收盘估值，并回补最近5个交易日不完整记录；
 #    股票和 ETF 优先用 AmazingData，ETF 缺价时依次改用东财、新浪；
