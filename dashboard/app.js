@@ -16,7 +16,7 @@ function ownerViews() {
 }
 const strategyOptions = (strategies = ownerViews()) => strategies.map(({id, name}) =>
   `<option value="${esc(id)}">${esc(name)}</option>`).join('');
-const strategyName = id => id==='unassigned' ? '未分配' : ownerViews().find(row=>row.id===id)?.name;
+const strategyName = id => ownerViews().find(row=>row.id===id)?.name;
 const isAllocation = strategy => !!strategy.target_weights;
 const acceptsFunds = row => isAllocation(row) || row.holding_only;
 const HOLDING_NAMES = {etf:'ETF', stock:'股票', other:'其他持仓', fund:'场外基金'};
@@ -319,15 +319,14 @@ function assetComposition(account) {
 function accountSummary(account) {
   const latest = (account.history || []).findLast(row => finite(row.nav) && row.nav > 0);
   const pnl = finite(account.pnl) ? `${account.pnl > 0 ? '+' : ''}${money(account.pnl)}` : '待估值';
-  const cash = [...ownerViews(), {id:'unassigned', name:'未分配'}]
-    .filter(({id}) => id !== 'unassigned' || account.cash_by_strategy[id] !== 0).map(({id, name}) =>
+  const cash = ownerViews().map(({id, name}) =>
     `<div><dt>${esc(name)}</dt><dd>${money(account.cash_by_strategy[id])}</dd></div>`).join('');
   return `<section class="reconciliation" aria-label="账户摘要">
     <div class="reconciliation-top">
       <div><span>总资产 / 元</span><strong>${finite(account.equity) ? money(account.equity) : '待估值'}</strong><small>${esc(valuationLabel(account.valuation))}</small></div>
       <div><span>累计盈亏 / 元</span><b class="${account.pnl > 0 ? 'is-gain' : account.pnl < 0 ? 'is-loss' : ''}">${pnl}</b></div>
       <div><span>累计收益率</span><b>${percent(latest?.nav)}</b>${latest ? `<small>收盘 · ${esc(latest.date)}</small>` : ''}</div>
-      <div><span>账面现金 / 元</span><button type="button" id="account-cash-toggle" aria-label="查看各策略现金明细" aria-controls="account-cash-detail" aria-expanded="false"><b>${money(account.cash)}</b></button>${account.cash_by_strategy.unassigned ? `<small>未分配 ${money(account.cash_by_strategy.unassigned)} 元</small>` : ''}</div>
+      <div><span>账面现金 / 元</span><button type="button" id="account-cash-toggle" aria-label="查看各策略现金明细" aria-controls="account-cash-detail" aria-expanded="false"><b>${money(account.cash)}</b></button></div>
     </div>
     <dl id="account-cash-detail" class="reconciliation-cash" aria-label="各策略现金（元）" hidden>${cash}</dl>
     ${assetComposition(account)}
@@ -711,7 +710,7 @@ function bindAccountActions(view) {
   const account = data.accounts[0];
   if (!account?.can_record || (view.id!=='etf' && view.account_id!=='etf')) return;
   if (view.id === 'etf') bindReconciliation(account);
-  const strategy = view.account_id==='etf' ? view.id : 'unassigned';
+  const strategy = view.account_id==='etf' ? view.id : 'holding_area';
   document.querySelector('#manual-entry').onclick = () => openEntry(account, null, strategy);
   document.querySelector('#position-transfer').onclick = () => openEntry(account, {side:'assign'}, strategy);
   document.querySelector('#cash-transfer').onclick = () => openEntry(account, {side:'cash_transfer'}, strategy);
@@ -885,7 +884,7 @@ function openAssetClassification(account, {code, kind, category}) {
   field.focus();
 }
 
-function openEntry(account, suggestion, strategy='unassigned', options={}) {
+function openEntry(account, suggestion, strategy='holding_area', options={}) {
   const dialog = document.querySelector('#event-dialog');
   const form = document.querySelector('#event-form');
   const error = document.querySelector('#event-error');
@@ -906,7 +905,7 @@ function openEntry(account, suggestion, strategy='unassigned', options={}) {
   const field = name => form.elements.namedItem(name);
   delete field('trading_account').dataset.context;
   field('side').value = 'buy';
-  const owners = `<option value="unassigned">未分配</option>${strategyOptions()}`;
+  const owners = strategyOptions();
   field('strategy').innerHTML = `<option value="">请选择策略</option>${owners}`;
   field('from_strategy').innerHTML = owners;
   const today = shanghaiToday();
@@ -918,12 +917,13 @@ function openEntry(account, suggestion, strategy='unassigned', options={}) {
     for (const key of ['side','code','qty']) if (suggestion[key] !== undefined) field(key).value = suggestion[key];
   }
   if (field('side').value==='cash_transfer') {
-    field('strategy').value=strategy==='unassigned'?'core':strategy;
-    field('from_strategy').value=Object.keys(account.cash_by_strategy).find(key=>key!==field('strategy').value && account.cash_by_strategy[key]>0) || 'unassigned';
+    field('strategy').value=strategy==='holding_area'?'core':strategy;
+    field('from_strategy').value=account.cash_by_strategy.holding_area>0 ? 'holding_area' :
+      Object.keys(account.cash_by_strategy).find(key=>key!==field('strategy').value && account.cash_by_strategy[key]>0) || 'holding_area';
   }
   if (field('side').value==='assign') {
-    field('from_strategy').value = options.fromStrategy || strategy || 'unassigned';
-    field('strategy').value = options.fromStrategy ? strategy : strategy==='core' ? 'unassigned' : 'core';
+    field('from_strategy').value = options.fromStrategy || strategy || 'holding_area';
+    field('strategy').value = options.fromStrategy ? strategy : strategy==='core' ? 'holding_area' : 'core';
     if (suggestion?.kind === 'fund') {
       field('strategy').value = ownerViews().find(row => row.id !== strategy && acceptsFunds(row))?.id || '';
     }
@@ -1083,7 +1083,7 @@ function openEntry(account, suggestion, strategy='unassigned', options={}) {
     for (const option of field('side').options) option.disabled=false;
     field('side').value = side;
     kind.value = '';
-    if (['assign','cash_transfer'].includes(mode) && field('from_strategy').value===field('strategy').value) field('strategy').value = field('from_strategy').value==='core' ? 'unassigned' : 'core';
+    if (['assign','cash_transfer'].includes(mode) && field('from_strategy').value===field('strategy').value) field('strategy').value = field('from_strategy').value==='core' ? 'holding_area' : 'core';
     form.oninput();
   });
   document.querySelector('#entry-all').onclick = () => {
@@ -1145,42 +1145,30 @@ function openEntry(account, suggestion, strategy='unassigned', options={}) {
   field(['buy','sell','assign'].includes(field('side').value) ? suggestion?.code && strategy ? 'qty' : 'code' : 'amount').focus();
 }
 
-function allocationRows(account) {
-  const rows = ownerViews().map(strategy => ({...strategy, target:strategy.budget_pct}));
-  const values = account.strategy_positions.filter(row => row.strategy === 'unassigned').map(row => row.market_value);
-  const holdings = values.every(finite) ? values.reduce((sum, value) => sum + value, 0) : null;
-  const cash = account.cash_by_strategy.unassigned;
-  const assets = finite(holdings) ? holdings + cash : null;
-  rows.push({id:'unassigned', name:'未分配', invested:holdings, cash, assets, target:null, deviation:null,
-    actual_pct:account.equity > 0 && finite(assets) ? assets / account.equity : null});
-  return rows;
-}
-
 function strategyAllocation(account) {
-  const rows = allocationRows(account);
+  const rows = ownerViews().map(row => ({...row, target:row.holding_only ? row.residual_pct : row.budget_pct}));
   const bar = row => {
     const actual = finite(row.actual_pct) ? row.actual_pct * 100 : null;
     const target = finite(row.target) ? row.target * 100 : null;
     const gap = row.deviation;
     const deviation = !finite(gap) ? '' : gap === 0 ? '已配平' : `${gap > 0 ? '超配' : '低配'} ${money(Math.abs(gap))} 元`;
     const emphasized = actual !== null && target !== null && !isAllocationBalanced(row.actual_pct - row.target);
-    const name = row.id === 'unassigned' ? `<strong>${esc(row.name)}</strong>` : `<button type="button" class="allocation-strategy-link" data-strategy-tab="${esc(row.id)}">${esc(row.name)}</button>`;
+    const name = `<button type="button" class="allocation-strategy-link" data-strategy-tab="${esc(row.id)}">${esc(row.name)}</button>`;
     const pending = account.strategy_pending_fund_value?.[row.id] || 0;
     const positions = finite(row.invested) ? `${money(row.invested - pending)} 元` : '待估值';
     return `<div class="allocation-row">
       <div class="allocation-row-top">${name}<b>${finite(row.assets) ? `${money(row.assets)} 元` : '待估值'}</b></div>
-      <div class="allocation-row-labels"><span>实际 ${actual === null ? (finite(account.equity) ? '—' : '待估值') : `${actual.toFixed(1)}%`}</span><span>${target === null ? (row.holding_only || row.id==='unassigned' ? '' : '目标未设置') : `目标 ${target.toFixed(1)}%`}</span></div>
+      <div class="allocation-row-labels"><span>实际 ${actual === null ? (finite(account.equity) ? '—' : '待估值') : `${actual.toFixed(1)}%`}</span><span>${target === null ? '目标未设置' : `${row.holding_only ? '预算余量' : '目标'} ${target.toFixed(1)}%`}</span></div>
       <div class="allocation-track" aria-hidden="true">${actual === null ? '' : `<div class="allocation-fill allocation-${esc(row.id)}" style="width:${Math.max(0, Math.min(100, actual))}%"></div>`}${target === null ? '' : `<i class="allocation-target" style="left:${target}%"></i>`}</div>
       <div class="allocation-row-foot"><span>持仓 ${positions} · 现金 ${money(row.cash)} 元${pending ? ` · 在途 ${money(pending)} 元` : ''}</span><strong class="${emphasized ? 'allocation-gap' : ''}">${deviation}</strong></div>
     </div>`;
   };
   const layer = (title, hint, groupRows) => `<div class="allocation-layer"><div class="allocation-layer-head"><h3>${title}</h3><span>${hint}</span></div>${groupRows.map(bar).join('')}</div>`;
   const allocation = rows.filter(row => isAllocation(row));
-  const satellites = rows.filter(row => row.id !== 'unassigned' && !row.holding_only && !isAllocation(row));
-  const unassigned = rows.filter(row => row.id === 'unassigned' && row.assets !== 0);
+  const satellites = rows.filter(row => !row.holding_only && !isAllocation(row));
   const bars = [layer('配置层', '按配置目标低频复核', allocation),
     satellites.length ? layer('量化卫星', '小预算试验，错了砍预算', satellites) : '',
-    rows.filter(row=>row.holding_only).map(bar).join(''), unassigned.map(bar).join('')].join('');
+    rows.filter(row=>row.holding_only).map(bar).join('')].join('');
   return `<section class="section strategy-panel" aria-labelledby="strategy-allocation-title">
     <div class="section-heading"><h2 id="strategy-allocation-title">策略配比</h2>
       <div class="allocation-actions"><button type="button" data-cash-rebalance class="text-button">现金再平衡</button>${account.can_record ? '<a href="/settings/budgets" class="text-button">编辑目标占比</a>' : ''}<a class="text-button" href="/api/etf/export">导出配置与持仓</a></div>
@@ -1545,7 +1533,7 @@ function openCashAllocation(account, options={}) {
   const button=form.querySelector('[type=submit]');
   let saving=false, saved=false, planning=false;
   let requestId=crypto.randomUUID();
-  form.reset();error.hidden=true;fields.disabled=false;button.disabled=false;button.textContent='确认分配';
+  form.reset();error.hidden=true;fields.disabled=false;button.disabled=!!options.rebalance;button.textContent='确认分配';
   document.querySelector('#cash-title').textContent=options.edit?'修改历史现金分配':options.rebalance?'现金再平衡':'分配现金';
   const preview=document.querySelector('#cash-rebalance-preview');
   preview.hidden=true;
@@ -1557,18 +1545,22 @@ function openCashAllocation(account, options={}) {
   dateField.max=account.max_date || '';
   dateField.required=!!options.edit;
   document.querySelector('#cash-total').textContent=money(account.cash);
-  document.querySelector('#cash-strategies').innerHTML=ownerViews().map(({id,name}) =>
+  const cashFields=document.querySelector('#cash-strategies');
+  cashFields.hidden=!!options.rebalance;
+  cashFields.innerHTML=data.strategies.map(({id,name}) =>
     `<label>${esc(name)} / 元<input name="${esc(id)}" type="number" min="0" step="0.01" required></label>`).join('');
-  const inputs = ownerViews().map(({id}) => form.elements.namedItem(id));
+  const inputs = data.strategies.map(({id}) => form.elements.namedItem(id));
   for (const input of inputs) input.value=((options.edit?.cash_allocations || account.cash_by_strategy)[input.name] || 0).toFixed(2);
   function update() {
     requestId=crypto.randomUUID();
     preview.hidden=true;
     const allocated=inputs.reduce((sum,input)=>sum+Number(input.value),0);
     const remaining=Math.round((account.cash-allocated)*100)/100;
-    const message=remaining<0 ? `超出账户现金 ${money(-remaining)} 元` : `未分配现金 ${money(remaining)} 元`;
-    document.querySelector('#cash-remaining').textContent=message;
-    document.querySelector('#cash-remaining').classList.toggle('invalid',remaining<0);
+    const message=remaining<0 ? `超出账户现金 ${money(-remaining)} 元` : `待定现金 ${money(remaining)} 元`;
+    const remainder=document.querySelector('#cash-remaining');
+    remainder.textContent=message;
+    remainder.hidden=!!options.rebalance && remaining===0;
+    remainder.classList.toggle('invalid',remaining<0);
     inputs[0].setCustomValidity(remaining<0 ? message : '');
   }
   form.oninput=update;
@@ -1583,19 +1575,30 @@ function openCashAllocation(account, options={}) {
     try {
       const plan=await accountRequest('/api/etf/cash/rebalance',{revision:account.revision});
       if(!dialog.open || dialog.dataset.request!==dialogRequest)return;
-      for(const [key,value] of Object.entries(plan.cash_allocations)) form.elements.namedItem(key).value=value.toFixed(2);
+      for(const input of inputs) input.value=plan.cash_allocations[input.name].toFixed(2);
       update();
-      const rows=plan.rows.map(row=>`<tr><td>${esc(row.name)}</td><td>${row.change>0?'+':''}${money(row.change)}</td><td>${money(row.after_cash)}</td><td>${row.deviation===null?'目标未设':`${row.deviation>0?'超配':row.deviation<0?'低配':'已对齐'}${row.deviation===0?'':` ${money(Math.abs(row.deviation))}`}`}</td></tr>`).join('');
+      const area=plan.rows.find(row=>row.id==='holding_area');
+      const rows=plan.rows.filter(row=>row.deviation!==null || row===area).map(row=>{
+        const gap=row===area ? Math.round((row.invested+row.after_cash-row.residual_budget)*100)/100 : row.deviation;
+        const label=row===area ? (gap>0?'高于余量':gap<0?'低于余量':'符合余量') : (gap>0?'超配':gap<0?'低配':'已对齐');
+        return `<tr><td>${esc(row.name)}</td><td>${row.change>0?'+':''}${money(row.change)}</td><td>${money(row.after_cash)}</td><td>${label}${gap?` ${money(Math.abs(gap))}`:''}</td></tr>`;
+      }).join('');
       const overweight=plan.rows.filter(row=>row.holding_overweight).map(row=>row.name);
-      const note=plan.shortfall>0?`现金不足以补齐全部目标，按各项现金缺口比例分配，尚差 ${money(plan.shortfall)} 元。`:'可通过本次现金调整达到已设置的目标配比。';
+      const note=plan.shortfall>0?`按当前持仓，达到策略预算共需现金 ${money(plan.required_cash)} 元。可调配 ${money(plan.available_cash)} 元，按各策略所需现金的比例分配后，仍低于预算 ${money(plan.shortfall)} 元。`:overweight.length?'已补足低配策略的现金。':'本次调整后，各策略达到已设预算。';
+      const retained=plan.rows.filter(row=>row.deviation===null && row!==area && row.after_cash>0)
+        .map(row=>`${esc(row.name)}保留现金 ${money(row.after_cash)} 元。`).join('');
       const basis = valuationLabel(plan.valuation) + (Object.keys(account.fund_positions || {}).length ? ' · 场外按各自净值日' : '');
-      preview.innerHTML=`<p class="entry-preview">${note}${overweight.length?` ${esc(overweight.join('、'))}仅持仓已超配，需调整持仓才能完全对齐。`:''}</p><p class="subtle">计算依据：${esc(basis)}；未设置目标的策略保留原现金。</p><div class="table-wrap"><table class="cash-plan-table"><thead><tr><th>策略</th><th>现金调整 / 元</th><th>调整后现金 / 元</th><th>调整后偏离 / 元</th></tr></thead><tbody>${rows}</tbody></table></div><p class="subtle">仅调整策略现金，持仓与总现金不变；检查后确认保存。</p>`;
+      preview.innerHTML=`<p class="entry-preview">${note}${overweight.length?` ${esc(overweight.join('、'))}的持仓市值已超过预算。`:''}${retained}</p><p class="subtle">${esc(basis)}</p><div class="table-wrap"><table class="cash-plan-table"><thead><tr><th>策略</th><th>现金调整 / 元</th><th>调整后现金 / 元</th><th>调整后偏离预算 / 元</th></tr></thead><tbody>${rows}</tbody></table></div>`;
       preview.hidden=false;
-    } catch(failure) {error.textContent=failure.message;error.hidden=false;}
-    finally {planning=false;rebalanceButton.disabled=!finite(account.equity);button.disabled=false;}
+    } catch(failure) {
+      if(dialog.dataset.request===dialogRequest) {preview.hidden=true;error.textContent=failure.message;error.hidden=false;}
+    } finally {
+      planning=false;
+      if(dialog.dataset.request===dialogRequest) {rebalanceButton.disabled=!finite(account.equity);button.disabled=!!options.rebalance && preview.hidden;}
+    }
   };
   form.onsubmit=async event=>{
-    event.preventDefault();if(saving || planning)return;
+    event.preventDefault();if(saving || planning || (options.rebalance && preview.hidden))return;
     if(!form.reportValidity())return;
     saving=true;button.disabled=true;error.hidden=true;fields.disabled=true;
     const day=shanghaiToday();

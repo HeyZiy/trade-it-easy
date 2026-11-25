@@ -6,7 +6,7 @@ from pathlib import Path
 
 from data_provider.security_names import security_name
 from src import account_benchmarks, account_valuation, portfolio_config
-from src.account_replay import FUND_TRADES, snapshot
+from src.account_replay import FUND_TRADES, display_event, snapshot
 from src.account_store import load, revision, save
 from src.advice_identity import short_digest
 from src.json_store import locked
@@ -136,12 +136,13 @@ def strategy_facts(state, view, key):
                                if allocation else None),
             "rebalance_thresholds": thresholds,
             "remaining_budget": remaining, "buying_power": min(cash, remaining) if remaining is not None else None,
-            "suggestions": [], "trades": [e for e in state["events"]
+            "suggestions": [], "trades": [e for e in map(display_event, state["events"])
                                            if e.get("strategy", "core" if e["side"] in FUND_TRADES else None) == key
                                            or e.get("from_strategy") == key
                                            or (e["side"] == "cash_assign" and key in e["cash_allocations"])],
             "history": [], "performance": None,
             "benchmark_name": account_benchmarks.benchmark_name(key) if key in portfolio_config.STRATEGY_NAMES else None,
+            "residual_pct": max(0, 1 - sum(state["budgets"].values())) if key == portfolio_config.HOLDING_AREA else None,
             "cash": cash, "assets": assets, "actual_pct": assets / view["equity"] if view["equity"] and assets is not None else None,
             "deviation": round(assets - budget, 2) if budget is not None and assets is not None else None, "status": status}
 
@@ -202,7 +203,7 @@ def strategy_views(state, view, *, today, names=None):
         row = (allocation_view(state, view, key, names=names) if key in portfolio_config.ALLOCATION_NAMES
                else strategy_facts(state, view, key))
         if key == portfolio_config.HOLDING_AREA:
-            row.update(holding_only=True, status="待定持仓", fund_positions=view["strategy_fund_positions"].get(key, {}),
+            row.update(holding_only=True, status=row["name"], fund_positions=view["strategy_fund_positions"].get(key, {}),
                        fund_pending={i: order for i, order in view["fund_pending"].items() if order["strategy"] == key},
                        pending_fund_value=view["strategy_pending_fund_value"][key])
             result.append(row)

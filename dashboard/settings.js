@@ -182,7 +182,7 @@ function editSection(result) {
     const issue=sum>100+1e-8 ? '策略目标占比合计不能超过100%。' : '';
     budgetInputs[0]?.setCustomValidity(issue);
     const summary=document.querySelector('#config-budget-total');
-    summary.textContent=`已分配 ${+sum.toFixed(4)}% · ${issue || `未分配 ${+(100-sum).toFixed(4)}%`}`;
+    summary.textContent=`正式策略 ${+sum.toFixed(4)}% · ${issue || `待定占比 ${+(100-sum).toFixed(4)}%`}`;
     summary.classList.toggle('invalid',!!issue);
   }
   function validateMembers() {

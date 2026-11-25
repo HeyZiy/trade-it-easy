@@ -17,7 +17,7 @@ from src.portfolio_config import ALLOCATION_NAMES, OWNER_NAMES, fund_only
 from src.trading_calendar import SHANGHAI
 
 
-STRATEGIES = {**OWNER_NAMES, "unassigned": "未分配"}
+STRATEGIES = OWNER_NAMES
 ASSET_NAMES = {"equity": "权益", "bond": "债券", "commodity": "商品", "cash": "现金类",
                "mixed": "混合", "unknown": "待分类", "gold": "黄金"}
 HOLDING_NAMES = {"etf": "ETF", "stock": "股票", "other": "其他场内证券", "fund": "场外基金"}
@@ -103,14 +103,9 @@ def _configuration(book, state, view, names):
     budgets = config["budgets"]
     equity = view["equity"]
     strategies = {key: strategy_facts(state, view, key) for key in OWNER_NAMES}
-    unassigned = "unassigned"
-    cash = view["cash_by_strategy"][unassigned]
-    unassigned_holdings = _sum_values(row["market_value"] for row in view["strategy_positions"]
-                                      if row["strategy"] == unassigned)
-    strategies[unassigned] = {"cash": cash, "assets": _sum_values((cash, unassigned_holdings)),
-                              "budget_pct": None}
     strategy_rows = [
-        [STRATEGIES[key], row["budget_pct"], _share(row["assets"], equity), row["assets"], row["cash"],
+        [STRATEGIES[key], row["residual_pct"] if row["residual_pct"] is not None else row["budget_pct"],
+         _share(row["assets"], equity), row["assets"], row["cash"],
          view["strategy_pending_fund_value"].get(key, 0)]
         for key, row in strategies.items()
     ]

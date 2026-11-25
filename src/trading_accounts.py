@@ -103,7 +103,7 @@ class Balances:
         self.cash = defaultdict(Decimal, {UNKNOWN: Decimal(str(initial["cash"]))})
         self.positions = defaultdict(Decimal)
         for row in initial["positions"]:
-            self.positions[UNKNOWN, "listed", row.get("strategy", "unassigned"), row["code"]] += row["count"]
+            self.positions[UNKNOWN, "listed", row["strategy"], row["code"]] += row["count"]
 
     def apply(self, event, cash_change):
         account = event.get("trading_account", UNKNOWN)
@@ -117,7 +117,7 @@ class Balances:
         if side not in ("buy", "sell", "fund_buy", "fund_confirm", "fund_redeem", "assign", "custody_transfer"):
             return
         kind = channel(event)
-        strategy = event.get("strategy", "core" if kind == "fund" else "unassigned")
+        strategy = event.get("strategy", "core")  # 早期场外流水默认归入长期配置。
         key = account, kind, strategy, event["code"]
         qty = Decimal(str(event["qty"]))
         if side == "assign":

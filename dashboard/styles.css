@@ -329,7 +329,6 @@ dialog details { margin: 15px 0; color: var(--muted); font-size: 12px; }
 .allocation-quality { background: linear-gradient(90deg, #887193, #a48aac); }
 .allocation-rotation { background: linear-gradient(90deg, #6e8e9d, #89a5b1); }
 .allocation-holding_area { background: linear-gradient(90deg, #477d9f, #6394b2); }
-.allocation-unassigned { background: linear-gradient(90deg, #a77d42, #c29b61); }
 .allocation-target { position: absolute; top: -4px; bottom: -4px; border-left: 2px dashed var(--bronze); transform: translateX(-1px); }
 .allocation-row-foot { grid-area: 1 / 3 / 3; display: grid; gap: 3px; color: var(--muted); font-size: 12px; }
 .allocation-row-foot strong:empty { display: none; }

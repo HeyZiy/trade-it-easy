@@ -631,16 +631,19 @@ def test_buy_suggestions_do_not_treat_projected_sales_as_actual_cash(account, ta
     assert view['cash'] == 0
     assert not view['trades']
 
-def test_unknown_budgets_and_positions_are_not_assigned_automatically(tmp_path):
+def test_positions_and_cash_without_strategy_belong_to_holding_area(tmp_path):
     path = tmp_path / 'etf_account.json'
     initialize(path, asof='2025-01-04', cash=1000,
                positions=[dict(code='588000', name='ETF', count=1000, price=2)], targets={'588000': .4})
     collect_close(path, '2025-01-06', lambda *_: {'588000': 2})
     view = account_data(path)
     assert view['equity'] == 3000 and view['cash'] == 1000
-    assert view['strategy_positions'][0]['strategy'] == 'unassigned'
+    assert view['strategy_positions'][0]['strategy'] == 'holding_area'
     assert all(s['budget'] is None and s['buying_power'] is None and not s['positions'] and not s['suggestions']
-               for s in view['strategies'])
+               for s in view['strategies'] if not s.get('holding_only'))
+    area = next(s for s in view['strategies'] if s.get('holding_only'))
+    assert area['assets'] == 3000 and area['cash'] == 1000 and area['residual_pct'] == 1
+    assert not area['suggestions']
 
 
 def test_budgets_share_one_cash_pool_and_same_etf_is_aggregated(account):
@@ -758,8 +761,8 @@ def test_strategy_pnl_accounts_for_trades_fees_dividends_and_ignores_funding(acc
     assert view['cash'] == 1502
     record_event(account, event(account, 'dividend', strategy='unassigned', amount=7))
     view = account_data(account)
-    assert [s['pnl'] for s in view['strategies']] == [1103, -1, 0, 0]
-    assert view['strategy_pnl']['unassigned'] == 7
+    assert [s['pnl'] for s in view['strategies']] == [1103, -1, 0, 7]
+    assert view['strategy_pnl']['holding_area'] == 7
     assert view['pnl'] == 1109
 
 
@@ -786,7 +789,7 @@ def test_unassigned_holding_stays_in_account_but_outside_core_strategy(tmp_path)
     assert len(view['positions']) == 2
     assert [p['code'] for p in core['positions']] == ['510300']
     assert core['invested'] == 2000 and core['pnl'] == 0
-    assert view['strategy_pnl']['unassigned'] == view['pnl'] == 100
+    assert view['strategy_pnl']['holding_area'] == view['pnl'] == 100
     assert all(r['code'] != '588000' for r in core['suggestions'])
 
 def test_cash_ownership_is_separate_from_targets_and_allocation_preserves_nav(account):
@@ -798,7 +801,7 @@ def test_cash_ownership_is_separate_from_targets_and_allocation_preserves_nav(ac
     record_event(account, payload)
     record_event(account, payload)
     after = account_data(account)
-    assert after['cash_by_strategy'] == {'core':400,'rotation':600,'quality':0,'holding_area':0,'unassigned':0}
+    assert after['cash_by_strategy'] == {'core':400,'rotation':600,'quality':0,'holding_area':0}
     assert [s['actual_pct'] for s in after['strategies']] == [.8, .2, 0, 0]
     assert after['equity'] == before['equity'] and after['pnl'] == before['pnl']
     assert after['history'] == before['history']
@@ -816,7 +819,7 @@ def test_strategy_cannot_spend_another_strategy_cash(account):
     assert account.read_bytes() == saved
     record_event(account, event(account, 'buy', code='588000', name='ETF', qty=100, price=2, fee=1))
     after = account_data(account)
-    assert after['cash_by_strategy'] == {'core':199,'rotation':600,'quality':0,'holding_area':0,'unassigned':0}
+    assert after['cash_by_strategy'] == {'core':199,'rotation':600,'quality':0,'holding_area':0}
     assert after['cash'] == 799
 
 
@@ -849,6 +852,6 @@ def test_external_flows_update_selected_cash_ownership_without_profit(account):
     record_event(account, event(account, 'deposit', strategy='rotation', amount=50))
     record_event(account, event(account, 'withdraw', strategy='core', amount=1000))
     after = account_data(account)
-    assert after['cash_by_strategy'] == {'core':0,'rotation':50,'quality':0,'holding_area':0,'unassigned':0}
+    assert after['cash_by_strategy'] == {'core':0,'rotation':50,'quality':0,'holding_area':0}
     assert after['cash'] == 50 and after['pnl'] == 0
     assert [s['pnl'] for s in after['strategies']] == [0,0,0,0]

@@ -12,7 +12,7 @@ from src import trading_accounts
 
 STRATEGY_NAMES = {"core": "长期配置", "rotation": "跨资产动量", "quality": "质量动量"}
 HOLDING_AREA = "holding_area"
-OWNER_NAMES = {**STRATEGY_NAMES, HOLDING_AREA: "待定持仓"}
+OWNER_NAMES = {**STRATEGY_NAMES, HOLDING_AREA: "待定组合"}
 FUND_OWNERS = {"core", HOLDING_AREA}
 ALLOCATION_NAMES = {"core": STRATEGY_NAMES["core"]}
 ASSET_CLASSES = {"equity", "bond", "commodity", "cash", "mixed"}

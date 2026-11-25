@@ -232,8 +232,8 @@ def test_edit_replays_same_day_close_and_next_day_availability(path):
     assert (before_transfer["avail_count"], before_transfer["close"]) == (0, 4)
     assert (before_sale["avail_count"], before_sale["close"]) == (100, 4)
     after = account.snapshot(state, "2025-01-07")
-    assert after["cash_by_strategy"] == {"core": 650, "rotation": 500, "quality": 0, "holding_area": 0, "unassigned": 0}
-    assert after["strategy_pnl"] == {"core": -50, "rotation": 200, "quality": 0, "holding_area": 0, "unassigned": 0}
+    assert after["cash_by_strategy"] == {"core": 650, "rotation": 500, "quality": 0, "holding_area": 0}
+    assert after["strategy_pnl"] == {"core": -50, "rotation": 200, "quality": 0, "holding_area": 0}
 
 
 def test_fund_assignment_preserves_account_value_and_moves_future_pnl(path):
@@ -393,7 +393,7 @@ def test_cash_rebalance_fills_all_strategy_gaps_and_changes_no_holdings(path):
     assert plan['cash_allocations'] == {'core': 400, 'rotation': 300, 'quality': 300, 'holding_area': 0}
     assert plan['shortfall'] == 0
     assert {row['id']: row['deviation'] for row in plan['rows']} == {
-        'core': 0, 'rotation': 0, 'quality': 0, 'holding_area': None, 'unassigned': None}
+        'core': 0, 'rotation': 0, 'quality': 0, 'holding_area': None}
     before = account.account_data(path)
     account.record_event(path, payload(path, 'cash_assign', cash_allocations=plan['cash_allocations']))
     after = account.account_data(path)
@@ -417,10 +417,43 @@ def test_cash_rebalance_allocates_to_cents_without_losing_money(path):
     assert sum(round(r['after_cash'] * 100) for r in plan['rows']) == 100000
 
 
+def test_cash_shortfall_explains_assets_outside_strategy_budgets(path):
+    account.record_event(path, payload(path, 'assign', code='588000', qty=300,
+                                       from_strategy='core', strategy='holding_area'))
+    plan = rebalance(path, {'core': .7, 'rotation': .1, 'quality': .1})
+    # 600 元持仓在待定区，账户有 300 元未设预算，三个策略合计低配 300 元。
+    assert (plan['required_cash'], plan['available_cash'], plan['shortfall']) == (1300, 1000, 300)
+    assert sum(round(row['deviation'] * 100) for row in plan['rows']
+               if row['deviation'] is not None) == -30000
+
+
+def test_holding_area_sale_and_legacy_unassigned_cash_fund_strategy_budgets(path):
+    account.record_event(path, payload(path, 'assign', code='588000', qty=100,
+                                       from_strategy='core', strategy='holding_area'))
+    account.record_event(path, payload(path, 'sell', code='588000', qty=100, price=2, fee=0,
+                                       strategy='holding_area'))
+    account.record_event(path, payload(path, 'cash_assign', cash_allocations={'core': 900}))
+    # 旧流水将 300 元分作待定现金和未分配现金。读取时应合并，两者都可调配。
+    state = account.load(path)
+    state['events'][-1]['cash_allocations'].update(holding_area=200, unassigned=100)
+    account._save(path, state)
+    before = account.account_data(path)
+    assert before['cash_by_strategy']['holding_area'] == 300
+    assert 'unassigned' not in before['cash_by_strategy']
+    plan = rebalance(path, {'core': .8, 'rotation': .1})
+    assert plan['cash_allocations'] == {'core': 600, 'rotation': 300, 'quality': 0, 'holding_area': 300}
+    plan = rebalance(path, {'core': .8, 'rotation': .2})
+    assert plan['cash_allocations']['holding_area'] == 0
+    account.record_event(path, payload(path, 'cash_assign', cash_allocations=plan['cash_allocations']))
+    after = account.account_data(path)
+    assert after['cash_by_strategy']['rotation'] == 600
+    assert (after['equity'], after['pnl'], after['positions']) == (before['equity'], before['pnl'], before['positions'])
+
+
 def test_cash_rebalance_preserves_cash_of_unconfigured_strategy(path):
     account.record_event(path, payload(path, 'cash_assign', cash_allocations={'core': 800, 'quality': 200}))
     plan = rebalance(path, {'core': .8, 'rotation': .1})
-    assert plan['cash_allocations'] == {'core': 400, 'rotation': 300, 'quality': 200, 'holding_area': 0}
+    assert plan['cash_allocations'] == {'core': 400, 'rotation': 300, 'quality': 200, 'holding_area': 100}
     assert plan['rows'][-1]['after_cash'] == 100
 
 
