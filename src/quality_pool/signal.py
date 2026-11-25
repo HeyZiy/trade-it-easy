@@ -133,7 +133,13 @@ def run_signal(today: date, dry_run: bool = False,
             eligible = quality_pool
             if ranked:
                 shortlist = ranked[:config.TOP_N]
-                industries = feeds.fetch_industries(sorted(set(shortlist) | held), asof)
+                blocked = screener.entry_trend_blocked(shortlist, closes) - held
+                shortlist = [code for code in shortlist if code not in blocked]
+                if blocked:
+                    lines.append(f"- MA20 弱势暂缓新开仓：{'、'.join(sorted(blocked))}")
+                industry_codes = set(shortlist) | held
+                if industry_codes:
+                    industries = feeds.fetch_industries(sorted(industry_codes), asof)
                 selected, kept = screener.select_targets(
                     shortlist, held, passed, industries, unknown - exits.keys())
         except Exception as exc:

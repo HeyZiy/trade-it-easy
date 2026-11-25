@@ -126,3 +126,41 @@ def test_confirmed_exit_survives_missing_entry_history(world):
 
     assert strategy._held(stub.ctx) == set(codes[1:6])
     assert stub.orders[-1][:3] == ('S', str(calendar[271].date()), codes[0])
+
+
+def test_ma20_defers_new_entry_without_extending_top_six_or_selling_holdings(world):
+    stub, strategy, codes, calendar = start(world, 'pool_rotation_ma20.py')
+    stub.closes[codes[0]].loc[calendar[269]] = 9.0
+    stub.closes[codes[1]].loc[calendar[270]] = 9.0
+
+    stub.run_days(calendar[270:271])
+    assert strategy._held(stub.ctx) == set(codes[1:6])
+
+    stub.run_days(calendar[271:272])
+    assert strategy._held(stub.ctx) == set(codes[:6])
+    assert [row[0] for row in stub.orders] == ['B'] * 6
+
+
+@pytest.mark.parametrize('block_sale, financial_exit', [(False, False), (True, False), (True, True)])
+def test_ma20_exit_and_next_day_recovery(world, block_sale, financial_exit):
+    stub, strategy, codes, calendar = start(world, 'pool_rotation_ma20_exit.py')
+    code = codes[0]
+    stub.closes[code].loc[calendar[270]] = 9.0
+    stub.run_days(calendar[270:271])
+    assert strategy._held(stub.ctx) == set(codes[:6])
+
+    if block_sale:
+        stub.quote_overrides[code]['low_limit'] = 10.0
+    if financial_exit:
+        stub.date_tables['indicator'].loc[0, 'inc_net_profit_year_on_year'] = 5.0
+    stub.run_days(calendar[271:272])
+    assert (code in strategy._held(stub.ctx)) == block_sale
+    assert (code in stub.g.trend_exit_pending) == block_sale
+    if not block_sale:
+        assert stub.orders[-1][:3] == ('S', str(calendar[271].date()), code)
+        assert strategy._held(stub.ctx) == set(codes[1:6])
+
+    stub.quote_overrides[code]['low_limit'] = .01
+    stub.run_days(calendar[272:273])
+    assert code not in stub.g.trend_exit_pending
+    assert (code not in strategy._held(stub.ctx)) == financial_exit

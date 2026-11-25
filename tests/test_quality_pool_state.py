@@ -137,6 +137,26 @@ def test_full_pool_report_preserves_shortlist_and_lists_unranked(env):
     assert current["pending_plan"]["selected"] == codes[:config.INDUSTRY_CAP]
 
 
+def test_ma20_blocks_only_new_entries_inside_original_top_six(env):
+    codes = [str(600001 + i) for i in range(8)]
+    _patch_signal_data(env, universe=set(codes))
+    original = feeds.fetch_closes
+
+    def closes_with_decline(*args, **kwargs):
+        closes = original(*args, **kwargs)
+        closes.loc[closes.index[-1], codes[:2]] = 9.0
+        return closes
+
+    env.setattr(feeds, 'fetch_closes', closes_with_decline)
+    env.setattr(feeds, 'fetch_industries', lambda requested, asof: {c: c for c in requested})
+    current = state.empty_state()
+    report = signal.run_signal(date(2026, 10, 2), state=current,
+                               held_codes={codes[0]}, state_writer=lambda _: None)
+    assert current['pending_plan']['selected'] == [codes[0], *codes[2:6]]
+    assert current['exit_queue'] == {}
+    assert f'MA20 弱势暂缓新开仓：{codes[1]}' in report
+
+
 def test_signal_prefilters_candidate_st_and_missing_status(env):
     _patch_signal_data(env, universe={"600001", "600002", "600003", "600004", "600005"})
     env.setattr(feeds, 'fetch_signal_status', lambda *args: pd.DataFrame(

@@ -87,6 +87,15 @@ def rank_pool(pool: List[str], closes: pd.DataFrame) -> Tuple[List[str], Dict[st
     return sorted(scores, key=lambda c: (-scores[c], c)), scores
 
 
+def entry_trend_blocked(shortlist: List[str], closes: pd.DataFrame) -> Set[str]:
+    """用截至昨收的价格识别前六名中的 MA20 弱势候选。"""
+    recent = closes[shortlist].iloc[-21:]
+    latest = recent.iloc[-1]
+    # 两期均线共享 19 个收盘价，方向取决于移入价和移出价。
+    weakening = latest.lt(recent.iloc[1:].mean()) & latest.lt(recent.iloc[0])
+    return set(weakening.index[weakening])
+
+
 def industry_buy_block_reason(key: Optional[str], occupied,
                               industries: Dict[str, str]) -> Optional[str]:
     """行业约束单点：新开仓的行业闸门，选股与执行核对共用。
