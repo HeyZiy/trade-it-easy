@@ -105,10 +105,36 @@ def test_full_portfolio_reviews_only_holdings_and_skips_entry_data(env):
 
     env.setattr(feeds, "fetch_fundamentals", holdings_only)
     env.setattr(feeds, "fetch_closes", lambda *a, **kw: pytest.fail("满仓不拉排名行情"))
-    signal.run_signal(date(2026, 10, 2), state=current,
-                      held_codes=held, state_writer=lambda _: None)
+    report = signal.run_signal(date(2026, 10, 2), state=current,
+                               held_codes=held, state_writer=lambda _: None)
+    assert "未重算全池排名" in report and signal.POOL_HEADING not in report
     assert set(current["pending_plan"]["kept"]) == held
     assert current["exit_queue"] == {}
+
+
+def test_full_pool_report_preserves_shortlist_and_lists_unranked(env):
+    codes = [str(600001 + i) for i in range(9)]
+    _patch_signal_data(env, universe=set(codes))
+    closes = feeds.fetch_closes
+    env.setattr(feeds, "fetch_closes", lambda *a, **kw: closes(*a, **kw).drop(columns=codes[-1]))
+    industry_requests = []
+
+    def industries(requested, asof):
+        industry_requests.append(requested)
+        return dict.fromkeys(requested, "银行")
+
+    env.setattr(feeds, "fetch_industries", industries)
+    env.setattr(signal, "names_for", lambda _: {codes[0]: "样例股票"})
+    current = state.empty_state()
+    report = signal.run_signal(date(2026, 10, 2), state=current,
+                               held_codes=set(), state_writer=lambda _: None)
+    table = report.split(signal.POOL_HEADING)[1]
+    assert "通过质量筛选 9 只，参与动量排名 8 只" in table
+    assert "| 1 | 样例股票（600001） | +0.00% | 拟补位 | 16.0% | +20.0% | 15.00 | 2.00 |" in table
+    assert "| 3 | 600003 | +0.00% | 补位范围内·未入选 |" in table
+    assert "| 7 | 600007 |" in table and "| — | 600009 |" in table
+    assert industry_requests == [codes[:6]]
+    assert current["pending_plan"]["selected"] == codes[:config.INDUSTRY_CAP]
 
 
 def test_signal_prefilters_candidate_st_and_missing_status(env):

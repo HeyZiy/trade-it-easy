@@ -1,5 +1,3 @@
-const esc = value => String(value ?? '—').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
-const finite = value => typeof value === 'number' && Number.isFinite(value);
 const number = value => finite(value) ? value.toLocaleString('zh-CN', {maximumFractionDigits:0}) : '—';
 const price = value => finite(value) ? value.toLocaleString('zh-CN', {minimumFractionDigits:2, maximumFractionDigits:4}) : '—';
 const money = value => finite(value) ? value.toLocaleString('zh-CN', {minimumFractionDigits:2, maximumFractionDigits:2}) : '—';
@@ -11,6 +9,7 @@ const accountName = account => account?.name || '账户';
 const reportDate = value => /^\d{8}$/.test(value) ? `${value.slice(0,4)}-${value.slice(4,6)}-${value.slice(6)}` : value;
 const timestamp = day => Date.parse(`${day}T00:00:00Z`);
 const SIDES = {buy:'买入', sell:'卖出', dividend:'分红', deposit:'入金', withdraw:'出金', assign:'持仓划转', cash_assign:'现金分配', cash_transfer:'现金划转', fund_buy:'场外申购', fund_redeem:'场外赎回', fund_pending:'场外申购', fund_confirm:'场外申购确认', fund_void:'申购作废'};
+SIDES.custody_transfer = '账户间划转';
 const strategyOptions = (strategies = data.strategies) => strategies.map(({id, name}) =>
   `<option value="${esc(id)}">${esc(name)}</option>`).join('');
 const strategyName = id => id==='unassigned' ? '未分配' : data.strategies.find(row=>row.id===id)?.name;
@@ -25,7 +24,7 @@ const allocationToleranceNote = `${ALLOCATION_TOLERANCE*100} 个百分点内视�
 const isAllocationBalanced = deviation => Math.abs(deviation) <= ALLOCATION_TOLERANCE + Number.EPSILON;
 let data, selected = 0, chartRange = 'all', chartObserver;
 let coreSort = {key: null, dir: 1};
-let selectedReport, reportRequest, configRequest;
+let selectedReport, reportRequest;
 let overviewRequest = 0, appliedOverviewRequest = 0;
 const recordDisplays = new Map();
 let entryReceipt = '';
@@ -35,7 +34,6 @@ const requestedFundNames = new Set();
 const requestedSecurityNames = new Set();
 let quoteRequestPending = false, quotePollTimer, quotePolling = false, quoteError = '';
 const fundDisplayName = code => data.accounts[0].fund_names?.[code];
-const quoteTime = value => new Date(value).toLocaleString('zh-CN', {timeZone:'Asia/Shanghai',hour12:false});
 const shanghaiToday = () => new Intl.DateTimeFormat('en-CA',{timeZone:'Asia/Shanghai',year:'numeric',month:'2-digit',day:'2-digit'}).format(new Date());
 const quotePrice = row => finite(row.close) ? price(row.close) : '<small class="price-pending">待估值</small>';
 const refreshInProgress = state => state?.running || state?.funds?.running;
@@ -133,10 +131,10 @@ function warnings(account) {
 }
 
 function chartSection(account) {
-  const history = account?.history || [];
-  const hasHistory = history.some(row=>finite(row.nav) && row.nav>0);
+  const history = chartPoints(account?.history || [], 'all', false);
+  const hasHistory = history.length > 0;
   const hasBenchmark = !!account?.benchmark_name && history.some(row=>finite(row.benchmark_nav) && row.benchmark_nav>0);
-  const start = account?.start_date || account?.history?.[0]?.date;
+  const start = history[0]?.date || account?.start_date;
   let basis = '';
   const lastClose = history.findLast(row => finite(row.nav) && row.nav > 0);
   if (account?.benchmark_name && hasHistory) {
@@ -158,14 +156,16 @@ function chartSection(account) {
 }
 
 function chartPoints(history, range, interval) {
-  if (!history.length || range === 'all') return history;
   const valid = row => finite(row.nav) && row.nav > 0;
+  // 策略启用前也有账户收盘记录，横轴从策略首次有效净值开始。
+  const first = history.findIndex(valid);
+  if (first < 0) return [];
+  if (range === 'all') return history.slice(first);
   const end = interval ? history.findLastIndex(valid) : history.length - 1;
-  if (end < 0) return [];
   const cutoff = timestamp(history[end].date) - Number(range) * 86400000;
-  if (!interval) return history.filter(row => timestamp(row.date) >= cutoff);
+  if (!interval) return history.slice(first).filter(row => timestamp(row.date) >= cutoff);
   const start = history.findLastIndex(row => timestamp(row.date) <= cutoff && valid(row));
-  return history.slice(start < 0 ? history.findIndex(valid) : start, end + 1);
+  return history.slice(start < 0 ? first : start, end + 1);
 }
 
 function drawChart(account) {
@@ -286,7 +286,7 @@ function entryActions(view) {
     <button type="button" id="manual-entry" class="primary-button">＋ 记一笔</button>
     <button type="button" id="account-records-link" class="secondary-button" aria-controls="account-records" aria-expanded="${expanded}">${expanded ? '收起流水' : '查看流水'}</button>
     ${view.id === 'etf' ? '' : '<button type="button" data-cash-rebalance class="text-button">现金再平衡</button>'}
-    <button type="button" id="cash-transfer" class="text-button">划转现金</button>
+    <button type="button" id="cash-transfer" class="text-button">${data.accounts[0].trading_accounts?'策略间划转现金':'划转现金'}</button>
     <button type="button" id="position-transfer" class="text-button">持仓划转</button>
     <button type="button" data-open-cash class="text-button">分配现金</button>
   </div><p id="entry-receipt" class="subtle" role="status">${entryReceipt ? esc(entryReceipt) : ''}</p></div>`;
@@ -362,14 +362,14 @@ function accountDetails(account) {
   const filters = Object.keys(account.holdings_by_kind).map(kind => `<option value="${kind}">${HOLDING_NAMES[kind]}</option>`).join('');
   const rows = account.positions.map(row => {
     const owners = account.strategy_positions.filter(item=>item.code===row.code && item.count>0);
-    const ownership = holdingOwnership(row.code, owners.map(owner => ({strategy:owner.strategy, shares:number(owner.count)})), 'listed') + assetClassButton(row, 'listed');
+    const ownership = holdingOwnership(row.code, owners.map(owner => ({strategy:owner.strategy, shares:number(owner.count)})), 'listed') + custodyProduct(account,'listed',row.code) + assetClassButton(row, 'listed');
     return `<tr data-holding-kind="${row.kind}" data-asset-class="${row.asset_class || 'unknown'}"><td>${esc(row.name)}<small>${esc(row.code)}<span class="holding-mobile-count"> · ${number(row.count)} 份</span></small>${ownership}</td><td>${number(row.count)}</td><td>${quotePrice(row)}</td><td>${finite(row.market_value) ? money(row.market_value) : '待估值'}</td><td>${ratio(row.market_value,account.equity)}</td><td>${positionActions(row.code, owners.length===1 ? owners[0].strategy : '')}</td></tr>`;
   }).join('');
   const fundRows = Object.values(account.fund_positions || {}).map(row => {
     const owners = Object.entries(account.strategy_fund_positions || {})
       .filter(([, positions]) => positions[row.code]?.qty > 0)
       .map(([strategy, positions]) => ({strategy, shares:fundShares(positions[row.code].qty)}));
-    const ownership = holdingOwnership(row.code, owners, 'fund') + assetClassButton(row, 'fund');
+    const ownership = holdingOwnership(row.code, owners, 'fund') + custodyProduct(account,'fund',row.code) + assetClassButton(row, 'fund');
     return `<tr data-holding-kind="fund" data-asset-class="${row.asset_class || 'unknown'}"><td>${esc(fundDisplayName(row.code) || '场外基金')}<small>${esc(row.code)}<span class="holding-mobile-count"> · ${fundShares(row.qty)} 份</span></small>${ownership}</td><td>${fundShares(row.qty)}</td><td>${fundMark(row)}</td><td>${finite(row.market_value) ? money(row.market_value) : '待估值'}</td><td>${ratio(row.market_value,account.equity)}</td><td>${fundActions(row.code,true)}</td></tr>`;
   }).join('');
   return `${accountSummary(account)}${entryActions(account)}
@@ -377,7 +377,7 @@ function accountDetails(account) {
     <section id="account-holdings" class="section" aria-labelledby="account-holdings-title" tabindex="-1"><div class="section-heading"><h2 id="account-holdings-title">账户持仓</h2><select id="holding-filter" aria-label="持仓类别"><option value="">全部持仓</option><optgroup label="资产类别">${assetFilters}</optgroup><optgroup label="产品类型">${filters}</optgroup></select></div>
       <p id="cash-class-detail" class="subtle" hidden>账面现金 ${money(account.cash)} 元 · 货币基金 ${finite(account.asset_allocation?.cash) ? `${money(account.asset_allocation.cash - account.cash)} 元` : '待估值'}</p>
       <div class="table-wrap"><table class="account-holdings-table"><thead><tr><th scope="col">标的</th><th scope="col">份额</th><th scope="col">价格 / 元</th><th scope="col">市值 / 元</th><th scope="col">资产占比</th><th scope="col">记账</th></tr></thead><tbody>${rows}${fundRows}<tr id="holdings-empty" hidden><td colspan="6" class="empty">暂无持仓</td></tr></tbody></table></div></section>
-    ${recordSection(account, account.trades)}`;
+    ${custodySection(account)}${recordSection(account, account.trades)}`;
 }
 
 function pendingFundSection(account, recordedToday=account.dca?.recorded_today || []) {
@@ -388,7 +388,7 @@ function pendingFundSection(account, recordedToday=account.dca?.recorded_today |
   if (!pending.length) return autoNote ? `<section id="fund-pending" class="section"><div class="section-heading"><h2>待确认申购</h2><span class="subtle">${esc(autoNote)}</span></div></section>` : '';
   const rows = pending.map(order => {
     const name = fundDisplayName(order.code);
-    return `<tr><td>${esc(name || order.code)}<small>${esc([name && order.code, strategyName(order.strategy)].filter(Boolean).join(' · '))}</small></td><td>${esc(order.nav_date)}</td><td>${money(order.amount)}</td><td>待确认 <button type="button" class="text-button" data-edit-event="${esc(order.id)}">修改</button> <button type="button" class="text-button" data-void-event="${esc(order.id)}">作废</button></td></tr>`;
+    return `<tr><td>${esc(name || order.code)}<small>${esc([name && order.code, strategyName(order.strategy), account.trading_accounts && custodyName(account,order.trading_account)].filter(Boolean).join(' · '))}</small></td><td>${esc(order.nav_date)}</td><td>${money(order.amount)}</td><td>待确认 <button type="button" class="text-button" data-edit-event="${esc(order.id)}">修改</button> <button type="button" class="text-button" data-void-event="${esc(order.id)}">作废</button></td></tr>`;
   }).join('');
   const note = autoNote ? `<p class="subtle">${esc(autoNote)}</p>` : '';
   return `<section id="fund-pending" class="section"><div class="section-heading"><h2>待确认申购</h2><span class="subtle">在途 ${money(account.pending_fund_value)} 元</span></div>${note}<div class="table-wrap"><table><thead><tr><th>基金</th><th>买入日</th><th>实际扣款 / 元</th><th>状态</th></tr></thead><tbody>${rows}</tbody></table></div></section>`;
@@ -417,6 +417,11 @@ function recordTable(rows) {
     if (row.side === 'cash_assign') {
       detail = Object.entries(row.cash_allocations).map(([key,amount]) => `${strategyName(key)} ${price(amount)} 元`).join(' · ');
     }
+    const account=data.accounts[0];
+    if (account.trading_accounts && (row.trading_account || !['cash_assign','cash_transfer'].includes(row.side))) {
+      detail+=' · '+custodyName(account,row.trading_account);
+      if (row.to_account) detail+=' → '+custodyName(account,row.to_account);
+    }
     const pending = row.side === 'fund_pending';
     const voided = row.side === 'fund_void';
     const waiting = !!data.accounts[0].fund_pending?.[row.id];
@@ -435,7 +440,8 @@ function fundedStrategyPage(strategy) {
   const status = strategy.status && strategy.status!=='已分配' ? `<p class="subtle">${esc(strategy.status)}</p>` : '';
   const allocation = isAllocation(strategy);
   const actions = allocation && canRecord
-    ? `<div class="core-actions"><button type="button" data-fund-side="fund_buy" data-code="" data-strategy="${esc(strategy.id)}" class="text-button">场外申购</button><button type="button" id="dca-settings" class="text-button">定投计划</button><button type="button" id="core-settings" class="text-button">编辑配置</button></div>` : '';
+    ? `<div class="core-actions"><button type="button" data-fund-side="fund_buy" data-code="" data-strategy="${esc(strategy.id)}" class="text-button">场外申购</button><button type="button" id="dca-settings" class="text-button">定投计划</button><a href="/settings/${esc(strategy.id)}" class="text-button">编辑组合配比</a></div>`
+    : canRecord && strategy.id==='rotation' ? '<a href="/settings/rotation" class="text-button">编辑标的池</a>' : '';
   const pending = allocation ? pendingFundSection(strategy, data.accounts[0].dca?.recorded_today_by_strategy?.[strategy.id]) : '';
   return `<div class="stats">${stats.map(([value,label])=>`<div class="stat"><span>${label}</span><b>${esc(value)}</b></div>`).join('')}</div>
     ${canRecord ? entryActions(strategy) : ''}${chartSection(strategy)}
@@ -474,6 +480,7 @@ function render() {
   chartObserver?.disconnect();
   updateQuoteControls();
   const statusAccount = data.accounts[0];
+  document.querySelector('#account-settings').hidden=!statusAccount.can_record;
   const bar = document.querySelector('#status-bar');
   const barHtml = selected === 0 ? '' : statusBar(statusAccount);
   bar.innerHTML = barHtml;
@@ -586,15 +593,12 @@ fetch('/api/overview',{cache:'no-store'}).then(response => {
   scheduleQuotePoll();
 }).catch(() => { document.querySelector('#status').textContent='数据读取失败，请刷新页面重试。'; });
 
-async function accountRequest(path, payload) {
-  let response, result;
-  try {
-    response = await fetch(path, {method:'POST', headers:{'Content-Type':'application/json','X-Trade-Request':'dashboard'}, body:JSON.stringify(payload)});
-    result = await response.json();
-  } catch { throw Error('连接中断，请重试。'); }
-  if (!response.ok) throw Error(result.error || (path==='/api/etf/refresh' ? '估值暂时无法更新，请稍后重试。' : '保存失败，请重试。'));
-  return result;
-}
+
+window.addEventListener('pageshow', event => {
+  if (event.persisted && data) reloadAccount().catch(failure => {
+    document.querySelector('#status').textContent=failure.message;
+  });
+});
 
 async function loadMissingFundNames() {
   const codes = Object.entries(data.accounts[0].fund_names || {})
@@ -691,13 +695,20 @@ function bindAccountActions(view) {
   document.querySelector('#position-transfer').onclick = () => openEntry(account, {side:'assign'}, strategy);
   document.querySelector('#cash-transfer').onclick = () => openEntry(account, {side:'cash_transfer'}, strategy);
   bindRecords(view.id);
+  document.querySelectorAll('[data-custody-account]').forEach(button=>button.onclick=()=>{
+    openCustodyMove(account,button.dataset.custodyAccount,account.custody_positions[Number(button.dataset.custodyRow)]);
+  });
   document.querySelectorAll('[data-edit-event]').forEach(button=>button.onclick=async()=>{
     button.disabled=true;
     try {
       const context=await accountRequest('/api/etf/event/context',{revision:account.revision,event_id:button.dataset.editEvent});
       const before={...account,...context};
       if(context.event.side==='cash_assign') openCashAllocation(before,{edit:context.event});
-      else if(isFundTrade(context.event.side)) openFundTrade(before,context.event.side,context.event.code,context.event.strategy || 'core',context.event);
+      else if(context.event.side==='custody_transfer') {
+        const e=context.event;
+        const row=before.custody_positions.find(r=>r.account===e.trading_account && r.kind===e.kind && r.strategy===e.strategy && r.code===e.code);
+        openCustodyMove(before,e.trading_account,row,e);
+      } else if(isFundTrade(context.event.side)) openFundTrade(before,context.event.side,context.event.code,context.event.strategy || 'core',context.event);
       else openEntry(before,context.event,context.event.strategy,{edit:context.event});
     } catch(error) {document.querySelector('#status').textContent=error.message;}
     finally {button.disabled=false;}
@@ -713,10 +724,6 @@ function bindAccountActions(view) {
   for (const button of document.querySelectorAll('[data-strategy-tab]')) {
     button.onclick = () => document.getElementById(`tab-${button.dataset.strategyTab}`).click();
   }
-  const budgetButton = document.querySelector('#budget-settings');
-  if (budgetButton) budgetButton.onclick = () => openBudgets(account);
-  const coreButton = document.querySelector('#core-settings');
-  if (coreButton) coreButton.onclick = () => openConfiguration(strategy);
   const dcaButton = document.querySelector('#dca-settings');
   if (dcaButton) dcaButton.onclick = () => openDcaPlans(account, strategy);
   document.querySelectorAll('[data-void-event]').forEach(button=>button.onclick=()=>
@@ -874,6 +881,7 @@ function openEntry(account, suggestion, strategy='unassigned', options={}) {
   let requestId = crypto.randomUUID();
   let saving = false;
   const field = name => form.elements.namedItem(name);
+  delete field('trading_account').dataset.context;
   field('side').value = 'buy';
   const owners = `<option value="unassigned">未分配</option>${strategyOptions()}`;
   field('strategy').innerHTML = `<option value="">请选择策略</option>${owners}`;
@@ -946,7 +954,10 @@ function openEntry(account, suggestion, strategy='unassigned', options={}) {
     source.parentElement.hidden = !internal; source.disabled = !internal;
     field('strategy').parentElement.firstChild.textContent = internal ? '转入策略' : '策略';
     document.querySelector('#entry-qty-label').textContent = assign ? '划转份额' : '成交份额';
-    const {listed, fund, ambiguous, held} = entryPosition();
+    const {listed, fund, ambiguous, held:totalHeld} = entryPosition();
+    const location=custodySelect(account,field('trading_account'),{side,kind:fund?'fund':'listed',code:field('code').value,
+      strategy:field(assign?'from_strategy':'strategy').value,edit:options.edit});
+    const held=location ? location.qty : totalHeld;
     kind.disabled = !ambiguous;
     document.querySelector('#entry-kind-field').hidden = !ambiguous;
     const shareStep = fund ? '0.000001' : side==='buy' ? '100' : '1';
@@ -988,6 +999,7 @@ function openEntry(account, suggestion, strategy='unassigned', options={}) {
     const context = document.querySelector('#entry-context');
     const shares = (fund ? fundShares : number)(held);
     context.textContent = !ownerName ? '请选择本笔记账所属的策略。' : assign ? code && !chooseKind ? `${ownerName}可划转 ${shares} 份` : '选择持仓后查看可划转份额。' : `${ownerName}现金 ${money(cash)} 元${trade && code ? ` · 持有 ${shares} 份` : ''}`;
+    if (location?.id && !assign) context.textContent+=' · 账户现金 '+money(location.cash)+' 元';
     if (assign && held > 0) {
       context.textContent += '。划转前的盈亏归转出策略，之后归转入策略。';
     }
@@ -1027,6 +1039,8 @@ function openEntry(account, suggestion, strategy='unassigned', options={}) {
       problem = '买入份额须为100份的整数倍。'; field('qty').setCustomValidity(problem);
     } else if (internal && source.value===field('strategy').value) {
       problem = '请选择不同的划转来源和目标。'; field('strategy').setCustomValidity(problem);
+    } else if (!assign && location?.id && Math.round((location.cash+delta)*100)<0) {
+      problem='所选交易账户现金不足。';field(trade?'price':'amount').setCustomValidity(problem);
     } else if (!assign && finite(cash) && Math.round((cash+delta)*100)<0) {
       problem = `${ownerName}现金不足${side==='buy' ? '，可先通过“划转现金”补充' : ''}。`;
       if (!automaticFee) field(trade ? 'price' : 'amount').setCustomValidity(problem);
@@ -1050,7 +1064,8 @@ function openEntry(account, suggestion, strategy='unassigned', options={}) {
     form.oninput();
   });
   document.querySelector('#entry-all').onclick = () => {
-    field('qty').value = entryPosition().held || '';
+    const owner=field(field('side').value==='assign'?'from_strategy':'strategy').value;
+    field('qty').value = account.trading_accounts ? account.custody_positions.find(r=>r.account===field('trading_account').value && r.code===field('code').value && r.strategy===owner && r.kind===(entryPosition().fund?'fund':'listed'))?.qty || '' : entryPosition().held || '';
     form.oninput();
   };
   document.querySelector('#event-cancel').onclick = () => { if (!saving) dialog.close(); };
@@ -1064,6 +1079,7 @@ function openEntry(account, suggestion, strategy='unassigned', options={}) {
     const side = field('side').value;
     const payload = {request_id:requestId, revision:account.revision, date:field('date').value, side};
     if(options.edit) payload.event_id=options.edit.id;
+    if(account.trading_accounts && side!=='cash_transfer') payload.trading_account=field('trading_account').value;
     if (side==='assign') {
       Object.assign(payload, {code:field('code').value, qty:Number(field('qty').value), strategy:field('strategy').value, from_strategy:field('from_strategy').value});
       if (entryPosition().fund) payload.kind = 'fund';
@@ -1106,10 +1122,6 @@ function openEntry(account, suggestion, strategy='unassigned', options={}) {
   field(['buy','sell','assign'].includes(field('side').value) ? suggestion?.code && strategy ? 'qty' : 'code' : 'amount').focus();
 }
 
-function openBudgets() {
-  return openConfiguration();
-}
-
 function allocationRows(account) {
   const rows = data.strategies.map(strategy => ({...strategy, target:strategy.budget_pct}));
   const values = account.strategy_positions.filter(row => row.strategy === 'unassigned').map(row => row.market_value);
@@ -1150,7 +1162,7 @@ function strategyAllocation(account) {
     unassigned.map(bar).join('')].join('');
   return `<section class="section strategy-panel" aria-labelledby="strategy-allocation-title">
     <div class="section-heading"><h2 id="strategy-allocation-title">策略配比</h2>
-      <div class="allocation-actions"><button type="button" data-cash-rebalance class="text-button">现金再平衡</button><button type="button" id="budget-settings" class="text-button">编辑配置</button><a class="text-button" href="/api/etf/export">导出配置与持仓</a></div>
+      <div class="allocation-actions"><button type="button" data-cash-rebalance class="text-button">现金再平衡</button>${account.can_record ? '<a href="/settings/budgets" class="text-button">编辑目标占比</a>' : ''}<a class="text-button" href="/api/etf/export">导出配置与持仓</a></div>
     </div><div class="strategy-allocation-rows">${bars}</div></section>`;
 }
 
@@ -1221,14 +1233,14 @@ function bindCoreSort(strategy) {
 
 function strategyPositionTable(strategy) {
   if (!strategy.target_weights) return rotationPositionTable(strategy);
-  if (!strategy.allocation_groups.length) return '<div class="empty">请在「编辑配置」中设置组合配比。</div>';
+  if (!strategy.allocation_groups.length) return '<div class="empty">请在「编辑组合配比」中添加配置项。</div>';
   const budget = strategy.allocation_budget;
   const assets = strategy.allocation_assets;
   const pct=value=>finite(value)?`${(value*100).toFixed(2)}%`:'—';
   const thresholds = strategy.rebalance_thresholds;
   const suggestions = strategy.suggestions || [];
   const thresholdNote = thresholds ? `偏离达到 ${(thresholds.single*100).toFixed(0)} 个百分点或该项目标权重的 ${(thresholds.relative*100).toFixed(0)}%（先达先触发）时重点高亮；破带且缺口≥${thresholds.trade_amount.toFixed(0)} 元、可换算整手时，提供参考份额。` : '偏离提醒阈值暂不可用。';
-  let basisNote = '请先在“编辑配置”中设置策略目标占比。';
+  let basisNote = '请先在账户设置中填写策略目标占比。';
   if (budget > 0) {
     basisNote = '目标金额 = 配置目标资产 × 配置项权重。配比偏离按配置目标资产计算。';
   } else if (finite(strategy.budget_pct)) {
@@ -1305,6 +1317,7 @@ function openFundTrade(account, side, code, strategy, edit=null) {
   const session = crypto.randomUUID();
   dialog.dataset.session = session;
   form.reset();
+  delete field('trading_account').dataset.context;
   const owner = field('strategy');
   const allocations = data.strategies.filter(isAllocation);
   const holders = allocations.filter(row=>account.strategy_fund_positions?.[row.id]?.[code]?.qty > 0);
@@ -1381,7 +1394,8 @@ function openFundTrade(account, side, code, strategy, edit=null) {
   }
   function update() {
     const code = field('code').value;
-    const held = account.strategy_fund_positions?.[owner.value]?.[code]?.qty || 0;
+    const location=custodySelect(account,field('trading_account'),{side,kind:'fund',code,strategy:owner.value,edit});
+    const held = location ? location.qty : account.strategy_fund_positions?.[owner.value]?.[code]?.qty || 0;
     const cash = account.cash_by_strategy[owner.value];
     const amount = Number(field('amount').value);
     const kind = field('fee_kind').value;
@@ -1407,7 +1421,9 @@ function openFundTrade(account, side, code, strategy, edit=null) {
     preview.textContent = owner.value
       ? `${strategyName(owner.value)}现金 ${money(cash)} 元 · 持有 ${fundShares(held)} 份${amount > 0 ? ` · 记账后现金 ${money(cash + (buy ? -amount : amount))} 元` : ''}`
       : '请选择所属策略。';
-    field('amount').setCustomValidity(buy && !confirming && amount > cash ? '所属策略现金不足，请先分配现金。' : '');
+    if(location?.id) preview.textContent+=' · 账户现金 '+money(location.cash)+' 元';
+    field('amount').setCustomValidity(buy && !confirming && amount > cash ? '所属策略现金不足，请先分配现金。' :
+      buy && !confirming && location?.id && amount>location.cash ? '所选交易账户现金不足。' : '');
   }
   form.oninput = event => {
     if (event?.target === field('code')) {
@@ -1467,6 +1483,7 @@ function openFundTrade(account, side, code, strategy, edit=null) {
       if (!saved) {
         const payload = {request_id:requestId, revision:account.revision, side, strategy:owner.value, code:field('code').value,
           date:field('date').value, qty:Number(field('qty').value), amount:Number(field('amount').value)};
+        if (account.trading_accounts) payload.trading_account=field('trading_account').value;
         if (edit) payload.event_id = edit.id;
         if (pending) {
           payload.side = 'fund_pending';
@@ -1601,6 +1618,10 @@ function openDcaPlans(account, strategy) {
   dialog.dataset.session=session;
   form.reset();error.hidden=true;fields.disabled=false;save.disabled=false;
   save.textContent='保存计划';formTitle.textContent='添加计划';
+  const planAccount=form.elements.namedItem('trading_account');
+  planAccount.parentElement.hidden=planAccount.disabled=!account.trading_accounts;
+  planAccount.replaceChildren(new Option('跟随产品或渠道默认账户',''),...Object.entries(account.trading_accounts?.accounts || {})
+    .filter(([,r])=>r.channel==='fund').map(([id,r])=>new Option(r.name,id)));
   function fillAnchors() {
     const current=Number(anchorSelect.value);
     const anchors=FREQUENCY_ANCHORS[frequencySelect.value] || [];
@@ -1615,12 +1636,13 @@ function openDcaPlans(account, strategy) {
       let cadence='每个交易日';
       if (plan.frequency==='monthly') cadence=`每月 ${plan.anchor} 日`;
       if (plan.frequency==='weekly') cadence=`每周${FREQUENCY_ANCHORS.weekly[plan.anchor-1][1].slice(1)}`;
-      return `<tr><td>${name?`${esc(name)}<small>${esc(plan.code)}</small>`:esc(plan.code)}</td><td>${cadence} · ${money(plan.amount)} 元${plan.note?`<small>${esc(plan.note)}</small>`:''}</td><td>${plan.enabled?'启用中':'已停用'}</td><td><button type="button" class="text-button" data-dca-edit="${esc(plan.id)}">${plan.enabled?'修改':'启用'}</button> <button type="button" class="text-button" data-dca-toggle="${esc(plan.id)}">${plan.enabled?'停用':'启用'}</button> <button type="button" class="text-button" data-dca-delete="${esc(plan.id)}">删除</button></td></tr>`;
+      return `<tr><td>${name?`${esc(name)}<small>${esc(plan.code)}</small>`:esc(plan.code)}</td><td>${cadence} · ${money(plan.amount)} 元${account.trading_accounts?`<small>${plan.trading_account?esc(custodyName(account,plan.trading_account)):'跟随默认账户'}</small>`:''}${plan.note?`<small>${esc(plan.note)}</small>`:''}</td><td>${plan.enabled?'启用中':'已停用'}</td><td><button type="button" class="text-button" data-dca-edit="${esc(plan.id)}">${plan.enabled?'修改':'启用'}</button> <button type="button" class="text-button" data-dca-toggle="${esc(plan.id)}">${plan.enabled?'停用':'启用'}</button> <button type="button" class="text-button" data-dca-delete="${esc(plan.id)}">删除</button></td></tr>`;
     }).join('')}</tbody></table>` : '<div class="empty">暂无定投计划。请在基金 App 设定自动扣款后，把计划录到这里。</div>';
     plansBox.querySelectorAll('[data-dca-edit]').forEach(button=>button.onclick=()=>{
       const plan=plans.find(row=>row.id===button.dataset.dcaEdit);
       if (!plan) return;
       editing=plan;
+      planAccount.value=plan.trading_account || '';
       formTitle.textContent='修改计划';
       save.textContent='保存修改';
       form.elements.namedItem('code').value=plan.code;
@@ -1660,6 +1682,7 @@ function openDcaPlans(account, strategy) {
       enabled: true};
     if (!anchorSelect.disabled) payload.anchor=Number(anchorSelect.value);
     if (editing) payload.id=editing.id;
+    if(account.trading_accounts) payload.trading_account=planAccount.value;
     try {
       await accountRequest('/api/etf/dca/save', payload);
       await reloadAccount();
@@ -1674,227 +1697,4 @@ function openDcaPlans(account, strategy) {
   fillAnchors();
   renderPlans();
   dialog.showModal();
-}
-
-async function openConfiguration(key='core') {
-  configRequest?.abort();
-  const controller=new AbortController();configRequest=controller;
-  const dialog=document.querySelector('#config-dialog');
-  const form=document.querySelector('#config-form');
-  const error=document.querySelector('#config-error');
-  const save=document.querySelector('#config-save');
-  const fields=document.querySelector('#config-fields');
-  const name=strategyName(key);
-  const budgetFields=document.querySelector('#config-budgets');
-  budgetFields.innerHTML=data.strategies.map(({id,name}) =>
-    `<label>${esc(name)}目标占比 / %<input name="${esc(id)}" type="number" min="0" max="100" step="any" placeholder="暂不设置"></label>`).join('');
-  const budgetInputs=data.strategies.map(({id})=>form.elements.namedItem(id));
-  document.querySelector('#config-allocation-title').textContent=`${name}内部配比`;
-  const feeKind=form.elements.namedItem('fund_fee_kind');
-  const feeValue=form.elements.namedItem('fund_fee_value');
-  const stampDuty=form.elements.namedItem('stock_sell_stamp_duty');
-  const commissions=Object.fromEntries(['stock','etf'].map(kind=>[kind,{
-    rate:form.elements.namedItem(`${kind}_commission`), minimum:form.elements.namedItem(`${kind}_min_commission`),
-  }]));
-  let saving=false, saved=false;
-  form.reset();error.hidden=true;save.disabled=true;save.textContent='保存配置';fields.disabled=true;
-  document.querySelector('#config-history').innerHTML='';
-  document.querySelector('#config-assets').innerHTML='';
-  document.querySelector('#config-pool').innerHTML='';
-  document.querySelector('#config-total').textContent='正在读取配置…';
-  document.querySelector('#config-cancel').onclick=()=>{if(!saving){controller.abort();dialog.close();}};
-  dialog.oncancel=event=>{if(saving)event.preventDefault();else controller.abort();};
-  dialog.showModal();
-  let result;
-  try {
-    const response=await fetch('/api/etf/config',{cache:'no-store',signal:controller.signal});
-    result=await response.json();
-    if(controller.signal.aborted || !dialog.open)return;
-    if(!response.ok) throw Error(result.error || '配置读取失败');
-  } catch(failure) {if(controller.signal.aborted)return;error.textContent=failure instanceof TypeError ? '配置暂时无法加载，请关闭后重试。' : failure.message;error.hidden=false;return;}
-  const percentInput=value=>+(value*100).toFixed(8);
-  const memberCodes=value=>value.trim().split(/[\s,，、]+/).filter(Boolean);
-  const validCodes=codes=>codes.every(code=>/^[0-9]{6}$/.test(code));
-  let draft;
-  function updateFeeField() {
-    const usesValue=feeKind.value==='rate' || feeKind.value==='fixed';
-    document.querySelector('#config-fund-fee-field').hidden=!usesValue;
-    document.querySelector('#config-fund-fee-label').textContent=feeKind.value==='rate'?'实际费率 / %':'申购费 / 元';
-    feeValue.disabled=!usesValue;
-    feeValue.required=usesValue;
-    for (const {rate,minimum} of Object.values(commissions)) {
-      rate.required=minimum.value!=='' || (rate===commissions.stock.rate && stampDuty.value!=='');
-      minimum.required=rate.value!=='' || rate.required;
-    }
-  }
-  function assetWeight(input) {
-    const original = input.closest('tr').original.weight;
-    const value = Number(input.value);
-    return value === percentInput(original) ? original : value / 100;
-  }
-  function total() {
-    const weights=[...document.querySelectorAll('#config-assets [data-field=weight]')];
-    const sum=weights.reduce((n,input)=>n+assetWeight(input),0);
-    const budgets=budgetInputs.reduce((sum,input)=>sum+Number(input.value),0);
-    const weightIssue=sum>1+1e-8;
-    const budgetIssue=budgets>100+1e-8;
-    weights.forEach(input=>input.setCustomValidity(''));
-    weights.at(-1)?.setCustomValidity(weightIssue ? `${name}标的权重合计不能超过100%。` : '');
-    budgetInputs[0].setCustomValidity(budgetIssue ? '策略目标占比合计不能超过100%。' : '');
-    const cash=weightIssue ? '—' : `${+(Math.max(0,1-sum)*100).toFixed(4)}%`;
-    document.querySelector('#config-total').textContent=`标的权重 ${+(sum*100).toFixed(4)}% · 目标现金 ${cash}（自动） · 账户目标 ${budgets.toFixed(2)}%${weightIssue?' · 标的权重不能超过100%':''}${budgetIssue?' · 账户目标合计不能超过100%':''}`;
-    document.querySelector('#config-total').classList.toggle('invalid',weightIssue||budgetIssue);
-  }
-  function addRow(asset) {
-    const row=document.createElement('tr');
-    row.original=structuredClone(asset);
-    const options=(values,current)=>values.map(([value,label])=>`<option value="${value}" ${value===current?'selected':''}>${label}</option>`).join('');
-    const listed = !asset.code || asset.code.startsWith('FUND:') ? [] : [asset.code, ...(asset.etf_codes || [])];
-    row.innerHTML = `
-      <td>
-        <label>配置名称<input data-field="label" value="${esc(asset.label || '')}" maxlength="40" placeholder="如创业板"></label>
-        <label>场内产品代码<input data-field="listed_codes" value="${esc(listed.join(', '))}" placeholder="多个用逗号隔开"></label>
-        <label>场外基金代码<input data-field="fund_codes" value="${esc((asset.fund_codes || []).join(', '))}" placeholder="多个用逗号隔开"></label>
-        <small data-name></small>
-      </td>
-      <td><input data-field="weight" type="number" value="${percentInput(asset.weight)}" min="0" max="100" step="any" required aria-label="内部权重"></td>
-      <td>
-        <details>
-          <summary>其他设置</summary>
-          <div class="config-advanced">
-            <label>资产类别<select data-field="asset_type">${options([['equity','权益'],['bond','债券'],['gold','黄金']],asset.asset_type)}</select></label>
-            <label>估值来源<select data-field="valuation_kind">${options([['none','不展示估值'],['csindex','中证指数'],['overseas','海外']],asset.valuation_kind)}</select></label>
-            <label>跟踪指数<input data-field="tracked_index" value="${esc(asset.tracked_index || '')}" pattern="[0-9]{6}" maxlength="6"></label>
-            <label>减仓顺序<input data-field="volatility_rank" type="number" min="0" max="100" step="1" value="${asset.volatility_rank}" required></label>
-            <label>股息估值<select data-field="dividend_style"><option value="false" ${!asset.dividend_style?'selected':''}>否</option><option value="true" ${asset.dividend_style?'selected':''}>是</option></select></label>
-          </div>
-        </details>
-      </td>
-      <td><button type="button" class="text-button" data-remove>删除</button></td>
-    `;
-    const field=name=>row.querySelector(`[data-field=${name}]`);
-    function update() {
-      const listedField=field('listed_codes'), fundField=field('fund_codes');
-      const listedCodes=memberCodes(listedField.value), fundCodes=memberCodes(fundField.value);
-      listedField.setCustomValidity(!listedCodes.length && !fundCodes.length ? '请至少填写一个场内或场外产品代码。'
-        : listedCodes.length>21 || !validCodes(listedCodes) ? '场内产品每组最多21个，代码须为六位数字。' : '');
-      fundField.setCustomValidity(fundCodes.length>20 || !validCodes(fundCodes) ? '场外基金每组最多20只，代码须为六位数字。' : '');
-      const hasListed=listedCodes.length>0;
-      const index=field('tracked_index'),indexed=hasListed && field('valuation_kind').value==='csindex';
-      index.disabled=!indexed;index.required=indexed;
-      field('valuation_kind').disabled=field('dividend_style').disabled=!hasListed;
-      const names=[...listedCodes.map(code=>result.names[code]), ...fundCodes.map(fundDisplayName)].filter(Boolean);
-      row.querySelector('[data-name]').textContent=names.join(' · ');
-      total();
-    }
-    row.oninput=update;row.onchange=update;
-    row.querySelector('[data-remove]').onclick=()=>{row.remove();total();};
-    document.querySelector('#config-assets').append(row);update();
-  }
-  function validatePool() {
-    const rows=[...document.querySelectorAll('#config-pool tr')];
-    const counts=new Map();
-    rows.forEach(row=>{
-      const code=row.querySelector('[data-field=code]').value.trim();
-      if(code) counts.set(code,(counts.get(code)||0)+1);
-    });
-    rows.forEach(row=>{
-      const codeField=row.querySelector('[data-field=code]'), groupField=row.querySelector('[data-field=group]');
-      const code=codeField.value.trim();
-      codeField.setCustomValidity(!/^[0-9]{6}$/.test(code) ? '代码须为六位数字。' : counts.get(code)>1 ? '池内代码不能重复。' : '');
-      const group=groupField.value.trim();
-      groupField.setCustomValidity(!group ? '请填写资产类别。' : '');
-      row.querySelector('[data-name]').textContent=result.names[code] || '';
-    });
-    document.querySelector('#config-pool-add').disabled=rows.length>=50;
-  }
-  function addPoolRow(member={code:'',group:''}) {
-    const row=document.createElement('tr');
-    row.innerHTML=`
-      <td><input data-field="code" value="${esc(member.code)}" inputmode="numeric" pattern="[0-9]{6}" maxlength="6" required aria-label="标的代码"></td>
-      <td><input data-field="group" value="${esc(member.group)}" list="pool-groups" maxlength="8" required placeholder="如 国内权益" aria-label="资产类别"></td>
-      <td><small data-name></small></td>
-      <td><button type="button" class="text-button" data-remove>删除</button></td>`;
-    row.oninput=validatePool;
-    row.querySelector('[data-remove]').onclick=()=>{row.remove();validatePool();};
-    document.querySelector('#config-pool').append(row);
-    validatePool();
-  }
-  function show(config) {
-    draft=structuredClone(config);
-    for (const input of budgetInputs) input.value=finite(config.budgets[input.name]) ? percentInput(config.budgets[input.name]) : '';
-    feeKind.value=config.fund_subscription_fee?.kind ?? '';
-    feeValue.value=config.fund_subscription_fee?.value ?? '';
-    for (const [kind,{rate,minimum}] of Object.entries(commissions)) {
-      rate.value=config.trade_fees?.[kind]?.commission_per_10000 ?? '';
-      minimum.value=config.trade_fees?.[kind]?.min_commission ?? '';
-    }
-    stampDuty.value=config.trade_fees?.stock_sell_stamp_duty_per_10000 ?? '';
-    updateFeeField();
-    document.querySelector('#config-assets').innerHTML='';
-    (config[key] || []).filter(row=>row.code!=='CASH').forEach(addRow);total();
-    document.querySelector('#config-pool').innerHTML='';
-    (config.rotation?.pool ?? []).forEach(addPoolRow);
-  }
-  document.querySelector('#config-add').onclick=()=>addRow({code:'',weight:0,asset_type:key==='bond'?'bond':'equity',valuation_kind:'none',tracked_index:null,dividend_style:false,volatility_rank:0});
-  document.querySelector('#config-pool-add').onclick=()=>addPoolRow();
-  const history=document.querySelector('#config-history');
-  history.innerHTML=result.history.map((version,index)=>`<option value="${index}">${esc(quoteTime(version.saved_at))}${version.revision===result.revision?' · 当前配置':''}</option>`).join('');
-  history.value=Math.max(0,result.history.findIndex(version=>version.revision===result.revision));
-  document.querySelector('#config-load-history').onclick=()=>{const version=result.history[Number(history.value)];if(version)show(version.config);};
-  form.oninput=()=>{updateFeeField();total();};
-  form.onsubmit=async event=>{
-    event.preventDefault();if(saving)return;
-    saving=true;save.disabled=true;error.hidden=true;fields.disabled=true;
-    const budgets={};
-    for (const {name,value} of budgetInputs) {
-      if (value!=='') budgets[name]=Number(value)===percentInput(draft.budgets[name]) ? draft.budgets[name] : Number(value)/100;
-    }
-    const assets=[...document.querySelectorAll('#config-assets tr')].map(row=>{
-      const get=key=>row.querySelector(`[data-field=${key}]`).value;
-      const [firstListed, ...etfs] = memberCodes(get('listed_codes'));
-      const label = get('label').trim();
-      const funds = memberCodes(get('fund_codes'));
-      const valuation = firstListed ? get('valuation_kind') : 'none';
-      const asset = {
-        code: firstListed || `FUND:${funds[0]}`,
-        weight: assetWeight(row.querySelector('[data-field=weight]')),
-        asset_type: get('asset_type'),
-        valuation_kind: valuation,
-        tracked_index: valuation === 'csindex' ? get('tracked_index') : null,
-        dividend_style: !!firstListed && get('dividend_style') === 'true',
-        volatility_rank: Number(get('volatility_rank')),
-      };
-      if (label) asset.label = label;
-      if (etfs.length) asset.etf_codes = etfs;
-      if (funds.length) asset.fund_codes = funds;
-      return asset;
-    });
-    const cashIndex=draft[key]?.findIndex(row=>row.code==='CASH') ?? -1;
-    if (cashIndex>=0) assets.splice(cashIndex,0,draft[key][cashIndex]);
-    const config={schema_version:1,budgets,[key]:assets};
-    if (draft.asset_classes) config.asset_classes = draft.asset_classes;
-    for (const {id} of data.strategies.filter(isAllocation)) {
-      if (id!==key && draft[id]) config[id]=draft[id];
-    }
-    const pool=[...document.querySelectorAll('#config-pool tr')].map(row=>({
-      code:row.querySelector('[data-field=code]').value.trim(),
-      group:row.querySelector('[data-field=group]').value.trim(),
-    }));
-    if(pool.length) config.rotation={pool};
-    if(feeKind.value) config.fund_subscription_fee={kind:feeKind.value,value:feeKind.value==='none'?0:Number(feeValue.value)};
-    const tradeFees={};
-    for (const [kind,{rate,minimum}] of Object.entries(commissions)) {
-      if (rate.value!=='') tradeFees[kind]={commission_per_10000:Number(rate.value),min_commission:Number(minimum.value)};
-    }
-    if (stampDuty.value!=='') tradeFees.stock_sell_stamp_duty_per_10000=Number(stampDuty.value);
-    if (Object.keys(tradeFees).length) config.trade_fees=tradeFees;
-    try {
-      if(!saved) {await accountRequest('/api/etf/config',{revision:result.revision,config});saved=true;}
-      await reloadAccount();dialog.close();
-      document.querySelector('#status').textContent='配置已保存';
-    } catch(failure) {error.textContent=saved?'配置已保存，页面更新失败。请刷新账户查看。':failure.message;error.hidden=false;}
-    finally {saving=false;fields.disabled=saved;save.disabled=false;save.textContent=saved?'刷新账户':'保存配置';}
-  };
-  show(result.config);save.disabled=false;fields.disabled=false;
 }

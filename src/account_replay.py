@@ -8,7 +8,7 @@ import re
 
 from data_provider.codes import FUND_FEE_PREFIXES, canonical_stock_code, is_a_stock_code
 from data_provider.security_names import security_name
-from src import portfolio_config
+from src import portfolio_config, trading_accounts
 
 FUND_TRADES = {"fund_buy", "fund_redeem", "fund_pending", "fund_confirm", "fund_void"}
 
@@ -176,10 +176,10 @@ def _assignment(payload, view):
             "strategy": target, "transfer_price": view["prices"][code]}
 
 
-def make_event(payload, request_id, day, view, *, config=None):
+def make_event(payload, request_id, day, view, *, config=None, historical=False):
     """用流水发生前的账户事实校验并生成流水。"""
     side = payload.get("side")
-    if side not in {"buy", "sell", "dividend", "deposit", "withdraw", "assign", "cash_assign", "cash_transfer", *FUND_TRADES}:
+    if side not in {"buy", "sell", "dividend", "deposit", "withdraw", "assign", "cash_assign", "cash_transfer", "custody_transfer", *FUND_TRADES}:
         raise ValueError("不支持的记账类型")
     event = {"id": request_id, "date": day, "side": side, "request": payload}
     if side in FUND_TRADES:
@@ -188,6 +188,20 @@ def make_event(payload, request_id, day, view, *, config=None):
         if side in {"fund_pending", "fund_buy"} and fund_subscription_fee is not None:
             fund_payload = {**payload, "subscription_fee": fund_subscription_fee}
         event.update(_fund_event(fund_payload, view, day))
+    elif side == "custody_transfer":
+        kind = payload.get("kind")
+        if kind == "cash":
+            amount = payload.get("amount")
+            if not positive(amount) or round(amount, 2) != amount:
+                raise ValueError("划转金额须为正数且最多两位小数")
+            event.update(kind=kind, amount=amount)
+        elif kind in ("listed", "fund"):
+            qty = payload.get("qty")
+            if not positive(qty) or round(qty, 6 if kind == "fund" else 0) != qty:
+                raise ValueError("划转份额无效")
+            event.update(kind=kind, code=fund_code(payload.get("code")), qty=qty, strategy=payload.get("strategy"))
+        else:
+            raise ValueError("交易账户划转类型无效")
     elif side == "cash_assign":
         event["cash_allocations"] = cash_allocation(payload.get("cash_allocations"), view["cash"])
     elif side == "cash_transfer":
@@ -245,6 +259,7 @@ def make_event(payload, request_id, day, view, *, config=None):
                 event["strategy_fund_valuation_prices"] = {
                     key: {code: row["book_price"] for code, row in positions.items()}
                     for key, positions in view["strategy_fund_positions"].items()}
+    trading_accounts.prepare(event, payload, view, view.get("trading_accounts"), historical=historical)
     return event
 
 
@@ -253,6 +268,8 @@ class _Replay:
 
     def __init__(self, state):
         initial = state["initial"]
+        self.custody = trading_accounts.Balances(initial)
+        self.trading_accounts = state.get("_config", {}).get("trading_accounts")
         self.initial_equity = self.units = initial["equity"]
         self.cash = initial["cash"]
         self.cash_by_strategy = cash_allocation(initial.get("cash_allocations", {}), self.cash)
@@ -410,6 +427,10 @@ class _Replay:
         self._advance(event["date"])
         side = event["side"]
         strategy = event.get("strategy", "unassigned")
+        cash_before = self.cash
+        if side == "custody_transfer":
+            self.custody.apply(event, 0)
+            return
         if side in {"deposit", "withdraw"}:
             self.marks.update(event.get("valuation_prices", {}))
             assets = self._strategy_assets(self.marks, event.get("fund_valuation_prices"),
@@ -482,6 +503,7 @@ class _Replay:
                 self.cash += amount
                 self.cash_by_strategy[strategy] += amount
                 self.net_capital[strategy] -= amount
+        self.custody.apply(event, self.cash - cash_before)
 
     def view(self, day, prices=None):
         self._advance(day)
@@ -533,6 +555,7 @@ class _Replay:
         for key, value in strategy_fund_values.items():
             strategy_assets[key] += value
         return {
+            **self.custody.view(), "trading_accounts": self.trading_accounts,
             "positions": rows, "strategy_positions": strategy_rows, "fund_positions": funds,
             "strategy_fund_positions": strategy_funds,
             "fund_pending": dict(self.fund_pending), "pending_fund_value": pending_value,
@@ -578,7 +601,10 @@ def replay_edit(state, index, payload, min_day, max_day):
         candidate = payload if i == index else stored
         try:
             event_day = day if i == index else validate_day(stored["date"])
-            checked = make_event(candidate, stored["id"], event_day, replay.view(event_day))
+            if i == index and "trading_account" not in candidate and "trading_account" in stored:
+                candidate = {**candidate, "trading_account": stored["trading_account"]}
+            checked = make_event(candidate, stored["id"], event_day, replay.view(event_day),
+                                 historical=i != index or stored.get("trading_account", trading_accounts.UNKNOWN) == trading_accounts.UNKNOWN)
             if i == index and "commission" in stored and all(
                 checked.get(key) == stored[key] for key in ("side", "code", "qty", "price", "fee")
             ):

@@ -247,7 +247,9 @@ class Handler(BaseHTTPRequestHandler):
             return
         try:
             length = int(self.headers.get("Content-Length", "0"))
-            if not 0 < length <= 16384:
+            # 配置包含所有策略的产品列表和分类，单次记账请求则很小。
+            limit = 1024 * 1024 if self.path == "/api/etf/config" else 16384
+            if not 0 < length <= limit:
                 raise ValueError("请求内容过长或为空")
             payload = json.loads(self.rfile.read(length))
             if not isinstance(payload, dict):
@@ -288,10 +290,13 @@ class Handler(BaseHTTPRequestHandler):
         if not self.check_access():
             return
         if self.path == "/api/etf/config":
-            from src.portfolio_config import data
+            from src.portfolio_config import allocation_rows, data
+            from data_provider import fund_names
             from data_provider.security_names import names
             try:
-                result = {**data(ROOT / "data" / ETF_FILENAME), "names": names()}
+                result = data(ROOT / "data" / ETF_FILENAME)
+                funds = {code for row in allocation_rows(result["config"]) for code in row.get("fund_codes", [])}
+                result.update(names=names(), fund_names=fund_names.names_for(funds), strategy_names=STRATEGY_NAMES)
             except ValueError as error:
                 self.respond(json.dumps({"error": str(error)}, ensure_ascii=False).encode(),
                              "application/json; charset=utf-8", status=400)
@@ -301,6 +306,8 @@ class Handler(BaseHTTPRequestHandler):
             self.download_portfolio()
         elif self.path == "/":
             self.respond((APP_ROOT / "dashboard" / "index.html").read_bytes(), "text/html; charset=utf-8")
+        elif re.fullmatch(r"/settings(?:/(?:budgets|fees|accounts|core|bond|rotation|history))?/?", self.path):
+            self.respond((APP_ROOT / "dashboard" / "settings.html").read_bytes(), "text/html; charset=utf-8")
         elif self.path == TIMING_URL or re.fullmatch(TIMING_URL + r"/[0-9]{6}", self.path):
             self.respond((APP_ROOT / "dashboard" / "timing.html").read_bytes(), "text/html; charset=utf-8")
         elif self.path == TIMING_API or self.path.startswith(TIMING_API + "/"):

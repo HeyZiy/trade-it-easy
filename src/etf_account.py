@@ -222,7 +222,8 @@ def record_event(path, payload):
             raise ValueError("记账日期不能早于期初或上笔流水")
         view = snapshot(state, day)
         event = make_event(payload, request_id, day, view, config=state["_config"])
-        account_advice.on_event(state, view, event, _today())
+        if event["side"] != "custody_transfer":
+            account_advice.on_event(state, view, event, _today())
         state["events"].append(event)
         _save(path, state)
         return event
@@ -327,7 +328,8 @@ def edit_event(path, payload):
         state.setdefault("event_edits", []).append({"id": request_id, "event_id": old["id"],
                                                    "request": payload, "before": old,
                                                    "after": state["events"][index]})
-        account_advice.invalidate_after_edit(state, _today().isoformat())
+        if old["side"] != "custody_transfer" or state["events"][index]["side"] != "custody_transfer":
+            account_advice.invalidate_after_edit(state, _today().isoformat())
         _save(path, state)
         return state["events"][index]
 
@@ -439,7 +441,8 @@ def subscription_fees(state):
 
 def _missing_security_names(state, positions, strategies):
     codes = {row["code"] for row in positions}
-    codes.update(event["code"] for event in state["events"] if event.get("code") and event["side"] not in FUND_TRADES)
+    codes.update(event["code"] for event in state["events"] if event.get("code")
+                 and event["side"] not in FUND_TRADES and event.get("kind") != "fund")
     codes.update(row["code"] for strategy in strategies for row in strategy["suggestions"] if row.get("code"))
     config = state["_config"]
     for asset in portfolio_config.allocation_rows(config):

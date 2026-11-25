@@ -253,6 +253,44 @@ def test_dashboard_bulk_fills_missing_listed_names(tmp_path, monkeypatch):
         server.server_close()
 
 
+def test_settings_routes_and_multi_product_config(tmp_path, monkeypatch):
+    from src import portfolio_config
+
+    monkeypatch.setattr(dashboard, "ROOT", tmp_path)
+    monkeypatch.setenv("TRADE_DASHBOARD_PASSWORD", "secret")
+    path = portfolio_config.path_for(tmp_path / "data" / "etf_account.json")
+    portfolio_config.create(path, portfolio_config.example())
+    headers = {"Authorization": basic("trader", "secret")}
+    server = serve()
+    try:
+        base = f"http://127.0.0.1:{server.server_port}"
+        for suffix in ("", "/budgets", "/fees", "/core", "/bond", "/rotation", "/history"):
+            with urllib.request.urlopen(urllib.request.Request(base + "/settings" + suffix, headers=headers)) as response:
+                assert b'/assets/settings.js' in response.read()
+        endpoint = base + "/api/etf/config"
+        with urllib.request.urlopen(urllib.request.Request(endpoint, headers=headers)) as response:
+            result = json.load(response)
+        assert result["strategy_names"] == portfolio_config.STRATEGY_NAMES
+        config = result["config"]
+        config["core"] = [
+            {"code": str(500000 + i), "weight": 0.01, "asset_type": "equity", "tracked_index": None,
+             "valuation_kind": "none", "dividend_style": False, "volatility_rank": 0,
+             "fund_codes": [f"{i * 20 + n:06d}" for n in range(20)]}
+            for i in range(49)
+        ]
+        payload = json.dumps({"revision": result["revision"], "config": config}).encode()
+        assert len(payload) > 16384
+        request = urllib.request.Request(endpoint, data=payload, headers={
+            **headers, "Content-Type": "application/json", "X-Trade-Request": "dashboard",
+        })
+        with urllib.request.urlopen(request) as response:
+            assert response.status == 200
+        assert portfolio_config.load(path) == portfolio_config.validate(config)
+    finally:
+        server.shutdown()
+        server.server_close()
+
+
 def test_handler_requires_auth_before_routing(monkeypatch):
     monkeypatch.setattr(dashboard, "AUTH_DELAY", 0)
     monkeypatch.setenv("TRADE_DASHBOARD_PASSWORD", "secret")
@@ -260,7 +298,7 @@ def test_handler_requires_auth_before_routing(monkeypatch):
     try:
         base = f"http://127.0.0.1:{server.server_port}"
         for path in ("/api/overview", "/api/etf/export", "/", "/report/nope.md", "/api/report/nope.md",
-                     "/assets/app.js", "/unknown"):
+                     "/assets/app.js", "/settings", "/settings/core", "/unknown"):
             with pytest.raises(urllib.error.HTTPError) as denied:
                 urllib.request.urlopen(base + path)
             assert denied.value.code == 401

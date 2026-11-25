@@ -1,0 +1,89 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>账户设置 · 交易工作台</title>
+  <link rel="icon" type="image/svg+xml" href="/favicon.svg">
+  <link rel="stylesheet" href="/assets/styles.css">
+  <script src="/assets/common.js" defer></script>
+  <script src="/assets/settings.js" defer></script>
+</head>
+<body>
+  <header class="masthead"><div class="masthead-inner">
+    <div><div class="eyebrow">TRADE IT EASY</div><h1>账户设置</h1></div>
+    <a class="private-label" href="/">返回交易工作台</a>
+  </div></header>
+  <main class="settings-layout">
+    <nav class="settings-menu" aria-label="设置分区">
+      <h3>账户</h3>
+      <a href="/settings/budgets" data-settings="budgets">策略目标占比</a>
+      <a href="/settings/accounts" data-settings="accounts">交易账户</a>
+      <a href="/settings/fees" data-settings="fees">交易费用</a>
+      <h3>策略</h3>
+      <a href="/settings/core" data-settings="core">权益组合配比</a>
+      <a href="/settings/bond" data-settings="bond">固收组合配比</a>
+      <a href="/settings/rotation" data-settings="rotation">跨资产动量标的池</a>
+      <h3>版本管理</h3>
+      <a href="/settings/history" data-settings="history">恢复历史配置</a>
+    </nav>
+    <section class="section settings-editor" aria-labelledby="config-title">
+      <form id="config-form">
+        <div class="section-heading"><h2 id="config-title">投资账户配置</h2></div>
+        <fieldset id="config-fields" class="entry-fields" disabled hidden>
+          <fieldset class="entry-fields" data-config-panel="accounts" hidden disabled>
+            <p class="subtle">每个账户单独记录现金和持仓。首次保存后，可在总览的「按交易账户查看」中分配已有现金和份额。</p>
+            <div id="trading-account-list"></div>
+            <button type="button" class="text-button" id="add-trading-account">＋ 添加交易账户</button>
+            <h3>买入时的默认账户</h3>
+            <div class="entry-grid"><label>场内证券<select id="default-listed"></select></label><label>场外基金<select id="default-fund"></select></label></div>
+            <h3>单个产品的默认账户</h3>
+            <div id="trading-product-list"></div>
+            <button type="button" class="text-button" id="add-trading-product">＋ 添加产品</button>
+          </fieldset>
+          <fieldset class="entry-fields" data-config-panel="budgets" hidden disabled>
+            <div class="entry-grid" id="config-budgets"></div>
+            <p class="subtle">以上占比按投资账户总资产计算，合计不超过100%。</p>
+            <p id="config-budget-total" class="entry-preview" aria-live="polite"></p>
+          </fieldset>
+          <fieldset class="entry-fields" data-config-panel="fees" hidden disabled>
+            <p class="subtle">佣金按成交金额计算，买卖均适用最低收费。印花税仅在卖出 A 股时按成交金额计算。</p>
+            <div class="entry-grid">
+              <label>股票佣金 / 万分之<input name="stock_commission" type="number" min="0" max="10000" step="any"></label>
+              <label>股票最低佣金 / 元<input name="stock_min_commission" type="number" min="0" step="0.01"></label>
+              <label>ETF 佣金 / 万分之<input name="etf_commission" type="number" min="0" max="10000" step="any"></label>
+              <label>ETF 最低佣金 / 元<input name="etf_min_commission" type="number" min="0" step="0.01"></label>
+              <label>A 股卖出印花税 / 万分之<input name="stock_sell_stamp_duty" type="number" min="0" max="10000" step="any" placeholder="现行 5"></label>
+            </div>
+            <div class="entry-grid">
+              <label>场外基金统一申购费<select name="fund_fee_kind"><option value="">沿用各基金上次设置</option><option value="none">免申购费</option><option value="rate">按比例</option><option value="fixed">固定金额</option></select></label>
+              <label id="config-fund-fee-field" hidden><span id="config-fund-fee-label">实际费率 / %</span><input name="fund_fee_value" type="number" min="0" step="any"></label>
+            </div>
+            <p class="subtle">统一申购费适用于本账户新记的场外申购和定投。</p>
+          </fieldset>
+          <fieldset class="entry-fields" data-config-panel="allocation" hidden disabled>
+            <button id="config-add" type="button" class="text-button">＋ 添加配置项</button>
+            <p class="subtle">同一配置项内的产品共用一个目标权重。首个场内产品为主代码，纯场外配置使用首只基金。</p>
+            <div id="config-assets"></div>
+            <p id="config-total" class="entry-preview" aria-live="polite"></p>
+          </fieldset>
+          <fieldset class="entry-fields" data-config-panel="rotation" hidden disabled>
+            <button id="config-pool-add" type="button" class="text-button">＋ 添加标的</button>
+            <p class="subtle">标的池以本页配置为唯一来源，留空保存则轮动建议暂停。被移出池子的持仓按最新现价兜底卖出；改池前请自行回测。</p>
+            <div class="table-wrap"><table class="config-table"><thead><tr><th>代码</th><th>资产类别</th><th>名称</th><th></th></tr></thead><tbody id="config-pool"></tbody></table></div>
+            <datalist id="pool-groups"><option value="国内权益"><option value="海外权益"><option value="商品"><option value="利率"></datalist>
+          </fieldset>
+          <fieldset class="entry-fields" data-config-panel="history" hidden disabled>
+            <div class="entry-grid"><label>选择版本<select id="config-history" required></select></label></div>
+            <p class="subtle">恢复会同时替换策略占比、组合配比、标的池、交易费用和产品分类。持仓与交易记录保留。</p>
+          </fieldset>
+        </fieldset>
+        <p id="config-status" role="status" class="subtle">正在读取配置…</p>
+        <p id="config-error" class="warning" role="alert" hidden></p>
+        <button id="config-retry" type="button" class="secondary-button" hidden>重新加载</button>
+        <button disabled type="submit" class="primary-button" id="config-save">保存配置</button>
+      </form>
+    </section>
+  </main>
+</body>
+</html>

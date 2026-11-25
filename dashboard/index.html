@@ -6,12 +6,14 @@
   <title>交易工作台</title>
   <link rel="icon" type="image/svg+xml" href="/favicon.svg">
   <link rel="stylesheet" href="/assets/styles.css">
+  <script src="/assets/common.js" defer></script>
+  <script src="/assets/trading-accounts.js" defer></script>
   <script src="/assets/app.js" defer></script>
 </head>
 <body>
   <header class="masthead"><i class="masthead-orbit" aria-hidden="true"></i><div class="masthead-inner">
     <div><div class="eyebrow">TRADE IT EASY</div><h1>交易工作台</h1></div>
-    <a class="private-label" href="/research/timing">ETF 择时研究 →</a>
+    <div class="masthead-actions"><a id="account-settings" class="private-label" href="/settings" hidden>账户设置</a><a class="private-label" href="/research/timing">ETF 择时研究 →</a></div>
   </div></header>
   <main>
     <div class="intro"><p>账户资产与策略持仓</p><p id="status" role="status">正在加载…</p></div>
@@ -46,6 +48,7 @@
           <label>发生日期<input name="date" type="date" required></label>
           <label hidden>转出策略<select name="from_strategy" disabled></select></label>
           <label data-strategy-field>策略<select name="strategy" required></select></label>
+          <label hidden>交易账户<select name="trading_account" disabled required></select></label>
           <label data-trade-field><span id="entry-code-label">证券代码</span><input name="code" inputmode="numeric" pattern="[0-9]{6}" maxlength="6" list="entry-securities" autocomplete="off" required><datalist id="entry-securities"></datalist><span id="entry-security" class="field-hint"></span></label>
           <label id="entry-kind-field" hidden>标的类型<select name="kind" required disabled><option value="">请选择</option><option value="listed">场内证券</option><option value="fund">场外基金</option></select></label>
           <label data-trade-field><span id="entry-qty-label">成交份额</span><input name="qty" type="number" min="1" step="1" required><button type="button" id="entry-all" class="text-button" hidden>全部卖出</button></label>
@@ -61,39 +64,6 @@
         <div class="entry-footer"><button id="event-save" type="submit" class="primary-button">保存记账</button><button id="event-continue" type="submit" class="secondary-button">保存并继续</button><button id="event-refresh" type="button" class="secondary-button" hidden>刷新账户</button></div>
       </form>
     </dialog>
-    <dialog id="config-dialog" class="config-dialog" aria-labelledby="config-title">
-      <form id="config-form">
-        <div class="section-heading"><h2 id="config-title">投资账户配置</h2><button id="config-cancel" type="button" class="text-button">关闭</button></div>
-        <fieldset id="config-fields" class="entry-fields">
-        <div class="entry-grid" id="config-budgets"></div>
-        <p class="subtle">以上占比按投资账户总资产计算，合计不超过100%。</p>
-        <h3>账户交易费用</h3>
-        <p class="subtle">佣金按成交金额计算，买卖均适用最低收费。印花税仅在卖出 A 股时按成交金额计算。</p>
-        <div class="entry-grid">
-          <label>股票佣金 / 万分之<input name="stock_commission" type="number" min="0" max="10000" step="any"></label>
-          <label>股票最低佣金 / 元<input name="stock_min_commission" type="number" min="0" step="0.01"></label>
-          <label>ETF 佣金 / 万分之<input name="etf_commission" type="number" min="0" max="10000" step="any"></label>
-          <label>ETF 最低佣金 / 元<input name="etf_min_commission" type="number" min="0" step="0.01"></label>
-          <label>A 股卖出印花税 / 万分之<input name="stock_sell_stamp_duty" type="number" min="0" max="10000" step="any" placeholder="现行 5"></label>
-        </div>
-        <div class="entry-grid">
-          <label>场外基金统一申购费<select name="fund_fee_kind"><option value="">沿用各基金上次设置</option><option value="none">免申购费</option><option value="rate">按比例</option><option value="fixed">固定金额</option></select></label>
-          <label id="config-fund-fee-field" hidden><span id="config-fund-fee-label">实际费率 / %</span><input name="fund_fee_value" type="number" min="0" step="any"></label>
-        </div>
-        <p class="subtle">统一申购费适用于本账户新记的场外申购和定投。</p>
-        <div class="section-heading"><h3 id="config-allocation-title">组合内部配比</h3><button id="config-add" type="button" class="text-button">＋ 添加配置项</button></div>
-        <p class="subtle">每项可填场内产品、场外基金，或两类都填。组内合计金额用于对比目标。</p>
-        <div class="table-wrap"><table class="config-table"><thead><tr><th>配置名称与产品</th><th>权重 / %</th><th>设置</th><th></th></tr></thead><tbody id="config-assets"></tbody></table></div>
-        <p id="config-total" class="entry-preview" aria-live="polite"></p>
-        <div class="section-heading"><h3>跨资产动量标的池</h3><button id="config-pool-add" type="button" class="text-button">＋ 添加标的</button></div>
-        <p class="subtle">标的池以本页配置为唯一来源，留空保存则轮动建议暂停。被移出池子的持仓按最新现价兜底卖出；改池前请自行回测。</p>
-        <div class="table-wrap"><table class="config-table"><thead><tr><th>代码</th><th>资产类别</th><th>名称</th><th></th></tr></thead><tbody id="config-pool"></tbody></table></div>
-        <datalist id="pool-groups"><option value="国内权益"><option value="海外权益"><option value="商品"><option value="利率"></datalist>
-        <details><summary>历史配置</summary><label>选择版本<select id="config-history"></select></label><button id="config-load-history" type="button" class="text-button">使用此版本</button><p class="subtle">保存后生效。</p></details>
-        </fieldset>
-        <p id="config-error" class="warning" role="alert" hidden></p><button type="submit" class="primary-button" id="config-save">保存配置</button>
-      </form>
-    </dialog>
     <dialog id="fund-dialog" aria-labelledby="fund-title">
       <form id="fund-form">
         <div class="section-heading"><h2 id="fund-title">场外基金记账</h2><button id="fund-cancel" type="button" class="text-button">关闭</button></div>
@@ -103,6 +73,7 @@
           <p id="fund-quick-summary" class="subtle" hidden></p>
           <div class="entry-grid">
             <label>所属策略<select name="strategy" required></select></label>
+            <label hidden>交易账户<select name="trading_account" disabled required></select></label>
             <label id="fund-code-field">基金代码<input name="code" inputmode="numeric" pattern="[0-9]{6}" maxlength="6" required></label>
             <label id="fund-record-day-field">记账日期<input name="date" type="date" required></label>
             <label><span id="fund-amount-label">实际扣款 / 元</span><input name="amount" type="number" min="0.01" step="0.01" required></label>
@@ -135,6 +106,7 @@
           <div class="entry-grid">
             <label>基金代码<input name="code" inputmode="numeric" pattern="[0-9]{6}" maxlength="6" required><span id="dca-fund-name" class="field-hint"></span></label>
             <label>每期金额 / 元<input name="amount" type="number" min="0.01" step="0.01" required></label>
+            <label hidden>扣款账户<select name="trading_account" disabled></select></label>
             <label>扣款周期<select name="frequency"><option value="monthly">每月</option><option value="weekly">每周</option><option value="daily">每日（交易日）</option></select></label>
             <label id="dca-anchor-label">扣款日<select name="anchor"></select></label>
             <label>备注<input name="note" maxlength="50" placeholder="可选"></label>
@@ -142,6 +114,19 @@
         </fieldset>
         <p id="dca-error" class="warning" role="alert" hidden></p>
         <button type="submit" class="primary-button" id="dca-save">保存计划</button>
+      </form>
+    </dialog>
+    <dialog id="custody-dialog" aria-labelledby="custody-title">
+      <form id="custody-form">
+        <div class="section-heading"><h2 id="custody-title">账户间划转</h2><button class="text-button" type="button" name="cancel">关闭</button></div>
+        <p class="subtle" id="custody-source"></p>
+        <fieldset class="entry-fields"><div class="entry-grid">
+          <label>转入账户<select name="target" required></select></label>
+          <label><span id="custody-unit"></span><input type="number" name="quantity" required></label>
+          <label>登记日期<input type="date" name="date" required></label>
+        </div></fieldset>
+        <p class="warning" role="alert" hidden></p>
+        <button class="primary-button" type="submit">保存划转</button>
       </form>
     </dialog>
     <dialog id="asset-class-dialog" aria-labelledby="asset-class-title">

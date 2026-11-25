@@ -39,6 +39,8 @@ def close_record(state, asof, close_prices, *, revision, strategy_revision=None)
     prices, missing = holding_closes(codes, asof, close_prices)
     issues = ["缺少当日收盘价：" + "、".join(missing)] if missing else []
     view = snapshot(state, asof, prices)
+    for key in ("trading_accounts", "custody_cash", "custody_positions"):
+        view.pop(key)
     missing_funds = [code for code, row in view["fund_positions"].items() if row["nav"] is None]
     if missing_funds:
         issues.append("缺少场外基金净值：" + "、".join(missing_funds))
@@ -113,6 +115,23 @@ def valuation_view(state, today, price_day):
     if missing or missing_funds:
         view.update(invested=None, equity=None, pnl=None)
     view["prices"] = prices
+    # 按策略和产品分摊已展示市值，最后一笔吸收分币舍入。
+    listed = {(row["strategy"], row["code"]): row for row in view["strategy_positions"]}
+    cumulative = {}
+    for row in view["custody_positions"]:
+        key = row["strategy"], row["code"]
+        fund = row["kind"] == "fund"
+        holding = view["strategy_fund_positions"][key[0]][key[1]] if fund else listed[key]
+        group = row["kind"], *key
+        prior_qty, prior_value = cumulative.get(group, (0, 0))
+        qty = round(prior_qty + row["qty"], 6)
+        value = holding["market_value"]
+        if value is None:
+            row["market_value"] = None
+        else:
+            subtotal = round(value * qty / (holding["qty"] if fund else holding["count"]), 2)
+            row["market_value"] = round(subtotal - prior_value, 2)
+            cumulative[group] = qty, subtotal
     view["valuation"] = {"date": price_day, "missing": sorted(missing)}
     if missing_funds:
         view["valuation"]["missing_funds"] = sorted(missing_funds)

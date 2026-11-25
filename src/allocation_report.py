@@ -35,7 +35,11 @@ def allocation_actions(state, day):
             elif code in grouped and group["trade_eligible"]:
                 direction = "卖出" if group["gap_amount"] > 0 else "买入"
                 products = "、".join(row["code"] for row in group["products"])
-                detail = f"{group['name']}（{products}）约 {abs(group['gap_amount']):,.2f} 元"
+                label = group["name"]
+                if group["name_fund_code"] and not group["products"][0].get("name"):
+                    fund_code = group["name_fund_code"]
+                    label = fund_names.lookup({fund_code}).get(fund_code, "场外基金")
+                detail = f"{label}（{products}）约 {abs(group['gap_amount']):,.2f} 元"
                 if len(group["products"]) > 1:
                     detail += "，需确认交易品种"
             else:

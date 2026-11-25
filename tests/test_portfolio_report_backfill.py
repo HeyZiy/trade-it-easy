@@ -1,10 +1,11 @@
 """盘前收盘补采限于投资账户。"""
 
-from datetime import datetime, timedelta, timezone
+from datetime import date, datetime, timedelta, timezone
 
 import pytest
 
 import portfolio_report as entry
+from data_provider import fund_names, security_names
 from src import allocation_report, etf_account as wallet, fund_plans, portfolio_config
 from data_provider.closing_prices import ClosingPrices
 
@@ -97,6 +98,34 @@ def test_close_reports_allocation_actions_and_reprices_pending_suggestions(accou
     assert len(sent) == 2 and sent[1].count("仍待处理") == 2
     assert "约 4,800.00 元" in sent[1] and "约 2,750.00 元" in sent[1]
     assert (tmp_path / "reports/allocation_rebalance_20260925.md").read_text(encoding="utf-8") == sent[1]
+
+
+def test_close_report_names_an_existing_off_exchange_fund(tmp_path, monkeypatch):
+    path = tmp_path / "fund_account.json"
+    wallet.initialize(path, asof="2026-09-21", cash=5000,
+                      positions=[{"code": "510300", "count": 100, "price": 10, "strategy": "core"}],
+                      budgets={"core": 1}, cash_allocations={"core": 5000})
+    config_path = portfolio_config.path_for(path)
+    config = portfolio_config.load(config_path)
+    expected = portfolio_config.revision(config)
+    code = "006282"
+    config["core"] = [{"code": f"FUND:{code}", "fund_codes": [code], "weight": .5,
+                       "asset_type": "equity", "tracked_index": None, "valuation_kind": "none",
+                       "dividend_style": False, "volatility_rank": 0}]
+    portfolio_config.save_config(config_path, config, expected)
+    wallet.record_event(path, {"request_id": "buy-fund", "revision": wallet.revision(wallet.load(path)),
+                               "date": "2026-09-22", "side": "fund_buy", "code": code,
+                               "qty": 100, "amount": 100, "nav": 1, "nav_date": "2026-09-22"})
+    wallet.collect_close(path, "2026-09-22", lambda codes, day: {"510300": 10})
+    state = wallet.load(path)
+    target = date(2026, 9, 22)
+    action_key = f"core:FUND:{code}:买入"
+    monkeypatch.setattr(fund_names, "lookup", lambda codes: {})
+    assert f"买入 场外基金（{code}）" in allocation_report.allocation_actions(state, target)[action_key][1]
+
+    name = "摩根欧洲动力策略股票(QDII)A"
+    security_names.remember({code: name}, path=fund_names._cache_path())
+    assert f"买入 {name}（{code}）" in allocation_report.allocation_actions(state, target)[action_key][1]
 
 
 def test_close_report_stays_quiet_without_actions_and_retries_failed_delivery(tmp_path, monkeypatch):

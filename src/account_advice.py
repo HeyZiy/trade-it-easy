@@ -81,8 +81,8 @@ def allocation_groups(assets, strategy, prices, names):
                 position = {"code": member, "name": security_name(member), "count": 0, "market_value": 0}
             products.append({**position, "kind": "listed"})
         for member in asset.get("fund_codes", []):
-            position = ungrouped_funds.pop(member, None)
-            products.append({**(position or {"code": member, "name": names.get(member), "market_value": 0}), "kind": "fund"})
+            position = ungrouped_funds.pop(member, {"code": member, "market_value": 0})
+            products.append({**position, "name": names.get(member) or position.get("name"), "kind": "fund"})
         first_product = products[0]
         values = [row["market_value"] + row.get("pending_amount", 0)
                   if row["market_value"] is not None else None for row in products]
@@ -262,7 +262,7 @@ def publish_quality(day, *, path, dry_run=False):
     if account_advice.is_current(previous, day):
         rows, status = account_advice.advice(previous, strategy, date.fromisoformat(day),
                                              dismissed=account["dismissed"])
-        return render(rows, status)
+        return f"## 投资账户建议\n\n{render(rows, status)}"
     state = pool_state.restore(deepcopy(account.get("quality_state") or pool_state.empty_state()))
 
     def commit(value, published=None):
@@ -297,7 +297,7 @@ def publish_quality(day, *, path, dry_run=False):
                                          dismissed=account["dismissed"])
     advice_report = render(rows, status)
     if signal_report:
-        return f"## 持有资格与候选\n\n{signal_report}\n\n## 投资账户建议\n\n{advice_report}"
+        return f"## 投资账户建议\n\n{advice_report}\n\n## 持有资格与候选\n\n{signal_report}"
     return advice_report
 
 

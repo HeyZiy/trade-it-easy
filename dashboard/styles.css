@@ -23,6 +23,8 @@ h1 { margin: 0; font-family: "Songti SC", "STSong", serif; font-size: 29px; font
 .private-label span { width: 7px; height: 7px; border-radius: 50%; background: #83c7a8; box-shadow: 0 0 0 4px rgba(131,199,168,.12); }
 a.private-label { text-decoration: none; }
 a.private-label:hover { color: white; border-color: rgba(255,255,255,.35); }
+.masthead-actions { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 6px; }
+.masthead-inner > div:first-child { flex-shrink: 0; }
 main { max-width: 1200px; margin: auto; padding: 22px 30px 52px; }
 .intro { margin-bottom: 22px; color: var(--muted); font-size: 12px; line-height: 1.7; display: flex; justify-content: space-between; gap: 16px; }
 .intro p { margin: 0; }
@@ -168,7 +170,7 @@ td small { display: block; color: #93a098; font-size: 11px; margin-top: 4px; }
 .report-table { overflow-x: auto; margin: 14px 0; }
 .report-prose table { min-width: 440px; font-size: 12px; line-height: 1.65; }
 .report-prose th, .report-prose td { padding: 10px 8px; font-size: 12px; }
-.report-prose th { background: #f5f8f5; color: #74837b; }
+.report-prose th { background: #f5f8f5; color: #74837b; white-space: nowrap; }
 .report-prose tbody tr:hover { background: transparent; box-shadow: none; }
 .report-actions { text-align: center; padding-top: 9px; border-top: 1px solid #edf1ed; }
 .text-button { border: 0; background: transparent; color: var(--green); padding: 7px 8px; font-size: 12px; border-radius: 6px; transition: background-color .15s ease, color .15s ease; }
@@ -270,11 +272,13 @@ dialog::backdrop { background: rgba(12,43,35,.48); backdrop-filter: blur(5px); a
 dialog .section-heading { padding-bottom: 17px; border-bottom: 1px solid #e8eee9; }
 dialog h3 { font-size: 14px; }
 dialog details { margin: 15px 0; color: var(--muted); font-size: 12px; }
-.config-dialog { width: min(1040px, 96vw); max-width: 1040px; }
 @keyframes fade { from { opacity: 0; } }
 @keyframes rise { from { opacity: 0; transform: translateY(12px) scale(.985); } }
 .entry-grid { display: grid; grid-template-columns: repeat(2,minmax(0,1fr)); gap: 16px; margin: 22px 0; }
 .entry-grid label { display: grid; align-content: start; gap: 7px; font-size: 12px; color: var(--muted); }
+.custody-group { padding: 12px 0; border-bottom: 1px solid #dce5df; }
+.custody-group summary { cursor: pointer; font-weight: 600; }
+.custody-group p { margin: 10px 0; }
 .entry-grid input, .entry-grid select, .config-table input { min-width: 0; width: 100%; padding: 11px 12px; font: inherit; font-size: 14px; color: var(--ink); background: #fbfcfb; border: 1px solid #cbd7ce; border-radius: 8px; transition: border-color .15s ease, box-shadow .15s ease, background-color .15s ease; }
 .entry-grid input:focus, .entry-grid select:focus, .config-table input:focus { outline: 0; border-color: #6e9c88; background: white; box-shadow: 0 0 0 3px rgba(47,122,91,.11); }
 .entry-preview { border: 1px solid #e2e9e3; border-radius: 10px; padding: 14px 16px; background: #f3f7f4; font-size: 12px; line-height: 1.6; }
@@ -337,16 +341,53 @@ dialog details { margin: 15px 0; color: var(--muted); font-size: 12px; }
   .allocation-row-foot { margin-top: 7px; }
 }
 
-.config-table input[data-field="weight"] { width: 82px; }
+#config-assets { display: grid; gap: 12px; }
+.config-asset { min-width: 0; padding: 16px; border: 1px solid #dce5df; border-radius: 10px; }
+.config-asset .entry-grid { margin: 0; }
+.config-asset-head { grid-template-columns: minmax(0, 2fr) minmax(88px, 1fr) auto; align-items: end; }
+.config-asset-head .text-button { align-self: center; color: var(--muted); }
+.config-asset .config-member-groups { margin-top: 16px; }
+.config-member-group { min-width: 0; margin: 0; padding: 8px 10px; border: 1px solid #e2e9e4; border-radius: 8px; }
+.config-member-group legend { padding: 0 4px; font-size: 13px; }
+.config-member { display: grid; grid-template-columns: minmax(78px, 7em) minmax(0, 1fr) auto; gap: 8px; align-items: center; margin-bottom: 6px; }
+.config-member input { padding: 7px 8px; font-variant-numeric: tabular-nums; }
+.config-member small { color: var(--muted); overflow-wrap: anywhere; }
+.config-member input[aria-invalid="true"] { border-color: #ab4339; }
+.config-member input[aria-invalid="true"] + small { color: #963a31; }
+.config-asset details { margin-bottom: 0; }
+@media (max-width: 680px) {
+  .config-member-groups { grid-template-columns: minmax(0, 1fr); gap: 10px; }
+  .config-asset-head { gap: 8px; }
+  .config-asset { padding: 12px; }
+}
 .config-table td:first-child input { width: clamp(116px, 32vw, 220px); }
 .config-table td:first-child label { display: block; font-size: 12px; color: var(--muted); }
 .config-table td:first-child input { display: block; margin: 4px 0; }
-.config-dialog input, .config-dialog select { font-size: 13px; }
+.settings-editor input, .settings-editor select { font-size: 13px; }
 .config-advanced label { display: grid; gap: 6px; font-size: 12px; color: var(--muted); }
 .config-table td { vertical-align: top; }
-.config-advanced { display: grid; grid-template-columns: repeat(2, minmax(120px, 1fr)); gap: 12px; padding: 14px 0; }
+.config-advanced { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; padding-top: 14px; }
 .config-advanced input, .config-advanced select { width: 100%; }
-.config-dialog details { margin: 12px 0; }
+.settings-editor details { margin: 12px 0; }
 .config-table details { margin: 0; }
-.config-dialog fieldset:disabled { opacity: .65; }
+.settings-editor fieldset:disabled { opacity: .65; }
 .config-table td:first-child:not(:has(label:not([hidden]))) small { color: inherit; font-size: 13px; }
+
+.settings-layout { display: grid; grid-template-columns: 205px minmax(0, 1fr); align-items: start; gap: 24px; }
+.settings-menu { display: grid; gap: 4px; padding: 4px 0; }
+.settings-menu h3 { margin: 16px 12px 4px; color: var(--muted); font-size: 12px; }
+.settings-menu h3:first-child { margin-top: 0; }
+.settings-menu a { padding: 9px 12px; border-radius: 7px; color: var(--ink); text-decoration: none; font-size: 14px; }
+.settings-menu a:hover, .settings-menu a[aria-current] { background: var(--green-soft); color: var(--green-deep); }
+.settings-menu a[aria-current] { font-weight: 650; }
+.settings-editor { min-width: 0; margin: 0; }
+.settings-editor .section-heading { border-bottom: 1px solid #e8eee9; padding-bottom: 14px; }
+.settings-editor .entry-preview { margin: 14px 0; }
+.settings-editor details { color: var(--muted); font-size: 13px; }
+#config-status:empty { display: none; }
+@media (max-width: 740px) {
+  .settings-layout { grid-template-columns: minmax(0, 1fr); gap: 12px; }
+  .settings-menu { display: flex; flex-wrap: wrap; gap: 4px; }
+  .settings-menu h3 { display: none; }
+  .settings-menu a { padding: 8px; font-size: 13px; }
+}

@@ -105,6 +105,12 @@ def load_plans(account_path):
 def save_plan(account_path, payload):
     """新增或更新一条定投计划。计划是配置：改动不影响已补记的流水。"""
     plan = _validated_plan(payload)
+    if payload.get("trading_account"):
+        settings = load_account(account_path)["_config"].get("trading_accounts", {})
+        account = payload["trading_account"]
+        if not isinstance(account, str) or settings.get("accounts", {}).get(account, {}).get("channel") != "fund":
+            raise ValueError("请选择有效的场外扣款账户")
+        plan["trading_account"] = account
     path = _plans_path(account_path)
     with _locked(path):
         state = _read_plans(path)
@@ -114,6 +120,8 @@ def save_plan(account_path, payload):
             if index is None:
                 raise ValueError("定投计划不存在，可能已被删除，请刷新")
             previous = plans[index]
+            if "trading_account" not in payload and "trading_account" in previous:
+                plan["trading_account"] = previous["trading_account"]
             if "strategy" not in payload:
                 plan["strategy"] = fund_strategy(previous)
             plan["created_on"] = previous.get("created_on") or _today().isoformat()
@@ -236,6 +244,8 @@ def record_due_subscriptions(account_path):
             "date": run_day.isoformat(),
             "nav_date": due.isoformat(),
         }
+        if plan.get("trading_account"):
+            payload["trading_account"] = plan["trading_account"]
         if "fund_subscription_fee" not in state["_config"]:
             fee = subscription_fees(state).get(plan["code"])
             if fee is None:

@@ -8,6 +8,7 @@ from pathlib import Path
 import re
 
 from src.json_store import locked, save
+from src import trading_accounts
 
 STRATEGY_NAMES = {"core": "权益组合", "rotation": "跨资产动量", "quality": "质量动量", "bond": "固收组合"}
 ALLOCATION_NAMES = {key: STRATEGY_NAMES[key] for key in ("core", "bond")}
@@ -96,13 +97,15 @@ def _validate_rotation(rotation):
 
 def validate(config):
     required = {"schema_version", "budgets", "core"}
-    optional = {*ALLOCATION_NAMES, "fund_subscription_fee", "trade_fees", "rotation", "asset_classes"}
+    optional = {*ALLOCATION_NAMES, "fund_subscription_fee", "trade_fees", "rotation", "asset_classes", "trading_accounts"}
     if not isinstance(config, dict) or not required <= config.keys() <= required | optional:
         raise ValueError("配置须包含 schema_version、budgets、core")
     if type(config["schema_version"]) is not int or config["schema_version"] != 1:
         raise ValueError("不支持的配置版本")
     if "rotation" in config:
         _validate_rotation(config["rotation"])
+    if "trading_accounts" in config:
+        trading_accounts.validate(config["trading_accounts"])
     if "fund_subscription_fee" in config:
         validate_subscription_fee(config["fund_subscription_fee"])
     if "trade_fees" in config:
@@ -237,6 +240,10 @@ def save_config(path, config, expected):
         old = _read(path)
         if revision(old) != expected:
             raise ValueError("配置已被其他页面或手工修改，请刷新后重试")
+        previous = old.get("trading_accounts", {}).get("accounts", {})
+        updated = config.get("trading_accounts", {}).get("accounts", {})
+        if any(updated.get(key, {}).get("channel") != row["channel"] for key, row in previous.items()):
+            raise ValueError("已保存的交易账户须保留原渠道，以便核对历史流水")
         _archive(path, old)
         _archive(path, config)
         if current_revision(path) != expected:
@@ -301,7 +308,8 @@ def data(account):
         if version.stem != revision(value):
             continue
         history.append({"revision": version.stem, "saved_at": datetime.fromtimestamp(version.stat().st_mtime, timezone.utc).isoformat(), "config": value})
-    return {"config": config, "revision": revision(config), "history": history}
+    return {"config": config, "revision": revision(config), "history": history,
+            "trading_accounts_template": trading_accounts.TEMPLATE}
 
 
 def update(account, payload):

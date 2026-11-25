@@ -6,7 +6,7 @@ from __future__ import annotations
 import logging
 from dataclasses import dataclass
 from datetime import date
-from typing import Dict, List, Optional
+from typing import Dict, Optional
 
 import pandas as pd
 
@@ -27,14 +27,14 @@ class SignalPlan:
     signal_day: str
     execute_day: str
     asof: str
-    selected: Listate[str]
-    deferred: Listate[str]
+    selected: list[str]
+    deferred: list[str]
     industries: Dict[str, str]
-    kept: Listate[str]
+    kept: list[str]
     exit_reasons: Dict[str, str]
 
     @property
-    def entries(self) -> listate[str]:
+    def entries(self) -> list[str]:
         kept = set(self.kept)
         return [code for code in self.selected if code not in kept]
 
@@ -114,6 +114,7 @@ def run_signal(today: date, dry_run: bool = False,
     kept = sorted(held - exits.keys())
     selected = list(kept)
     ranked, scores, industries = [], {}, {}
+    eligible = None
     entry_error = None
     if len(kept) < config.TOP_N:
         try:
@@ -122,18 +123,19 @@ def run_signal(today: date, dry_run: bool = False,
             candidates = (universe - held).intersection(non_st)
             fundamentals = feeds.fetch_fundamentals(sorted(candidates), asof,
                                                     min_profit_yoy=config.NP_YOY_MIN)
-            eligible = passed | set(screener.build_pool(candidates, fundamentals, status))
-            if eligible:
-                closes = feeds.fetch_closes(sorted(eligible), asof, rows=config.SCORE_CLOSES)
+            quality_pool = passed | set(screener.build_pool(candidates, fundamentals, status))
+            if quality_pool:
+                closes = feeds.fetch_closes(sorted(quality_pool), asof, rows=config.SCORE_CLOSES)
                 if (closes.empty or len(closes) != config.SCORE_CLOSES
                         or pd.Timestamp(closes.index[-1]).normalize() != pd.Timestamp(asof)):
                     raise RuntimeError('收盘矩阵未完整更新至上一交易日')
-                ranked, scores = screener.rank_pool(sorted(eligible), closes)
-                ranked = ranked[:config.TOP_N]
-                if ranked:
-                    industries = feeds.fetch_industries(sorted(set(ranked) | held), asof)
-                    selected, kept = screener.select_targets(
-                        ranked, held, passed, industries, unknown - exits.keys())
+                ranked, scores = screener.rank_pool(sorted(quality_pool), closes)
+            eligible = quality_pool
+            if ranked:
+                shortlist = ranked[:config.TOP_N]
+                industries = feeds.fetch_industries(sorted(set(shortlist) | held), asof)
+                selected, kept = screener.select_targets(
+                    shortlist, held, passed, industries, unknown - exits.keys())
         except Exception as exc:
             logger.exception("新仓排序失败")
             entry_error = exc
@@ -162,36 +164,75 @@ def run_signal(today: date, dry_run: bool = False,
                  f"计划退出 {len(exits)} | 暂缓判断 {len(unknown)}")
     if entry_error is not None:
         lines.append(f"- ⚠️ 补位数据异常，暂停新买入：{entry_error}")
-    names = names_for([d["code"] for d in decisions] + ranked)
-    lines += render_decision_table(decisions, ranked, rank, scores, names)
+    names = names_for(held | set(selected) | (eligible or set()))
+    lines += render_decision_table(decisions, names)
+    if eligible is not None:
+        # 新候选与旧仓的财务字段均来自本轮已经完成的资格检查。
+        metrics = fundamentals.loc[fundamentals.index.isin(eligible)].to_dict("index")
+        metrics.update({code: audit[code] for code in passed})
+        lines += render_pool_table(eligible, ranked, scores, names, held, set(selected), metrics)
+    elif entry_error is None:
+        lines.append("- 持仓名额已满，本轮仅检查持有资格，未重算全池排名。")
     return "\n".join(lines)
 
 
-def render_decision_table(decisions: Listate[dict], ranked: Listate[str],
-                          rank: Dict[str, int], scores: Dict[str, float],
-                          names: Dict[str, str]) -> Listate[str]:
-    """轮次报告的决策表与梯队段（纯渲染、零 I/O；名单与排序事实由轮次核算好）。"""
+def _stock_label(code, names):
+    name = " ".join(names.get(code, "").split()).replace("|", "&#124;")
+    return f"{name}（{code}）" if name and name != code else code
+
+
+def render_decision_table(decisions: list[dict], names: dict[str, str]) -> list[str]:
+    """按排名列出本轮持仓与交易决定。"""
     # 展示按排名升序（未知排名的退出/暂缓置底）；执行计划仍按原 decisions 提交。
     ordered = sorted(decisions,
                      key=lambda d: (d["rank"] is None, d["rank"] or 0, d["code"]))
-    lines: Listate[str] = []
+    if not ordered:
+        return []
+    actions = {"keep": "留存", "entry": "拟补位", "exit": "拟退出", "defer": "暂缓判断"}
+    reasons = {
+        "not_in_mainboard_universe": "不在主板范围", "roe_low": "ROE 未达标",
+        "profit_growth_low": "净利同比未达标", "pe_high": "PE 达到上限",
+        "pb_high": "PB 达到上限", "pe_nonpos": "PE 非正", "pb_nonpos": "PB 非正",
+        "financial_missing": "财务数据缺失", "valuation_invalid": "估值数据缺失",
+        "status_missing": "证券状态缺失", "st": "ST", "passed": "质量筛选通过",
+        "out_of_pool": "退出质量池",
+    }
+    lines = ["", "### 本轮持仓与补位", "", "| 标的 | 决定 | 排名 | 依据 |", "| --- | --- | ---: | --- |"]
     for d in ordered:
-        mark = {"keep": "🟢", "entry": "🛒", "exit": "🔴", 'defer': '⏸️'}.get(d["action"], "·")
-        name = names.get(d["code"], "")
-        lines.append(f"  - {mark} {d['code']}"
-                     + (f" {name}" if name else "")
-                     + f" #{d['rank']} "
-                     f"score={d['score'] if d['score'] is None else round(d['score'], 4)} "
-                     f"{d['exit_reason'] or d['action']}"
-                     + (f"（{d['pool_reason']}）" if d["pool_reason"] else ""))
-    # 池内其余排名：未持仓未入选，仅作梯队观察（判断持仓是否临近出池/谁会补位）。
-    tail = [c for c in ranked if c not in {d["code"] for d in decisions}]
-    if tail:
-        lines.append(f"- 池内后续排名 {len(tail)} 只（未持仓未入选，仅观察）")
-        for code in tail:
-            score = scores.get(code)
-            lines.append(f"  - · {code}"
-                         + (f" {names[code]}" if names.get(code) else "")
-                         + f" #{rank[code]} "
-                         f"score={score if score is None else round(score, 4)}")
+        basis = d["pool_reason"] or d["exit_reason"]
+        note = "、".join(reasons.get(k, k) for k in basis.split("|")) if basis else "进入补位名单"
+        lines.append(f"| {_stock_label(d['code'], names)} | {actions[d['action']]} | {d['rank'] or '—'} | {note} |")
+    return lines
+
+
+POOL_HEADING = "### 质量池全表"
+
+
+def render_pool_table(eligible, ranked, scores, names, held, selected, metrics):
+    unranked = sorted(eligible.difference(ranked))
+    lines = ["", POOL_HEADING, "",
+             f"通过质量筛选 {len(eligible)} 只，参与动量排名 {len(ranked)} 只。"
+             f"前 {config.TOP_N} 名可参与补位。"]
+    if unranked:
+        lines.append(f"另有 {len(unranked)} 只因波动率筛选或价格历史不足未参与排名。")
+    if eligible:
+        lines += ["", "| 排名 | 标的 | 动量收益 | 本轮状态 | ROE（TTM） | 净利同比 | PE（TTM） | PB |",
+                  "| ---: | --- | ---: | --- | ---: | ---: | ---: | ---: |"]
+    for i, code in enumerate([*ranked, *unranked], 1):
+        position = str(i) if i <= len(ranked) else "—"
+        score = f"{scores[code]:+.2%}" if code in scores else "—"
+        if code in held:
+            status = "留存"
+        elif code in selected:
+            status = "拟补位"
+        elif code not in scores:
+            status = "未参与排名"
+        elif i <= config.TOP_N:
+            status = "补位范围内·未入选"
+        else:
+            status = "观察"
+        values = metrics[code]
+        lines.append(f"| {position} | {_stock_label(code, names)} | {score} | {status} | "
+                     f"{float(values['roe_ttm_pct']):.1f}% | {float(values['np_yoy_pct']):+.1f}% | "
+                     f"{float(values['pe_ttm']):.2f} | {float(values['pb']):.2f} |")
     return lines

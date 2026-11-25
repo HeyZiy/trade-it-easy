@@ -3,6 +3,7 @@
 import argparse
 import logging
 from datetime import date
+from pathlib import Path
 
 from src.config import setup_env
 from src.cron_entry import add_standard_flags, hard_exit, resolve_run_gate
@@ -12,6 +13,7 @@ from src.trading_calendar import is_trading_day
 setup_env()
 
 from src.quality_pool.config import REPORT_PREFIX
+from src.quality_pool.signal import POOL_HEADING
 from src.task_io import notify, save_report
 
 logger = logging.getLogger(__name__)
@@ -26,13 +28,22 @@ def run(today: date, dry_run: bool = False, *, no_notify: bool = False) -> str:
         logger.exception("质量动量账户建议发布失败")
         advice = "账户建议更新失败，请检查日志。"
     label = "（试运行）" if dry_run else ""
-    report = f"# 质量动量{label}（{today.isoformat()}）\n\n{advice}"
     prefix = REPORT_PREFIX + ("_dry_run" if dry_run else "")
+    # 同日已发布的信号只更新剩余建议，保留首次运行生成的筛选明细。
+    screening = "\n\n## 持有资格与候选\n\n"
+    if advice.startswith("## 投资账户建议\n\n") and screening not in advice:
+        previous_path = Path("reports") / f"{prefix}_{today:%Y%m%d}.md"
+        if previous_path.is_file():
+            previous = previous_path.read_text(encoding="utf-8")
+            _, found, details = previous.partition(screening)
+            if found:
+                advice += screening + details.partition("\n\n## 投资账户建议\n\n")[0]
+    report = f"# 质量动量{label}（{today.isoformat()}）\n\n{advice}"
     path = save_report(report, prefix, report_date=today.isoformat())
     logger.info("报告已保存: %s", path)
     if not no_notify and (dry_run or any(line.startswith(("- 买入 ", "- 卖出 "))
                                          for line in advice.splitlines())):
-        notify(report)
+        notify(report.partition(f"\n\n{POOL_HEADING}\n")[0])
     return report
 
 

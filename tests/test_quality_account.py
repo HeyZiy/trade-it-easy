@@ -179,10 +179,20 @@ def test_same_day_cash_assignment_activates_budget_plan_without_new_round(accoun
 
 def test_entry_publishes_account_advice_and_reports_candidates(account, env):
     import quality_pool as entry
+    from src.task_io import save_report
 
     env.setattr(wallet, "ACCOUNT_PATH", account)
+    env.chdir(account.parent.parent)
+    env.setattr(entry, "save_report", save_report)
+    notices = []
+    env.setattr(entry, "notify", notices.append)
     report = entry.run(DAY)
     assert "持有资格与候选" in report and "投资账户建议" in report and "买入" in report
+    _, heading, table = report.partition(entry.POOL_HEADING)
+    assert heading and "| 1 | 600001 |" in table
+    assert heading not in notices[0] and "买入" in notices[0]
+    assert entry.run(DAY).partition(heading)[2] == table
+    assert table in Path("reports/quality_pool_advice_20261002.md").read_text(encoding="utf-8")
     assert not quality(account)["positions"] and not wallet.load(account)["events"]
     assert not account.with_name("trade_ledger_quality_pool.jsonl").exists()
     assert wallet.load(account)["quality_state"]["pending_plan"] is None
