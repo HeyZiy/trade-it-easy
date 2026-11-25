@@ -3,14 +3,13 @@
 
 机制：
 - 真实扣款永远发生在基金 App；本模块只在其后补记账，不下单、不扣款。
-- 时间线：T 日 App 扣款 → T+1 08:30 盘前任务先确认更早的在途申购、刷新净值，
-  再把 T 日（及回看窗口内漏掉的）扣款补记为 fund_pending（nav_date=T）→
-  当天可在 dashboard「申购作废」（fund_void 补偿流水）→ T+2 08:30 由
-  confirm_fund_subscriptions 按 T 日公布净值确认份额。
+- 时间线：T 日 App 扣款 → 当晚收盘任务先刷新净值、确认已有在途申购，
+  再把 T 日及回看窗口内漏掉的扣款记为 fund_pending（nav_date=T）。
+  后续收盘任务按公布的净值确认份额，确认前可在 dashboard 作废申购。
 - 幂等：request_id = "dca-{plan_id}-{due}"，同一次扣款只补记一次；重跑、
   补跑都安全。先扫描账本跳过已存在的 request_id，不依赖重试内容比对。
-- 回看窗口：每次运行回看 CATCHUP_WINDOW_DAYS 个自然日内的到期日（不含当天，
-  当天扣款由下次运行补记）；错过多天也能逐日补上，nav_date 各归各位。
+- 回看窗口：每次运行补记 CATCHUP_WINDOW_DAYS 个自然日内漏掉的到期日，
+  收盘任务达到晚间扣款登记时间后也处理当天到期日。
 - 优先使用账户统一申购费用；未设置时沿用该基金最近登记的费用，两者都缺失则跳过并告警。
   所属策略现金不足时该笔记账失败并告警，不影响其他计划；
   交易日历不可用时不猜测扣款日，整体跳过。
@@ -212,8 +211,8 @@ def _warn_aging_pendings(state, run_day):
                            pending["code"], pending["nav_date"], lag)
 
 
-def record_due_subscriptions(account_path):
-    """盘前任务入口：把回看窗口内漏记的扣款日补记为待确认申购。
+def record_due_subscriptions(account_path, *, include_today=False):
+    """把回看窗口内漏记的扣款日补记为待确认申购。
 
     无计划（文件不存在或为空）时静默返回 []，不触碰账本与交易日历。
     """
@@ -221,7 +220,7 @@ def record_due_subscriptions(account_path):
     if not plans:
         return []
     run_day = _today()
-    window_end = run_day - timedelta(days=1)  # 当天扣款由下次运行补记
+    window_end = run_day if include_today else run_day - timedelta(days=1)
     window_start = run_day - timedelta(days=CATCHUP_WINDOW_DAYS)
     state = load_account(account_path)
     known_ids = {event["id"] for event in state["events"]}

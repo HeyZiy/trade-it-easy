@@ -28,7 +28,7 @@ def account(tmp_path, monkeypatch):
     monkeypatch.setattr(entry, "benchmark_returns", lambda codes, sessions: {
         code: {day: .01 for day in sessions[1:]} for code in codes})
     monkeypatch.setattr(wallet, "refresh_fund_navs", lambda *args: {"updated": 0, "failed": 0})
-    monkeypatch.setattr(fund_plans, "record_due_subscriptions", lambda *args: 0)
+    monkeypatch.setattr(fund_plans, "record_due_subscriptions", lambda *args, **kwargs: [])
     monkeypatch.setattr(wallet, "refresh_close_prices", lambda *args: [])
     monkeypatch.setattr(ClosingPrices, "close_prices", lambda _, codes, day: {c: 10. for c in codes})
     return path

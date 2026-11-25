@@ -18,6 +18,7 @@ from data_provider.closing_prices import ClosingPrices
 logger = logging.getLogger(__name__)
 SHANGHAI = timezone(timedelta(hours=8))
 BACKFILL_TRADING_DAYS = 5
+DCA_RECORDING_TIME = (18, 30)  # 与生产收盘任务的启动时间一致
 
 
 def closed_date(now):
@@ -89,8 +90,8 @@ def _backfill_notes(healed: list[str], lingering: list[str]) -> list[str]:
 
 
 def run(*, asof=None, dry_run=False, now=None, backfill=False, no_notify=False):
-    now = now or datetime.now(SHANGHAI)
-    today = now.astimezone(SHANGHAI).date()
+    now = (now or datetime.now(SHANGHAI)).astimezone(SHANGHAI)
+    today = now.date()
     latest = closed_date(now)
     target = datetime.strptime(asof, "%Y-%m-%d").date() if asof else latest
     if target > latest:
@@ -125,8 +126,8 @@ def run(*, asof=None, dry_run=False, now=None, backfill=False, no_notify=False):
             except Exception:
                 logger.exception("每日场外净值更新失败，保留已有净值")
             try:
-                # 定投补记放在净值刷新与份额确认之后：同一轮不确认本轮扣款，保留全天作废窗口。
-                recorded = record_due_subscriptions(path)
+                # 先确认已有申购，新记的扣款留待后续收盘任务确认。
+                recorded = record_due_subscriptions(path, include_today=(now.hour, now.minute) >= DCA_RECORDING_TIME)
                 if recorded:
                     logger.info("定投补记 %s 笔待确认申购", len(recorded))
             except Exception:

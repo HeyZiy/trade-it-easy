@@ -241,6 +241,18 @@ def test_catchup_records_missed_day_with_correct_nav_date(account, weekend_calen
     assert recorded[0]['date'] == '2025-01-07'
 
 
+def test_evening_run_records_today_once_without_duplicating_catchup(account, weekend_calendar, monkeypatch):
+    save_backdated(account, monkeypatch, anchor=6)
+    save_backdated(account, monkeypatch, anchor=7)
+    fee_event(account)
+    previous, = fund_plans.record_due_subscriptions(account)
+    assert previous['nav_date'] == '2025-01-06'
+    today, = fund_plans.record_due_subscriptions(account, include_today=True)
+    assert today['side'] == 'fund_pending'
+    assert today['nav_date'] == today['date'] == '2025-01-07'
+    assert fund_plans.record_due_subscriptions(account, include_today=True) == []
+
+
 def test_daily_catchup_records_each_elapsed_trading_day_once(account, weekend_calendar, monkeypatch):
     monkeypatch.setattr(fund_plans, '_today', lambda: date(2024, 12, 31))
     plan = fund_plans.save_plan(account, {'code': '000051', 'amount': 100, 'frequency': 'daily'})
