@@ -44,8 +44,8 @@ def test_asset_allocation_aggregates_products_and_keeps_pending_separate(path, m
 
 def test_asset_allocation_uses_product_class_and_preserves_missing_values():
     config = {"core": [{"code": "518880", "asset_type": "gold", "etf_codes": ["159934"],
-                         "fund_codes": ["000001"]}],
-              "bond": [{"code": "FUND:110020", "asset_type": "equity", "fund_codes": ["110020"]}],
+                         "fund_codes": ["000001"]},
+                       {"code": "FUND:110020", "asset_type": "equity", "fund_codes": ["110020"]}],
               "rotation": {"pool": [{"code": "511010", "group": "利率"}]}}
     view = {"cash": 50, "positions": [
         {"code": "159934", "kind": "etf", "market_value": 100},
@@ -57,10 +57,10 @@ def test_asset_allocation_uses_product_class_and_preserves_missing_values():
     names = {"001821": "测试货币基金", "111111": "测试债券基金"}
     assert account._asset_allocation(config, view, names) == {
         "equity": 320, "bond": None, "commodity": 110, "cash": 80, "unknown": 40}
-    config["bond"] = []
+    config["core"].pop()
     names["110020"] = "易方达沪深300ETF联接A"
     assert account._asset_allocation(config, view, names)["equity"] == 320
-    config["bond"].append({"code": "518880", "asset_type": "bond", "etf_codes": ["159934"]})
+    config["core"].append({"code": "518880", "asset_type": "bond", "etf_codes": ["159934"]})
     account._asset_allocation(config, view, names)
     assert view["positions"][0]["asset_class"] == "unknown"
 
@@ -232,16 +232,16 @@ def test_edit_replays_same_day_close_and_next_day_availability(path):
     assert (before_transfer["avail_count"], before_transfer["close"]) == (0, 4)
     assert (before_sale["avail_count"], before_sale["close"]) == (100, 4)
     after = account.snapshot(state, "2025-01-07")
-    assert after["cash_by_strategy"] == {"core": 650, "rotation": 500, "quality": 0, "bond": 0, "unassigned": 0}
-    assert after["strategy_pnl"] == {"core": -50, "rotation": 200, "quality": 0, "bond": 0, "unassigned": 0}
+    assert after["cash_by_strategy"] == {"core": 650, "rotation": 500, "quality": 0, "holding_area": 0, "unassigned": 0}
+    assert after["strategy_pnl"] == {"core": -50, "rotation": 200, "quality": 0, "holding_area": 0, "unassigned": 0}
 
 
 def test_fund_assignment_preserves_account_value_and_moves_future_pnl(path):
-    account.record_event(path, payload(path, "cash_transfer", from_strategy="core", strategy="bond", amount=500))
-    purchase = account.record_event(path, payload(path, "fund_buy", strategy="bond", code="110020", qty=375.78,
+    account.record_event(path, payload(path, "cash_transfer", from_strategy="core", strategy="holding_area", amount=500))
+    purchase = account.record_event(path, payload(path, "fund_buy", strategy="holding_area", code="110020", qty=375.78,
                                                   amount=300, nav=1.1, nav_date="2025-01-06"))
     before = account.account_data(path)
-    request = payload(path, "assign", kind="fund", code="110020", qty=100.125, from_strategy="bond")
+    request = payload(path, "assign", kind="fund", code="110020", qty=100.125, from_strategy="holding_area")
     move = account.record_event(path, request)
     assert account.record_event(path, request) == move
     assert move["transfer_price"] == 1.1
@@ -252,18 +252,18 @@ def test_fund_assignment_preserves_account_value_and_moves_future_pnl(path):
         assert after[key] == before[key]
     assert after["strategy_navs"] == pytest.approx(before["strategy_navs"])
     assert after["strategy_fund_positions"]["core"]["110020"]["qty"] == 100.125
-    assert after["strategy_fund_positions"]["bond"]["110020"]["qty"] == 275.655
+    assert after["strategy_fund_positions"]["holding_area"]["110020"]["qty"] == 275.655
     assert all(any(row["id"] == move["id"] for row in strategy["trades"])
-               for strategy in after["strategies"] if strategy["id"] in {"core", "bond"})
+               for strategy in after["strategies"] if strategy["id"] in {"core", "holding_area"})
 
     state = account.load(path)
     state["fund_navs"] = {"110020": {"2025-01-07": 1.3}}
     after_repricing = account.snapshot(state, "2025-01-07")
     assert after_repricing["strategy_pnl"]["core"] == 20.02
-    assert after_repricing["strategy_pnl"]["bond"] == 168.49
+    assert after_repricing["strategy_pnl"]["holding_area"] == 168.49
 
     context = account.event_context(path, {"event_id": move["id"], "revision": after["revision"]})
-    assert context["strategy_fund_positions"]["bond"]["110020"]["qty"] == 375.78
+    assert context["strategy_fund_positions"]["holding_area"]["110020"]["qty"] == 375.78
     original = path.read_bytes()
     with pytest.raises(ValueError, match="第3笔"):
         account.edit_event(path, edit_payload(path, purchase, qty=100))
@@ -271,7 +271,7 @@ def test_fund_assignment_preserves_account_value_and_moves_future_pnl(path):
     account.edit_event(path, edit_payload(path, move, qty=375.78))
     edited = account.account_data(path)
     assert edited["strategy_fund_positions"]["core"]["110020"]["qty"] == 375.78
-    assert "bond" not in edited["strategy_fund_positions"]
+    assert "holding_area" not in edited["strategy_fund_positions"]
     assert edited["strategy_pnl"] == before["strategy_pnl"]
 
 
@@ -280,7 +280,7 @@ def test_fund_assignment_preserves_total_value_when_shares_split_a_cent(path):
                                        nav=1, nav_date="2025-01-06"))
     before = account.account_data(path)
     account.record_event(path, payload(path, "assign", kind="fund", code="110020", qty=5.005,
-                                       from_strategy="core", strategy="bond"))
+                                       from_strategy="core", strategy="holding_area"))
     after = account.account_data(path)
     assert after["equity"] == before["equity"]
     assert after["fund_positions"]["110020"]["market_value"] == 10.01
@@ -292,7 +292,7 @@ def test_fund_assignment_checks_confirmed_shares_scope_and_valuation(path):
     account.record_event(path, payload(path, "fund_pending", code="000051", amount=10, nav_date="2025-01-06",
                                        subscription_fee={"kind": "none", "value": 0}))
     request = payload(path, "assign", kind="fund", code="110020", qty=25.78,
-                      from_strategy="core", strategy="bond")
+                      from_strategy="core", strategy="holding_area")
     with pytest.raises(ValueError, match="单位净值"):
         account.record_event(path, request)
     state = account.load(path)
@@ -304,7 +304,7 @@ def test_fund_assignment_checks_confirmed_shares_scope_and_valuation(path):
         ({"qty": 1.0000001}, "六位小数"),
         ({"strategy": "rotation"}, "配置"),
         ({"code": "000051"}, "超过转出"),
-        ({"from_strategy": "bond"}, "不同"),
+        ({"from_strategy": "holding_area"}, "不同"),
     ]:
         with pytest.raises(ValueError, match=error):
             account.record_event(path, {**request, **fields})
@@ -390,22 +390,22 @@ def rebalance(path, budgets):
 
 def test_cash_rebalance_fills_all_strategy_gaps_and_changes_no_holdings(path):
     plan = rebalance(path, {'core': .8, 'rotation': .1, 'quality': .1})
-    assert plan['cash_allocations'] == {'core': 400, 'rotation': 300, 'quality': 300, 'bond': 0}
+    assert plan['cash_allocations'] == {'core': 400, 'rotation': 300, 'quality': 300, 'holding_area': 0}
     assert plan['shortfall'] == 0
     assert {row['id']: row['deviation'] for row in plan['rows']} == {
-        'core': 0, 'rotation': 0, 'quality': 0, 'bond': None, 'unassigned': 0}
+        'core': 0, 'rotation': 0, 'quality': 0, 'holding_area': None, 'unassigned': None}
     before = account.account_data(path)
     account.record_event(path, payload(path, 'cash_assign', cash_allocations=plan['cash_allocations']))
     after = account.account_data(path)
     assert after['positions'] == before['positions']
     assert after['equity'] == before['equity'] and after['pnl'] == before['pnl']
     assert {s['id']: s['deviation'] for s in after['strategies']} == {
-        'core': 0, 'rotation': 0, 'quality': 0, 'bond': None}
+        'core': 0, 'rotation': 0, 'quality': 0, 'holding_area': None}
 
 
 def test_cash_rebalance_cannot_sell_overweight_holdings_and_distributes_shortfall(path):
     plan = rebalance(path, {'core': .5, 'rotation': .3, 'quality': .2})
-    assert plan['cash_allocations'] == {'core': 0, 'rotation': 600, 'quality': 400, 'bond': 0}
+    assert plan['cash_allocations'] == {'core': 0, 'rotation': 600, 'quality': 400, 'holding_area': 0}
     assert plan['shortfall'] == 500
     assert plan['rows'][0]['holding_overweight']
     assert [r['deviation'] for r in plan['rows'][:3]] == [500, -300, -200]
@@ -413,14 +413,14 @@ def test_cash_rebalance_cannot_sell_overweight_holdings_and_distributes_shortfal
 
 def test_cash_rebalance_allocates_to_cents_without_losing_money(path):
     plan = rebalance(path, {'core': .5, 'rotation': 1 / 3, 'quality': 1 / 6})
-    assert plan['cash_allocations'] == {'core': 0, 'rotation': 666.67, 'quality': 333.33, 'bond': 0}
+    assert plan['cash_allocations'] == {'core': 0, 'rotation': 666.67, 'quality': 333.33, 'holding_area': 0}
     assert sum(round(r['after_cash'] * 100) for r in plan['rows']) == 100000
 
 
 def test_cash_rebalance_preserves_cash_of_unconfigured_strategy(path):
     account.record_event(path, payload(path, 'cash_assign', cash_allocations={'core': 800, 'quality': 200}))
     plan = rebalance(path, {'core': .8, 'rotation': .1})
-    assert plan['cash_allocations'] == {'core': 400, 'rotation': 300, 'quality': 200, 'bond': 0}
+    assert plan['cash_allocations'] == {'core': 400, 'rotation': 300, 'quality': 200, 'holding_area': 0}
     assert plan['rows'][-1]['after_cash'] == 100
 
 

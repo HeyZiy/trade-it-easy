@@ -59,6 +59,8 @@ def test_old_simulation_files_stay_out_of_the_dashboard(tmp_path):
                     "side": "buy", "qty": 200, "price": 2.0, "account": "etf_rotation"}),
         encoding="utf-8")
     overview = dashboard_data(tmp_path)
+    assert {s["id"] for s in overview["strategies"]} == {"core", "rotation", "quality"}
+    assert overview["accounts"][0]["holding_area"]["holding_only"]
     strategies = {s["id"]: s for s in overview["strategies"]}
     assert [p["code"] for p in strategies["core"]["positions"]] == ["510300"]
     assert not strategies["rotation"]["positions"] and "observation" not in strategies["rotation"]
@@ -82,6 +84,8 @@ def test_strategy_positions_carry_t1_close(tmp_path, monkeypatch):
                     "side": "buy", "qty": 200, "price": 2.0, "account": "etf_rotation"}),
         encoding="utf-8")
     overview = dashboard_data(tmp_path)
+    assert {s["id"] for s in overview["strategies"]} == {"core", "rotation", "quality"}
+    assert overview["accounts"][0]["holding_area"]["holding_only"]
     strategies = {s["id"]: s for s in overview["strategies"]}
     assert strategies["core"]["positions"][0]["close"] == 3.3
 
@@ -161,11 +165,11 @@ def test_portfolio_export_download_uses_current_config_and_reconciles_holdings(t
     assert [holdings[f"{col}2"].value for col in "EFGH"] == [80.123456, 1.25, "2025-01-06", 100.15]
     assert [holdings[f"{col}3"].value for col in "AEGH"] == ["510300", 300, "2025-01-07", 1050]
     strategy_rows = list(book["策略持仓"].values)[1:]
-    assert {(row[0], row[5]) for row in strategy_rows if row[1] == "510300"} == {("权益组合", 100), ("跨资产动量", 200)}
+    assert {(row[0], row[5]) for row in strategy_rows if row[1] == "510300"} == {("长期配置", 100), ("跨资产动量", 200)}
     target_sheet = book["组合配置"]
     assert target_sheet["C2"].value == "=组合标签" and target_sheet["C2"].data_type == "s"
     assert [target_sheet[f"{col}2"].value for col in "FGHI"] == ["000001、000002", 0.7, 0.42, 475.15]
-    assert list(book["待确认申购"].values)[1] == ("权益组合", "000002", "基金000002", "2025-01-07", "2025-01-07", 25)
+    assert list(book["待确认申购"].values)[1] == ("长期配置", "000002", "基金000002", "2025-01-07", "2025-01-07", 25)
     assert (path.read_bytes(), config_path.read_bytes()) == before
 
 

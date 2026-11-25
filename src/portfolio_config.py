@@ -10,8 +10,11 @@ import re
 from src.json_store import locked, save
 from src import trading_accounts
 
-STRATEGY_NAMES = {"core": "权益组合", "rotation": "跨资产动量", "quality": "质量动量", "bond": "固收组合"}
-ALLOCATION_NAMES = {key: STRATEGY_NAMES[key] for key in ("core", "bond")}
+STRATEGY_NAMES = {"core": "长期配置", "rotation": "跨资产动量", "quality": "质量动量"}
+HOLDING_AREA = "holding_area"
+OWNER_NAMES = {**STRATEGY_NAMES, HOLDING_AREA: "待定持仓"}
+FUND_OWNERS = {"core", HOLDING_AREA}
+ALLOCATION_NAMES = {"core": STRATEGY_NAMES["core"]}
 ASSET_CLASSES = {"equity", "bond", "commodity", "cash", "mixed"}
 
 FILENAME = "etf_config.json"
@@ -96,8 +99,12 @@ def _validate_rotation(rotation):
 
 
 def validate(config):
+    return _validate_config(config, ALLOCATION_NAMES, STRATEGY_NAMES)
+
+
+def _validate_config(config, allocations, strategies):
     required = {"schema_version", "budgets", "core"}
-    optional = {*ALLOCATION_NAMES, "fund_subscription_fee", "trade_fees", "rotation", "asset_classes", "trading_accounts"}
+    optional = {*allocations, "fund_subscription_fee", "trade_fees", "rotation", "asset_classes", "trading_accounts"}
     if not isinstance(config, dict) or not required <= config.keys() <= required | optional:
         raise ValueError("配置须包含 schema_version、budgets、core")
     if type(config["schema_version"]) is not int or config["schema_version"] != 1:
@@ -117,13 +124,13 @@ def validate(config):
             for product, category in classes.items()):
         raise ValueError("产品资产分类无效")
     budgets = config["budgets"]
-    if not isinstance(budgets, dict) or set(budgets) - STRATEGY_NAMES.keys():
+    if not isinstance(budgets, dict) or set(budgets) - strategies.keys():
         raise ValueError("策略目标比例无效")
     valid_weight = lambda value: type(value) in (int, float) and math.isfinite(value) and 0 <= value <= 1
     if any(not valid_weight(v) for v in budgets.values()) or sum(budgets.values()) > 1 + 1e-10:
         raise ValueError("策略目标比例合计不能超过100%")
     normalized = deepcopy(config)
-    for key, name in ALLOCATION_NAMES.items():
+    for key, name in allocations.items():
         if key in normalized:
             _normalize_allocation(normalized[key], name, valid_weight)
     return normalized
@@ -304,9 +311,10 @@ def data(account):
     versions = sorted(path.with_suffix(".history").glob("*.json"), key=lambda p: p.stat().st_mtime_ns, reverse=True)
     history = []
     for version in versions[:20]:
-        value = _read(version)
-        if version.stem != revision(value):
+        archived = json.loads(version.read_text(encoding="utf-8"))
+        if version.stem != revision(archived):
             continue
+        value = validate(archived)
         history.append({"revision": version.stem, "saved_at": datetime.fromtimestamp(version.stat().st_mtime, timezone.utc).isoformat(), "config": value})
     return {"config": config, "revision": revision(config), "history": history,
             "trading_accounts_template": trading_accounts.TEMPLATE}

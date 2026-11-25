@@ -13,11 +13,11 @@ from src.account_advice import allocation_groups, strategy_facts
 from src.account_store import load
 from src.etf_account import valuation_day, valued_holdings
 from src.json_store import locked
-from src.portfolio_config import ALLOCATION_NAMES, STRATEGY_NAMES, fund_only
+from src.portfolio_config import ALLOCATION_NAMES, OWNER_NAMES, fund_only
 from src.trading_calendar import SHANGHAI
 
 
-STRATEGIES = {**STRATEGY_NAMES, "unassigned": "未分配"}
+STRATEGIES = {**OWNER_NAMES, "unassigned": "未分配"}
 ASSET_NAMES = {"equity": "权益", "bond": "债券", "commodity": "商品", "cash": "现金类",
                "mixed": "混合", "unknown": "待分类", "gold": "黄金"}
 HOLDING_NAMES = {"etf": "ETF", "stock": "股票", "other": "其他场内证券", "fund": "场外基金"}
@@ -102,13 +102,13 @@ def _configuration(book, state, view, names):
     config = state["_config"]
     budgets = config["budgets"]
     equity = view["equity"]
-    strategies = {key: strategy_facts(state, view, key) for key in STRATEGY_NAMES}
+    strategies = {key: strategy_facts(state, view, key) for key in OWNER_NAMES}
     unassigned = "unassigned"
     cash = view["cash_by_strategy"][unassigned]
     unassigned_holdings = _sum_values(row["market_value"] for row in view["strategy_positions"]
                                       if row["strategy"] == unassigned)
     strategies[unassigned] = {"cash": cash, "assets": _sum_values((cash, unassigned_holdings)),
-                              "budget_pct": max(0, 1 - math.fsum(budgets.values())) if budgets else None}
+                              "budget_pct": None}
     strategy_rows = [
         [STRATEGIES[key], row["budget_pct"], _share(row["assets"], equity), row["assets"], row["cash"],
          view["strategy_pending_fund_value"].get(key, 0)]

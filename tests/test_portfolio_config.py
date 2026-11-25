@@ -83,12 +83,12 @@ def test_editing_targets_preserves_cash_shares_pnl_and_history(account):
 
 
 @pytest.mark.parametrize(('asset_weight','cash_weight'), [(None, 1), (.85, .15), (1, 0)])
-def test_bond_cash_weight_is_generated_from_assets(account, asset_weight, cash_weight):
+def test_long_term_cash_weight_is_generated_from_assets(account, asset_weight, cash_weight):
     current = config.data(account)
     draft = current['config']
-    draft['bond'] = [] if asset_weight is None else [{**draft['core'][0], 'weight': asset_weight}]
+    draft['core'] = [] if asset_weight is None else [{**draft['core'][0], 'weight': asset_weight}]
     config.update(account, {'revision': current['revision'], 'config': draft})
-    rows = config.load(config.path_for(account))['bond']
+    rows = config.load(config.path_for(account))['core']
     assert rows[-1]['code'] == 'CASH' and rows[-1]['weight'] == pytest.approx(cash_weight)
     assert sum(row['weight'] for row in rows) == pytest.approx(1)
 

@@ -31,11 +31,11 @@ def validate_day(value):
 
 
 def cash_allocation(values, total):
-    if not isinstance(values, dict) or set(values) - {*portfolio_config.STRATEGY_NAMES, "unassigned"}:
+    if not isinstance(values, dict) or set(values) - {*portfolio_config.OWNER_NAMES, "unassigned"}:
         raise ValueError("现金分配无效")
     if any(type(v) not in (int, float) or not math.isfinite(v) or v < 0 or round(v, 2) != v for v in values.values()):
         raise ValueError("现金分配须为非负金额，最多两位小数")
-    allocated = {key: values.get(key, 0) for key in portfolio_config.STRATEGY_NAMES}
+    allocated = {key: values.get(key, 0) for key in portfolio_config.OWNER_NAMES}
     remaining = round(total - sum(allocated.values()), 2)
     if remaining < 0:
         raise ValueError("分配金额超过账户现金")
@@ -50,7 +50,7 @@ def fund_code(value):
 
 def fund_strategy(payload, *, default="core"):
     strategy = payload.get("strategy", default)
-    if not isinstance(strategy, str) or strategy not in portfolio_config.ALLOCATION_NAMES:
+    if not isinstance(strategy, str) or strategy not in portfolio_config.FUND_OWNERS:
         raise ValueError("请选择场外基金所属的配置策略")
     return strategy
 
@@ -117,7 +117,7 @@ def _fund_event(payload, view, day):
     if not positive(amount) or round(amount, 2) != amount:
         raise ValueError("实际金额须为正数，最多两位小数")
     if side in {"fund_buy", "fund_pending"} and amount > view["cash_by_strategy"][strategy]:
-        raise ValueError(f"{portfolio_config.ALLOCATION_NAMES[strategy]}现金不足，请先分配现金")
+        raise ValueError(f"{portfolio_config.OWNER_NAMES[strategy]}现金不足，请先分配现金")
     result = {"code": code, "amount": amount, "strategy": strategy}
     if side == "fund_pending":
         nav_date = validate_day(payload.get("nav_date", ""))
@@ -148,24 +148,36 @@ def _fund_event(payload, view, day):
     return result
 
 
-def _assignment(payload, view):
+def _assignment(payload, view, *, allow_book_value=False):
     source, target = payload.get("from_strategy"), payload.get("strategy")
-    if source not in {*portfolio_config.STRATEGY_NAMES, "unassigned"} or target not in {*portfolio_config.STRATEGY_NAMES, "unassigned"} or source == target:
+    if source not in {*portfolio_config.OWNER_NAMES, "unassigned"} or target not in {*portfolio_config.OWNER_NAMES, "unassigned"} or source == target:
         raise ValueError("请选择不同的分配来源和目标")
     qty, kind = payload.get("qty"), payload.get("kind")
+    if kind == "pending":
+        order = view["fund_pending"].get(payload.get("order_id"))
+        if not order or order["strategy"] != source or target not in portfolio_config.FUND_OWNERS:
+            raise ValueError("在途申购归属与划转来源不符")
+        return {"kind": kind, "order_id": order["id"], "strategy": target, "from_strategy": source,
+                "code": order["code"], "amount": order["amount"],
+                "trading_account": order.get("trading_account", trading_accounts.UNKNOWN)}
     if kind == "fund":
-        if source not in portfolio_config.ALLOCATION_NAMES or target not in portfolio_config.ALLOCATION_NAMES:
-            raise ValueError("场外基金只能在配置组合之间划转")
+        if source not in portfolio_config.FUND_OWNERS or target not in portfolio_config.FUND_OWNERS:
+            raise ValueError("场外基金只能在长期配置与待定持仓之间划转")
         code = fund_code(payload.get("code"))
         held = view["strategy_fund_positions"].get(source, {}).get(code)
         if not positive(qty) or round(qty, 6) != qty:
             raise ValueError("划转份额须为正数，最多六位小数")
         if not held or qty > held["qty"]:
             raise ValueError("划转份额超过转出组合已确认的持仓")
-        if not positive(held["nav"]):
+        price = held["nav"]
+        basis = {}
+        if price is None and allow_book_value:
+            price = held["book_price"]
+            basis = {"transfer_basis": "book"}
+        if not positive(price):
             raise ValueError("场外基金缺少单位净值，请先更新估值")
         return {"code": code, "kind": "fund", "qty": qty, "from_strategy": source,
-                "strategy": target, "transfer_price": held["nav"]}
+                "strategy": target, "transfer_price": price, **basis}
     if kind is not None:
         raise ValueError("持仓类型无效")
     code = canonical_stock_code(payload.get("code", ""))
@@ -176,7 +188,7 @@ def _assignment(payload, view):
             "strategy": target, "transfer_price": view["prices"][code]}
 
 
-def make_event(payload, request_id, day, view, *, config=None, historical=False):
+def make_event(payload, request_id, day, view, *, config=None, historical=False, allow_book_value=False):
     """用流水发生前的账户事实校验并生成流水。"""
     side = payload.get("side")
     if side not in {"buy", "sell", "dividend", "deposit", "withdraw", "assign", "cash_assign", "cash_transfer", "custody_transfer", *FUND_TRADES}:
@@ -213,7 +225,7 @@ def make_event(payload, request_id, day, view, *, config=None, historical=False)
             raise ValueError("划转金额无效或超过来源策略现金")
         event.update(from_strategy=source, strategy=target, amount=amount)
     elif side == "assign":
-        event.update(_assignment(payload, view))
+        event.update(_assignment(payload, view, allow_book_value=allow_book_value))
     elif side in {"buy", "sell"}:
         qty, price = payload.get("qty"), money(payload.get("price"))
         if not positive(qty) or int(qty) != qty or (side == "buy" and qty % 100):
@@ -232,7 +244,7 @@ def make_event(payload, request_id, day, view, *, config=None, historical=False)
             if not held or qty > held["count"]:
                 raise ValueError("卖出份额超过实际持仓")
         strategy = payload.get("strategy", "unassigned")
-        if strategy not in {*portfolio_config.STRATEGY_NAMES, "unassigned"}:
+        if strategy not in {*portfolio_config.OWNER_NAMES, "unassigned"}:
             raise ValueError("策略标记无效")
         if side == "buy" and round(qty * price + fee, 2) > view["cash_by_strategy"][strategy]:
             raise ValueError("该策略现金不足，请先分配现金")
@@ -241,7 +253,7 @@ def make_event(payload, request_id, day, view, *, config=None, historical=False)
         event.update(code=code, qty=qty, price=price, fee=float(fee), strategy=strategy)
     else:
         strategy = payload.get("strategy", "unassigned")
-        if strategy not in {*portfolio_config.STRATEGY_NAMES, "unassigned"}:
+        if strategy not in {*portfolio_config.OWNER_NAMES, "unassigned"}:
             raise ValueError("策略标记无效")
         amount = round(money(payload.get("amount")), 2)
         if amount <= 0 or (side == "withdraw" and amount > view["cash_by_strategy"][strategy]):
@@ -259,7 +271,8 @@ def make_event(payload, request_id, day, view, *, config=None, historical=False)
                 event["strategy_fund_valuation_prices"] = {
                     key: {code: row["book_price"] for code, row in positions.items()}
                     for key, positions in view["strategy_fund_positions"].items()}
-    trading_accounts.prepare(event, payload, view, view.get("trading_accounts"), historical=historical)
+    if event.get("kind") != "pending":
+        trading_accounts.prepare(event, payload, view, view.get("trading_accounts"), historical=historical)
     return event
 
 
@@ -283,7 +296,7 @@ class _Replay:
         self.fund_cost = {}
         self.fund_trade_marks = {}
         self.fund_history = {code: sorted(history.items()) for code, history in state.get("fund_navs", {}).items()}
-        self.net_capital = dict.fromkeys((*portfolio_config.STRATEGY_NAMES, "unassigned"), 0.0)
+        self.net_capital = dict.fromkeys((*portfolio_config.OWNER_NAMES, "unassigned"), 0.0)
         for row in initial["positions"]:
             code = row["code"]
             strategy = row.get("strategy", "unassigned")
@@ -342,7 +355,7 @@ class _Replay:
         return rows
 
     def _pending_fund_values(self):
-        values = dict.fromkeys(portfolio_config.ALLOCATION_NAMES, 0.0)
+        values = dict.fromkeys(portfolio_config.FUND_OWNERS, 0.0)
         for row in self.fund_pending.values():
             values[row["strategy"]] += row["amount"]
         return {key: round(value, 2) for key, value in values.items()}
@@ -462,6 +475,18 @@ class _Replay:
             self._flow_units(event["strategy"], event["amount"], assets)
             self.cash_by_strategy[event["from_strategy"]] -= event["amount"]
             self.cash_by_strategy[event["strategy"]] += event["amount"]
+        elif side == "assign" and event.get("kind") == "pending":
+            order = self.fund_pending[event["order_id"]]
+            source = event["from_strategy"]
+            if order["strategy"] != source or order["amount"] != event["amount"]:
+                raise ValueError("在途申购迁移金额或来源已变化")
+            assets = self._strategy_assets(self.marks)
+            self._flow_units(source, -order["amount"], assets)
+            self._flow_units(strategy, order["amount"], assets)
+            self.net_capital[source] -= order["amount"]
+            self.net_capital[strategy] += order["amount"]
+            order["strategy"] = strategy
+            return
         elif side == "assign" and event.get("kind") == "fund":
             self._apply_fund_assignment(event)
         elif side == "assign":
@@ -565,7 +590,7 @@ class _Replay:
             "prices": marks, "strategy_pnl": strategy_pnl,
             "strategy_navs": {key: strategy_assets[key] / self.units_by_strategy[key]
                               if self.units_by_strategy[key] > 0 and strategy_assets[key] > 0 else None
-                              for key in portfolio_config.STRATEGY_NAMES},
+                              for key in portfolio_config.OWNER_NAMES},
             "cash_by_strategy": {key: round(value, 2) or 0.0 for key, value in self.cash_by_strategy.items()},
             "pnl": round(equity - self.initial_equity - self.net_flows, 2) or 0.0,
         }
@@ -604,6 +629,7 @@ def replay_edit(state, index, payload, min_day, max_day):
             if i == index and "trading_account" not in candidate and "trading_account" in stored:
                 candidate = {**candidate, "trading_account": stored["trading_account"]}
             checked = make_event(candidate, stored["id"], event_day, replay.view(event_day),
+                                 allow_book_value=stored.get("transfer_basis") == "book",
                                  historical=i != index or stored.get("trading_account", trading_accounts.UNKNOWN) == trading_accounts.UNKNOWN)
             if i == index and "commission" in stored and all(
                 checked.get(key) == stored[key] for key in ("side", "code", "qty", "price", "fee")

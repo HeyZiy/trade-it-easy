@@ -42,7 +42,7 @@ def initialize(path, *, asof, cash, positions, targets=None, budgets=None, cash_
         code = canonical_stock_code(item["code"])
         count, price = item["count"], money(item["price"])
         strategy = item.get("strategy", "unassigned")
-        if strategy not in {*portfolio_config.STRATEGY_NAMES, "unassigned"}:
+        if strategy not in {*portfolio_config.OWNER_NAMES, "unassigned"}:
             raise ValueError("策略标记无效")
         if (strategy, code) in codes or not positive(count) or int(count) != count:
             raise ValueError("代码不得重复，份额须为正整数")
@@ -56,7 +56,7 @@ def initialize(path, *, asof, cash, positions, targets=None, budgets=None, cash_
     targets.setdefault("CASH", max(0, 1 - sum(targets.values())))
     allocations = cash_allocation(cash_allocations or {}, cash)
     equity = round(cash + sum(r["count"] * r["price"] for r in rows), 2)
-    state = {"initial": {"date": asof, "cash": cash, "cash_allocations": allocations,
+    state = {"holding_area_version": 2, "initial": {"date": asof, "cash": cash, "cash_allocations": allocations,
                          "positions": rows, "equity": equity},
              "targets": targets, "budgets": budgets, "events": [], "records": [], "dismissed": []}
     mark = snapshot(state, asof)
@@ -139,7 +139,8 @@ def confirm_fund_subscriptions(path, day):
                 continue
             payload = {**row, "side": "fund_confirm", "date": day, "pending_id": pending_id,
                        "qty": float(qty), "nav": nav}
-            state["events"].append(make_event(payload, str(uuid4()), day, view))
+            event = make_event(payload, str(uuid4()), day, view)
+            state["events"].append(event)
             confirmed.append(pending_id)
         if confirmed:
             _save(path, state)
@@ -240,7 +241,7 @@ def cash_rebalance(path, payload):
         view = account_valuation.valuation_view(state, today, price_day)
         if view["equity"] is None:
             raise ValueError("部分持仓待估值，请先补齐估值数据再进行现金再平衡")
-        strategies = {key: account_advice.strategy_facts(state, view, key) for key in portfolio_config.STRATEGY_NAMES}
+        strategies = {key: account_advice.strategy_facts(state, view, key) for key in portfolio_config.OWNER_NAMES}
         configured = set(state["budgets"])
         if not configured:
             raise ValueError("请先设置策略目标比例")
@@ -251,9 +252,7 @@ def cash_rebalance(path, payload):
         desired = {key: max(0, cents(strategies[key]["budget"]) - cents(strategies[key]["invested"]))
                    for key in sorted(configured)}
         unassigned_invested = sum(r["market_value"] for r in view["strategy_positions"] if r["strategy"] == "unassigned")
-        residual_target = cents(view["equity"]) - sum(cents(strategies[k]["budget"]) for k in configured)
-        residual_target -= sum(cents(strategies[k]["assets"]) for k in fixed)
-        desired["unassigned"] = max(0, residual_target - cents(unassigned_invested))
+        desired["unassigned"] = 0
         demand = sum(desired.values())
         if demand > available:
             allocated = {key: value * available // demand for key, value in desired.items()}
@@ -265,17 +264,17 @@ def cash_rebalance(path, payload):
             allocated["unassigned"] += available - demand
         allocated.update(fixed)
         rows = []
-        for key in (*portfolio_config.STRATEGY_NAMES, "unassigned"):
+        for key in (*portfolio_config.OWNER_NAMES, "unassigned"):
             row = strategies.get(key)
             invested = row["invested"] if row else unassigned_invested
-            target = row["budget"] if row else max(0, residual_target) / 100
+            target = row["budget"] if row else None
             after_cash = allocated[key] / 100
             rows.append({"id": key, "name": row["name"] if row else "未分配",
                          "before_cash": view["cash_by_strategy"][key], "after_cash": after_cash,
                          "change": round(after_cash - view["cash_by_strategy"][key], 2),
                          "deviation": round(invested + after_cash - target, 2) if target is not None else None,
                          "holding_overweight": target is not None and invested > target})
-        return {"cash_allocations": {key: allocated[key] / 100 for key in portfolio_config.STRATEGY_NAMES},
+        return {"cash_allocations": {key: allocated[key] / 100 for key in portfolio_config.OWNER_NAMES},
                 "rows": rows, "shortfall": max(0, demand - available) / 100,
                 "valuation": view["valuation"]}
 
@@ -287,6 +286,8 @@ def _edit_location(state, payload):
     index = next((i for i, event in enumerate(events) if event["id"] == payload.get("event_id")), None)
     if index is None:
         raise ValueError("流水不存在")
+    if events[index].get("kind") == "pending":
+        raise ValueError("在途申购归属迁移流水不可更正")
     if events[index]["side"] == "fund_pending":
         if any(e.get("pending_id") == events[index]["id"] for e in events[index + 1:]):
             raise ValueError("申购已确认，请在确认流水中更正份额")

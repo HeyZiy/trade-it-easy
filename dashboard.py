@@ -19,7 +19,7 @@ from src import fund_plans
 from src.etf_account import FILENAME as ETF_FILENAME, SHANGHAI, account_data as etf_account_data
 from src.dashboard_quotes import QuoteRefresh
 from src.dashboard_timing import QueueFull, TimingReports
-from src.portfolio_config import STRATEGY_NAMES
+from src.portfolio_config import HOLDING_AREA, OWNER_NAMES, STRATEGY_NAMES
 
 APP_ROOT = Path(__file__).resolve().parent
 ROOT = Path(os.environ.get("TRADE_DASHBOARD_ROOT", APP_ROOT)).resolve()
@@ -132,8 +132,11 @@ def dashboard_data(root=ROOT):
     strategies = account.pop("strategies", [
         {"id": key, "name": name, "account_id": "etf", "positions": [], "trades": [],
          "budget": None, "budget_pct": None, "invested": 0, "buying_power": None,
-         "suggestions": [], "status": "账户未初始化", "history": [], "performance": None}
-        for key, name in STRATEGY_NAMES.items()])
+         "suggestions": [], "status": "账户未初始化", "history": [], "performance": None,
+         "holding_only": key == HOLDING_AREA}
+        for key, name in OWNER_NAMES.items()])
+    account["holding_area"] = next((row for row in strategies if row["id"] == HOLDING_AREA), None)
+    strategies = [row for row in strategies if row["id"] in STRATEGY_NAMES]
     account.update(id="etf", name="投资账户")
     return {"generated_at": datetime.now().astimezone().isoformat(),
             "accounts": [account], "strategies": strategies, "reports": _report_files(root)}
@@ -306,7 +309,11 @@ class Handler(BaseHTTPRequestHandler):
             self.download_portfolio()
         elif self.path == "/":
             self.respond((APP_ROOT / "dashboard" / "index.html").read_bytes(), "text/html; charset=utf-8")
-        elif re.fullmatch(r"/settings(?:/(?:budgets|fees|accounts|core|bond|rotation|history))?/?", self.path):
+        elif self.path.rstrip("/") == "/settings/bond":
+            self.send_response(302)
+            self.send_header("Location", "/settings/core")
+            self.end_headers()
+        elif re.fullmatch(r"/settings(?:/(?:budgets|fees|accounts|core|rotation|history))?/?", self.path):
             self.respond((APP_ROOT / "dashboard" / "settings.html").read_bytes(), "text/html; charset=utf-8")
         elif self.path == TIMING_URL or re.fullmatch(TIMING_URL + r"/[0-9]{6}", self.path):
             self.respond((APP_ROOT / "dashboard" / "timing.html").read_bytes(), "text/html; charset=utf-8")

@@ -1,4 +1,4 @@
-"""收盘后的权益与固收组合再平衡建议。"""
+"""收盘后的长期配置再平衡建议。"""
 
 from collections import defaultdict
 import json

@@ -10,7 +10,7 @@ const error=document.querySelector('#config-error');
 const statusLine=document.querySelector('#config-status');
 const save=document.querySelector('#config-save');
 const retry=document.querySelector('#config-retry');
-const allocation=key==='core' || key==='bond';
+const allocation=key==='core';
 const panel=allocation ? 'allocation' : key;
 const saveLabel=key==='history' ? '恢复所选版本' : '保存'+name;
 save.textContent=saveLabel;
@@ -324,7 +324,7 @@ function editSection(result) {
     total();
     form.oninput=total;
     document.querySelector('#config-add').onclick=()=>{
-      const row=addRow({code:'',weight:0,asset_type:key==='bond'?'bond':'equity',valuation_kind:'none',
+      const row=addRow({code:'',weight:0,asset_type:'equity',valuation_kind:'none',
         tracked_index:null,dividend_style:false,volatility_rank:0});
       total();
       row.querySelector('[data-field=label]').focus();

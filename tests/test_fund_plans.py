@@ -184,27 +184,27 @@ def test_record_due_subscription_with_fee_and_postponement(account, weekend_cale
 
 def test_same_fund_dca_charges_each_plan_strategy_and_void_refunds_its_cash(account, weekend_calendar, monkeypatch):
     save_backdated(account, monkeypatch, anchor=5, strategy='core')
-    bond = save_backdated(account, monkeypatch, anchor=5, strategy='bond', amount=150)
-    bond.pop('strategy')
-    assert fund_plans.save_plan(account, bond | {'note': '债券组合'})['strategy'] == 'bond'
+    plan = save_backdated(account, monkeypatch, anchor=5, strategy='holding_area', amount=150)
+    plan.pop('strategy')
+    assert fund_plans.save_plan(account, plan | {'note': '待定持仓'})['strategy'] == 'holding_area'
     fee_event(account)
     record_event(account, dict(request_id=str(uuid4()), revision=revision(load(account)),
                                date='2025-01-06', side='cash_transfer', from_strategy='core',
-                               strategy='bond', amount=200))
+                               strategy='holding_area', amount=200))
     recorded = {row['strategy']: row for row in fund_plans.record_due_subscriptions(account)}
-    assert set(recorded) == {'core', 'bond'}
+    assert set(recorded) == {'core', 'holding_area'}
     assert fund_plans.record_due_subscriptions(account) == []
     view = account_data(account)
     assert view['cash_by_strategy']['core'] == 690
-    assert view['cash_by_strategy']['bond'] == 50
+    assert view['cash_by_strategy']['holding_area'] == 50
     status = fund_plans.dca_status(account)
-    assert status['recorded_today_by_strategy'] == {'core': ['2025-01-06'], 'bond': ['2025-01-06']}
+    assert status['recorded_today_by_strategy'] == {'core': ['2025-01-06'], 'holding_area': ['2025-01-06']}
     with pytest.raises(ValueError, match='属于其他策略'):
-        void_event(account, recorded['bond']['id'], strategy='core')
-    assert void_event(account, recorded['bond']['id'])['strategy'] == 'bond'
+        void_event(account, recorded['holding_area']['id'], strategy='core')
+    assert void_event(account, recorded['holding_area']['id'])['strategy'] == 'holding_area'
     view = account_data(account)
     assert view['cash_by_strategy']['core'] == 690
-    assert view['cash_by_strategy']['bond'] == 200
+    assert view['cash_by_strategy']['holding_area'] == 200
     assert list(view['fund_pending']) == [recorded['core']['id']]
 
 

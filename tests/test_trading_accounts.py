@@ -55,14 +55,14 @@ def test_two_platforms_reconcile_through_confirmation_and_refund(ledger, monkeyp
         post(ledger, "fund_redeem", code="000001", qty=101, amount=101, trading_account="platform1")
     post(ledger, "fund_redeem", code="000001", qty=10, amount=10, trading_account="platform2")
     post(ledger, "assign", code="000001", qty=10, kind="fund", from_strategy="core",
-         trading_account="platform2", strategy="bond")
+         trading_account="platform2", strategy="holding_area")
     view = snapshot(etf_account.load(ledger), DAY)
     assert view["fund_positions"]["000001"]["qty"] == 290
     assert view["custody_cash"] == {"unlocated": 1200, "platform1": 200, "platform2": 310}
     assert sum(view["custody_cash"].values()) == view["cash"]
     assert view["equity"] == 2100 and view["units"] == 2100
     assert {(r["account"], r["strategy"]): r["qty"] for r in view["custody_positions"] if r["kind"] == "fund"} == {
-        ("platform1", "core"): 100, ("platform2", "core"): 180, ("platform2", "bond"): 10}
+        ("platform1", "core"): 100, ("platform2", "core"): 180, ("platform2", "holding_area"): 10}
 
 
 def test_claim_transfer_and_historical_correction(ledger):

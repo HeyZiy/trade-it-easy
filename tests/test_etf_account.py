@@ -363,35 +363,35 @@ def test_confirmed_fund_trades_use_core_cash_and_are_replayed_on_edit(account, m
 def test_same_fund_is_valued_once_per_portfolio_and_redemption_checks_its_shares(account, monkeypatch):
     from src import etf_account as wallet
 
-    record_event(account, event(account, "cash_transfer", from_strategy="core", strategy="bond", amount=300))
+    record_event(account, event(account, "cash_transfer", from_strategy="core", strategy="holding_area", amount=300))
     legacy_buy = event(account, "fund_buy", code="000051", qty=100, amount=100, nav=1, nav_date="2025-01-06")
     legacy_buy.pop("strategy")
     assert record_event(account, legacy_buy)["strategy"] == "core"
-    pending = record_event(account, event(account, "fund_pending", strategy="bond", code="000051",
+    pending = record_event(account, event(account, "fund_pending", strategy="holding_area", code="000051",
                                           amount=200, nav_date="2025-01-06",
                                           subscription_fee={"kind": "fixed", "value": 10}))
     view = account_data(account)
     by_id = {row["id"]: row for row in view["strategies"]}
     assert by_id["core"]["fund_pending"] == {}
-    assert list(by_id["bond"]["fund_pending"]) == [pending["id"]]
-    assert by_id["bond"]["pending_fund_value"] == 200
+    assert list(by_id["holding_area"]["fund_pending"]) == [pending["id"]]
+    assert by_id["holding_area"]["pending_fund_value"] == 200
     assert view["equity"] == 3000
 
     monkeypatch.setattr("data_provider.fund_nav.latest_fund_nav", lambda code, day: (day, 1.0))
     assert wallet.confirm_fund_subscriptions(account, "2025-01-07") == [pending["id"]]
     assert not wallet.confirm_fund_subscriptions(account, "2025-01-07")
     with pytest.raises(ValueError, match="超过已确认持仓"):
-        record_event(account, event(account, "fund_redeem", date="2025-01-07", strategy="bond",
+        record_event(account, event(account, "fund_redeem", date="2025-01-07", strategy="holding_area",
                                     code="000051", qty=200, amount=200))
-    record_event(account, event(account, "fund_redeem", date="2025-01-07", strategy="bond",
+    record_event(account, event(account, "fund_redeem", date="2025-01-07", strategy="holding_area",
                                 code="000051", qty=40, amount=40))
     view = account_data(account)
     by_id = {row["id"]: row for row in view["strategies"]}
     assert view["fund_positions"]["000051"]["qty"] == 250
-    assert by_id["bond"]["fund_positions"]["000051"]["qty"] == 150
+    assert by_id["holding_area"]["fund_positions"]["000051"]["qty"] == 150
     assert by_id["core"]["fund_positions"]["000051"]["qty"] == 100
-    assert by_id["bond"]["cash"] == 140 and by_id["core"]["cash"] == 600
-    assert by_id["bond"]["pnl"] == -10 and by_id["core"]["pnl"] == 0
+    assert by_id["holding_area"]["cash"] == 140 and by_id["core"]["cash"] == 600
+    assert by_id["holding_area"]["pnl"] == -10 and by_id["core"]["pnl"] == 0
     assert view["equity"] == 2990
 
 
@@ -798,7 +798,7 @@ def test_cash_ownership_is_separate_from_targets_and_allocation_preserves_nav(ac
     record_event(account, payload)
     record_event(account, payload)
     after = account_data(account)
-    assert after['cash_by_strategy'] == {'core':400,'rotation':600,'quality':0,'bond':0,'unassigned':0}
+    assert after['cash_by_strategy'] == {'core':400,'rotation':600,'quality':0,'holding_area':0,'unassigned':0}
     assert [s['actual_pct'] for s in after['strategies']] == [.8, .2, 0, 0]
     assert after['equity'] == before['equity'] and after['pnl'] == before['pnl']
     assert after['history'] == before['history']
@@ -816,7 +816,7 @@ def test_strategy_cannot_spend_another_strategy_cash(account):
     assert account.read_bytes() == saved
     record_event(account, event(account, 'buy', code='588000', name='ETF', qty=100, price=2, fee=1))
     after = account_data(account)
-    assert after['cash_by_strategy'] == {'core':199,'rotation':600,'quality':0,'bond':0,'unassigned':0}
+    assert after['cash_by_strategy'] == {'core':199,'rotation':600,'quality':0,'holding_area':0,'unassigned':0}
     assert after['cash'] == 799
 
 
@@ -833,28 +833,22 @@ def test_internal_weights_scale_with_target_strategy_ratio(account):
     assert item['gap_amount'] == 1400 and item['qty'] == 700
 
 
-def test_two_configured_allocations_apply_their_own_target_weights(account):
+def test_holding_area_cannot_set_a_target_or_publish_orders(account):
     from src import portfolio_config
-
     current = portfolio_config.data(account)
     config = current["config"]
-    config["budgets"] = {"core": .8, "bond": .2}
-    config["bond"] = [{**row, "weight": .25 if row["code"] == "588000" else .75}
-                      for row in config["core"]]
-    portfolio_config.update(account, {"config": config, "revision": current["revision"]})
-    strategies = {row["id"]: row for row in account_data(account)["strategies"]}
-    core = {group["id"]: group for group in strategies["core"]["allocation_groups"]}
-    bond = {group["id"]: group for group in strategies["bond"]["allocation_groups"]}
-    assert core["588000"]["weight"] == .4 and core["588000"]["target_value"] == 960
-    assert bond["588000"]["weight"] == .25 and bond["588000"]["target_value"] == 150
-    assert core["588000"]["market_value"] == 2000
-    assert bond["588000"]["market_value"] == 0
+    config["budgets"]["holding_area"] = .09
+    with pytest.raises(ValueError, match="目标比例"):
+        portfolio_config.update(account, {"config": config, "revision": current["revision"]})
+    area = next(row for row in account_data(account)["strategies"] if row.get("holding_only"))
+    assert area["budget"] is area["target_weights"] is area["deviation"] is None
+    assert area["suggestions"] == []
 
 
 def test_external_flows_update_selected_cash_ownership_without_profit(account):
     record_event(account, event(account, 'deposit', strategy='rotation', amount=50))
     record_event(account, event(account, 'withdraw', strategy='core', amount=1000))
     after = account_data(account)
-    assert after['cash_by_strategy'] == {'core':0,'rotation':50,'quality':0,'bond':0,'unassigned':0}
+    assert after['cash_by_strategy'] == {'core':0,'rotation':50,'quality':0,'holding_area':0,'unassigned':0}
     assert after['cash'] == 50 and after['pnl'] == 0
     assert [s['pnl'] for s in after['strategies']] == [0,0,0,0]

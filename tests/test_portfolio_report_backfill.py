@@ -68,13 +68,13 @@ def test_close_reports_allocation_actions_and_reprices_pending_suggestions(accou
     path = tmp_path / "allocation_account.json"
     wallet.initialize(path, asof="2026-09-21", cash=5000,
                       positions=[{"code": "510300", "count": 500, "price": 10, "strategy": "core"}],
-                      budgets={"core": .5, "bond": .5}, targets={"510300": .2},
-                      cash_allocations={"core": 1000, "bond": 4000})
+                      budgets={"core": 1}, targets={"510300": .1},
+                      cash_allocations={"core": 1000, "holding_area": 4000})
     config_path = portfolio_config.path_for(path)
     config = portfolio_config.load(config_path)
     expected = portfolio_config.revision(config)
-    config["bond"] = [{"code": "FUND:110020", "fund_codes": ["110020"], "label": "场外固收",
-                       "weight": .5, "asset_type": "bond", "tracked_index": None,
+    config["core"] += [{"code": "FUND:110020", "fund_codes": ["110020"], "label": "场外固收",
+                       "weight": .25, "asset_type": "bond", "tracked_index": None,
                        "valuation_kind": "none", "dividend_style": False, "volatility_rank": 0}]
     portfolio_config.save_config(config_path, config, expected)
     monkeypatch.setattr(wallet, "ACCOUNT_PATH", path)
@@ -90,8 +90,8 @@ def test_close_reports_allocation_actions_and_reprices_pending_suggestions(accou
     assert not sent and not (tmp_path / "reports").exists()
     assert entry.run(now=close)[1] == entry.run(now=close)[1] == 0
     assert len(sent) == 1
-    assert "权益组合" in sent[0] and "400 份，约 4,000.00 元" in sent[0]
-    assert "固收组合" in sent[0] and "买入 场外固收（110020）约 2,500.00 元" in sent[0]
+    assert "长期配置" in sent[0] and "400 份，约 4,000.00 元" in sent[0]
+    assert "买入 场外固收（110020）约 2,500.00 元" in sent[0]
     assert "仍待处理" not in sent[0]
 
     assert entry.run(now=close + timedelta(days=1))[1] == 0

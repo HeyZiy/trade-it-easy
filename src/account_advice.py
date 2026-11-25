@@ -108,7 +108,7 @@ def allocation_groups(assets, strategy, prices, names):
 
 def strategy_facts(state, view, key):
     """按策略标识提供账户事实，不计算建议；供展示、发布和成交处理共用。"""
-    name = portfolio_config.STRATEGY_NAMES[key]
+    name = portfolio_config.OWNER_NAMES[key]
     positions = [r for r in view["strategy_positions"] if r["strategy"] == key]
     funds = view["strategy_fund_positions"].get(key, {})
     holdings = [*positions, *funds.values()]
@@ -141,7 +141,7 @@ def strategy_facts(state, view, key):
                                            or e.get("from_strategy") == key
                                            or (e["side"] == "cash_assign" and key in e["cash_allocations"])],
             "history": [], "performance": None,
-            "benchmark_name": account_benchmarks.benchmark_name(key),
+            "benchmark_name": account_benchmarks.benchmark_name(key) if key in portfolio_config.STRATEGY_NAMES else None,
             "cash": cash, "assets": assets, "actual_pct": assets / view["equity"] if view["equity"] and assets is not None else None,
             "deviation": round(assets - budget, 2) if budget is not None and assets is not None else None, "status": status}
 
@@ -198,9 +198,15 @@ def strategy_views(state, view, *, today, names=None):
         state.get(f"{key}_signal") for key in ("rotation", "quality")
     ) else view
     result = []
-    for key in portfolio_config.STRATEGY_NAMES:
+    for key in portfolio_config.OWNER_NAMES:
         row = (allocation_view(state, view, key, names=names) if key in portfolio_config.ALLOCATION_NAMES
                else strategy_facts(state, view, key))
+        if key == portfolio_config.HOLDING_AREA:
+            row.update(holding_only=True, status="待定持仓", fund_positions=view["strategy_fund_positions"].get(key, {}),
+                       fund_pending={i: order for i, order in view["fund_pending"].items() if order["strategy"] == key},
+                       pending_fund_value=view["strategy_pending_fund_value"][key])
+            result.append(row)
+            continue
         row["history"] = strategy_history(state, key, today.isoformat())
         if key == "rotation":
             from src.etf.rotation_advice import advice

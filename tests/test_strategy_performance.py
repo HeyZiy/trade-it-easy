@@ -58,8 +58,8 @@ def test_initial_navs_and_benchmark_names(account):
     assert rows['quality']['2025-01-04']['nav'] == pytest.approx(1.0)
     assert rows['rotation']['2025-01-04']['nav'] is None  # 未入金的策略不画曲线
     names = {s['id']: s['benchmark_name'] for s in view['strategies']}
-    assert set(names) == {'core', 'rotation', 'quality', 'bond'}
-    assert all(names.values())
+    assert set(names) == {'core', 'rotation', 'quality', 'holding_area'}
+    assert names["holding_area"] is None and all(names[k] for k in ("core", "rotation", "quality"))
     assert names['quality'] == '中证800全收益'
     assert names['rotation'] == '沪深300全收益'
 
@@ -89,16 +89,16 @@ def test_deposit_withdraw_keep_nav_dividend_raises_it(account):
     assert state['records'][-1]['strategy_navs']['quality'] == pytest.approx(1.1)
 
 
-def test_transfer_into_bond_starts_strategy_nav_without_moving_account_nav(account):
+def test_transfer_into_holding_area_starts_strategy_nav_without_moving_account_nav(account):
     before = collect_close(account, '2025-01-06', lambda *_: {'588000': 2})['records'][-1]
-    record_event(account, event(account, 'cash_transfer', from_strategy='core', strategy='bond', amount=200))
+    record_event(account, event(account, 'cash_transfer', from_strategy='core', strategy='holding_area', amount=200))
     after = collect_close(account, '2025-01-06', lambda *_: {'588000': 2})['records'][-1]
     assert after['equity'] == before['equity']
     assert after['nav'] == before['nav']
     assert after['cash_by_strategy']['core'] == 400
-    assert after['cash_by_strategy']['bond'] == 200
+    assert after['cash_by_strategy']['holding_area'] == 200
     assert after['strategy_navs']['core'] == before['strategy_navs']['core']
-    assert before['strategy_navs']['bond'] is None and after['strategy_navs']['bond'] == 1.0
+    assert before['strategy_navs']['holding_area'] is None and after['strategy_navs']['holding_area'] == 1.0
 
 
 def test_strategy_benchmark_anchors_at_its_own_first_valid_nav(account):
