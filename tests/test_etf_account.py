@@ -32,6 +32,45 @@ def event(path, side, **fields):
                 date='2025-01-06', side=side, strategy='core') | fields
 
 
+def test_fund_redemption_reserves_shares_until_manual_receipt(account):
+    record_event(account, event(account, 'fund_buy', code='000051', qty=50, amount=100,
+                                nav=2, nav_date='2025-01-06'))
+    before = account_data(account)
+    valuation_revision = revision(load(account), '2025-01-06')
+    order = record_event(account, event(account, 'fund_redeem_pending', code='000051', qty=35))
+    assert revision(load(account), '2025-01-06') == valuation_revision
+    pending = account_data(account)
+    for key in ('cash', 'equity', 'invested', 'fund_positions', 'custody_cash', 'custody_positions'):
+        assert pending[key] == before[key]
+    assert pending['fund_redeem_pending'][order['id']]['qty'] == 35
+    for side, fields in [('fund_redeem_pending', {}), ('fund_redeem', {'amount': 32})]:
+        with pytest.raises(ValueError, match='可用份额'):
+            record_event(account, event(account, side, code='000051', qty=16, **fields))
+
+    receipt = event(account, 'fund_redeem', pending_id=order['id'], amount=69, date='2025-01-07')
+    settled = record_event(account, receipt)
+    assert settled['qty'] == 35
+    assert record_event(account, receipt) == settled
+    with pytest.raises(ValueError, match='待到账赎回'):
+        record_event(account, event(account, 'fund_redeem', pending_id=order['id'], amount=69,
+                                    date='2025-01-07'))
+    after = account_data(account)
+    assert after['fund_redeem_pending'] == {}
+    assert after['cash'] == before['cash'] + 69
+    assert after['fund_positions']['000051']['qty'] == 15
+    assert after['custody_cash']['unlocated'] == before['custody_cash']['unlocated'] + 69
+
+
+def test_fund_redemption_void_releases_reserved_shares(account):
+    record_event(account, event(account, 'fund_buy', code='000051', qty=50, amount=100))
+    order = record_event(account, event(account, 'fund_redeem_pending', code='000051', qty=50))
+    record_event(account, event(account, 'fund_redeem_void', voided_pending_id=order['id']))
+    with pytest.raises(ValueError, match='待到账赎回'):
+        record_event(account, event(account, 'fund_redeem', pending_id=order['id'], amount=99))
+    assert account_data(account)['fund_redeem_pending'] == {}
+    record_event(account, event(account, 'fund_redeem_pending', code='000051', qty=50))
+
+
 def test_initial_snapshot_and_no_overwrite(account):
     view = account_data(account)
     assert view['equity'] == 3000

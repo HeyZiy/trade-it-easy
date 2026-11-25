@@ -75,7 +75,7 @@
             <label>所属策略<select name="strategy" required></select></label>
             <label hidden>交易账户<select name="trading_account" disabled required></select></label>
             <label id="fund-code-field">基金代码<input name="code" inputmode="numeric" pattern="[0-9]{6}" maxlength="6" required></label>
-            <label id="fund-record-day-field">记账日期<input name="date" type="date" required></label>
+            <label id="fund-record-day-field"><span id="fund-record-day-label">记账日期</span><input name="date" type="date" required></label>
             <label><span id="fund-amount-label">实际扣款 / 元</span><input name="amount" type="number" min="0.01" step="0.01" required></label>
             <label id="fund-qty-field"><span id="fund-qty-label">份额</span><input name="qty" type="number" min="0.000001" max="1000000000" step="0.000001" required></label>
           </div>

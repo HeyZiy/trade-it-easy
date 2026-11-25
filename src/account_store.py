@@ -5,6 +5,7 @@ import json
 from pathlib import Path
 
 from src import portfolio_config
+from src.account_replay import REDEMPTION_ORDERS
 from src.json_store import save as _json_save
 
 FILENAME = "etf_account.json"
@@ -37,7 +38,8 @@ def read_account(path, config):
 def revision(state, asof=None, *, include_transfers=False):
     # 划转不影响账户整体净值，默认排除；策略净值受划转影响，策略成绩须含划转。
     facts = {"initial": state["initial"], "events": [e for e in state["events"]
-             if asof is None or (e["date"] <= asof and e["side"] != "custody_transfer" and (include_transfers or e["side"] not in {"assign", "cash_assign", "cash_transfer"}))]}
+             if asof is None or (e["date"] <= asof and e["side"] not in {"custody_transfer", *REDEMPTION_ORDERS}
+                                 and (include_transfers or e["side"] not in {"assign", "cash_assign", "cash_transfer"}))]}
     if asof is None:
         facts["budgets"] = state.get("budgets", {})
         facts["targets"] = state.get("targets", {})

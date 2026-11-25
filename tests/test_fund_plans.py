@@ -127,6 +127,20 @@ def test_delete_plan_is_idempotent_and_keeps_events(account, weekend_calendar, m
 
 # ---------- 到期日推算 ----------
 
+def test_next_due_skips_a_recorded_installment(account, weekend_calendar):
+    save(account, frequency='daily')
+    fee_event(account)
+    assert fund_plans.dca_status(account)['plans'][0]['next_due'] == '2025-01-07'
+    fund_plans.record_due_subscriptions(account, include_today=True)
+    assert fund_plans.dca_status(account)['plans'][0]['next_due'] == '2025-01-08'
+
+
+def test_next_due_uses_month_end_and_holiday_postponement(account, weekend_calendar, monkeypatch):
+    save(account, anchor=31)
+    monkeypatch.setattr(fund_plans, '_today', lambda: date(2025, 8, 31))
+    assert fund_plans.dca_status(account)['plans'][0]['next_due'] == '2025-09-01'
+
+
 def test_monthly_anchor_collapses_to_month_end(weekend_calendar):
     plan = dict(frequency='monthly', anchor=31, created_on='2025-01-01')
     assert fund_plans._due_dates(plan, date(2025, 2, 1), date(2025, 4, 30)) == \
@@ -286,6 +300,26 @@ def test_unknown_fee_fail_closed_with_warning(account, weekend_calendar, monkeyp
     assert not [e for e in load(account)['events'] if e['side'] == 'fund_pending']
 
 
+def test_latest_result_tracks_failure_and_retry_per_plan(account, weekend_calendar, monkeypatch):
+    first = save_backdated(account, monkeypatch)
+    second = save_backdated(account, monkeypatch, amount=950)
+
+    def results():
+        return {plan['id']: plan['latest_result'] for plan in fund_plans.dca_status(account)['plans']}
+
+    assert results() == {first['id']: None, second['id']: None}
+    assert fund_plans.record_due_subscriptions(account) == []
+    assert '申购费率' in results()[first['id']]['reason']
+    fee_event(account)
+    assert len(fund_plans.record_due_subscriptions(account)) == 1
+    latest = results()
+    assert latest[first['id']] == {'status': 'recorded', 'due_date': '2025-01-06', 'date': '2025-01-07'}
+    assert latest[second['id']]['status'] == 'failed'
+    assert '现金不足' in latest[second['id']]['reason']
+    save(account, id=second['id'], amount=950, note='保留失败原因')
+    assert results()[second['id']] == latest[second['id']]
+
+
 def test_cash_shortage_fails_one_plan_others_continue(account, weekend_calendar, monkeypatch, caplog):
     save_backdated(account, monkeypatch, code='000051', amount=600.0, note='A')
     save_backdated(account, monkeypatch, code='000124', amount=600.0, note='B')
@@ -303,6 +337,7 @@ def test_disabled_plan_is_skipped(account, weekend_calendar, monkeypatch):
     save_backdated(account, monkeypatch, enabled=False)
     fee_event(account)
     assert fund_plans.record_due_subscriptions(account) == []
+    assert fund_plans.dca_status(account)['plans'][0]['next_due'] is None
 
 
 # ---------- 作废 ----------
@@ -366,3 +401,4 @@ def test_calendar_unavailable_skips_recording(account, weekend_calendar, monkeyp
     monkeypatch.setattr('src.fund_plans.get_trading_dates', lambda start, end: [])
     assert fund_plans.record_due_subscriptions(account) == []
     assert not [e for e in load(account)['events'] if e['side'] == 'fund_pending']
+    assert fund_plans.dca_status(account)['plans'][0]['next_due'] is None

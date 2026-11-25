@@ -13,7 +13,7 @@ from data_provider.security_names import security_name
 from src import account_advice, account_benchmarks, account_valuation, portfolio_config
 from src.account_advice import strategy_views
 from src.account_replay import (
-    FUND_TRADES, cash_allocation, current_owners, display_event, fund_code, holding_kind, make_event, money,
+    FUND_TRADES, REDEMPTION_ORDERS, cash_allocation, current_owners, display_event, fund_code, holding_kind, make_event, money,
     net_subscription, positive, replay_edit, snapshot, validate_day,
 )
 from src.account_store import ACCOUNT_PATH, FILENAME, load, revision
@@ -287,6 +287,9 @@ def _edit_location(state, payload):
     index = next((i for i, event in enumerate(events) if event["id"] == payload.get("event_id")), None)
     if index is None:
         raise ValueError("流水不存在")
+    if any(row.get("side") in REDEMPTION_ORDERS or (row.get("side") == "fund_redeem" and "pending_id" in row)
+           for row in (events[index], payload)):
+        raise ValueError("赎回预登记、作废及到账确认流水不可更正")
     if events[index].get("kind") == "pending":
         raise ValueError("在途申购归属迁移流水不可更正")
     if events[index]["side"] == "fund_pending":

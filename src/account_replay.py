@@ -11,7 +11,8 @@ from data_provider.security_names import security_name
 from src import portfolio_config, trading_accounts
 from src.portfolio_config import HOLDING_AREA
 
-FUND_TRADES = {"fund_buy", "fund_redeem", "fund_pending", "fund_confirm", "fund_void"}
+REDEMPTION_ORDERS = {"fund_redeem_pending", "fund_redeem_void"}
+FUND_TRADES = {"fund_buy", "fund_redeem", "fund_pending", "fund_confirm", "fund_void", *REDEMPTION_ORDERS}
 
 
 def current_owners(row):
@@ -119,6 +120,25 @@ def _trade_fee(rules, code, side, qty, price):
 
 def _fund_event(payload, view, day):
     side = payload["side"]
+    if side == "fund_redeem_void" or (side == "fund_redeem" and "pending_id" in payload):
+        reference = "voided_pending_id" if side == "fund_redeem_void" else "pending_id"
+        pending_id = payload.get(reference)
+        pending = view["fund_redeem_pending"].get(pending_id) if isinstance(pending_id, str) else None
+        if not pending:
+            raise ValueError("待到账赎回不存在或已处理")
+        order = {key: pending[key] for key in ("code", "qty", "strategy", "trading_account") if key in pending}
+        if any(payload.get(key, value) != value for key, value in order.items()):
+            raise ValueError("到账或作废须沿用原赎回信息")
+        if side == "fund_redeem_void":
+            return {**order, reference: pending_id}
+        payload = {**payload, **order}
+    else:
+        pending = None
+    if side == "fund_redeem_pending":
+        qty = payload.get("qty")
+        if not positive(qty) or qty > 1e9 or round(qty, 6) != qty:
+            raise ValueError("申请份额须为正数，最多六位小数")
+        return {"code": fund_code(payload.get("code")), "qty": qty, "strategy": fund_strategy(payload)}
     if side == "fund_void":
         # 作废只引用在途申购，不带 code/amount：金额与标的取自原申购流水。
         pending_id = payload.get("voided_pending_id")
@@ -130,8 +150,8 @@ def _fund_event(payload, view, day):
         return {"code": pending["code"], "amount": pending["amount"],
                 "strategy": pending["strategy"], "voided_pending_id": pending_id}
     pending_id = payload.get("pending_id") if side == "fund_confirm" else None
-    pending = view["fund_pending"].get(pending_id) if side == "fund_confirm" else None
-    strategy = fund_strategy(payload, default=pending["strategy"] if pending else "core")
+    subscription = view["fund_pending"].get(pending_id) if side == "fund_confirm" else None
+    strategy = fund_strategy(payload, default=subscription["strategy"] if subscription else "core")
     code = fund_code(payload.get("code"))
     amount = payload.get("amount")
     if not positive(amount) or round(amount, 2) != amount:
@@ -161,10 +181,12 @@ def _fund_event(payload, view, day):
             raise ValueError("单位净值最多八位小数，净值日期不得晚于记账日")
         result.update(nav=nav, nav_date=nav_date)
     if side == "fund_confirm":
-        if not pending or any(result.get(key) != pending[key]
+        if not subscription or any(result.get(key) != subscription[key]
                               for key in ("strategy", "code", "amount", "nav_date", "subscription_fee")):
             raise ValueError("确认流水须对应同一笔待确认申购")
         result["pending_id"] = pending_id
+    if pending:
+        result.update(pending_id=pending["id"], trading_account=pending.get("trading_account", trading_accounts.UNKNOWN))
     return result
 
 
@@ -292,8 +314,27 @@ def make_event(payload, request_id, day, view, *, config=None, historical=False,
                 event["strategy_fund_valuation_prices"] = {
                     key: {code: row["book_price"] for code, row in positions.items()}
                     for key, positions in view["strategy_fund_positions"].items()}
-    if event.get("kind") != "pending":
+    if side == "fund_redeem_pending":
+        custody_event = {**event, "side": "fund_redeem"}
+        trading_accounts.prepare(custody_event, payload, view, view.get("trading_accounts"), historical=historical)
+        event["trading_account"] = custody_event.get("trading_account", trading_accounts.UNKNOWN)
+    elif event.get("kind") != "pending" and side != "fund_redeem_void":
+        if side == "fund_redeem" and "pending_id" in event:
+            payload = {**payload, "trading_account": event["trading_account"]}
         trading_accounts.prepare(event, payload, view, view.get("trading_accounts"), historical=historical)
+    if side in {"fund_redeem_pending", "fund_redeem", "assign", "custody_transfer"} and (
+        side.startswith("fund_") or event.get("kind") == "fund"
+    ):
+        owner = event.get("from_strategy", event.get("strategy"))
+        account = event.get("trading_account", trading_accounts.UNKNOWN)
+        held = next((row["qty"] for row in view["custody_positions"] if
+                     (row["kind"], row["strategy"], row["code"], row["account"]) ==
+                     ("fund", owner, event["code"], account)), 0)
+        reserved = sum(Decimal(str(row["qty"])) for order_id, row in view["fund_redeem_pending"].items()
+                       if order_id != event.get("pending_id") and (row["strategy"], row["code"], row["trading_account"]) ==
+                       (owner, event["code"], account))
+        if reserved and Decimal(str(event["qty"])) + reserved > Decimal(str(held)):
+            raise ValueError("已预登记的赎回占用份额，本次操作超过可用份额")
     return event
 
 
@@ -315,6 +356,7 @@ class _Replay:
         self.held = {}
         self.marks = {}
         self.fund_pending = {}
+        self.fund_redeem_pending = {}
         self.fund_shares = {}
         self.fund_cost = {}
         self.fund_trade_marks = {}
@@ -466,6 +508,12 @@ class _Replay:
         self._advance(event["date"])
         side = event["side"]
         strategy = event.get("strategy", HOLDING_AREA)
+        if side == "fund_redeem_pending":
+            self.fund_redeem_pending[event["id"]] = {k: v for k, v in event.items() if k != "request"}
+            return
+        if side == "fund_redeem_void":
+            del self.fund_redeem_pending[event["voided_pending_id"]]
+            return
         if side in {"cash_transfer", "assign"} and strategy == event["from_strategy"]:
             return
         cash_before = self.cash
@@ -484,6 +532,8 @@ class _Replay:
             self.cash_by_strategy[strategy] += delta
             self.net_flows += delta
         elif side in FUND_TRADES:
+            if side == "fund_redeem" and "pending_id" in event:
+                del self.fund_redeem_pending[event["pending_id"]]
             self._apply_fund_trade(event)
         elif side == "dividend":
             self.cash += event["amount"]
@@ -612,6 +662,7 @@ class _Replay:
             "positions": rows, "strategy_positions": strategy_rows, "fund_positions": funds,
             "strategy_fund_positions": strategy_funds,
             "fund_pending": dict(self.fund_pending), "pending_fund_value": pending_value,
+            "fund_redeem_pending": dict(self.fund_redeem_pending),
             "strategy_pending_fund_value": pending_values,
             "cash": round(self.cash, 2),
             "invested": invested, "equity": equity, "units": self.units, "receivables": 0,

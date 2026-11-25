@@ -65,6 +65,28 @@ def test_two_platforms_reconcile_through_confirmation_and_refund(ledger, monkeyp
         ("platform1", "core"): 100, ("platform2", "core"): 180, ("platform2", "holding_area"): 10}
 
 
+def test_redemption_reservation_and_receipt_stay_at_origin_platform(ledger):
+    for platform in ('platform1', 'platform2'):
+        move(ledger, 100, platform)
+        post(ledger, 'fund_buy', code='000001', qty=100, amount=100, trading_account=platform,
+             nav=1, nav_date=DAY)
+    order = post(ledger, 'fund_redeem_pending', code='000001', qty=90, trading_account='platform1')
+    post(ledger, 'fund_redeem_pending', code='000001', qty=100, trading_account='platform2')
+    with pytest.raises(ValueError, match='可用份额'):
+        post(ledger, 'custody_transfer', kind='fund', code='000001', qty=11,
+             trading_account='platform1', to_account='platform2')
+    with pytest.raises(ValueError, match='可用份额'):
+        post(ledger, 'assign', kind='fund', code='000001', qty=11, trading_account='platform1',
+             from_strategy='core', strategy='holding_area')
+    with pytest.raises(ValueError, match='沿用原赎回'):
+        post(ledger, 'fund_redeem', pending_id=order['id'], amount=89, trading_account='platform2')
+    receipt = post(ledger, 'fund_redeem', pending_id=order['id'], amount=89)
+    assert receipt['trading_account'] == 'platform1'
+    view = snapshot(etf_account.load(ledger), DAY)
+    assert view['custody_cash']['platform1'] == 89
+    assert view['custody_cash']['platform2'] == 0
+
+
 def test_claim_transfer_and_historical_correction(ledger):
     state = etf_account.load(ledger)
     rev = etf_account.revision(state, DAY, include_transfers=True)

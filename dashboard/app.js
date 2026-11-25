@@ -22,6 +22,7 @@ const acceptsFunds = row => isAllocation(row) || row.holding_only;
 const HOLDING_NAMES = {etf:'ETF', stock:'股票', other:'其他持仓', fund:'场外基金'};
 const ASSET_NAMES = {equity:'权益', bond:'债券', commodity:'商品', cash:'现金类', mixed:'混合', unknown:'待分类'};
 const isFundTrade = side => typeof side === 'string' && side.startsWith('fund_');
+Object.assign(SIDES, {fund_redeem_pending:'场外赎回预登记', fund_redeem_void:'赎回作废'});
 const fundShares = value => finite(value) ? value.toLocaleString('zh-CN', {maximumFractionDigits:6}) : '—';
 const REPORT_PREFIX = {rotation:'etf_rotation_advice_', quality:'quality_pool_advice_'};
 const ALLOCATION_TOLERANCE = 0.01;
@@ -382,10 +383,22 @@ function accountDetails(account) {
     <section id="account-holdings" class="section" aria-labelledby="account-holdings-title" tabindex="-1"><div class="section-heading"><h2 id="account-holdings-title">账户持仓</h2><select id="holding-filter" aria-label="持仓类别"><option value="">全部持仓</option><optgroup label="资产类别">${assetFilters}</optgroup><optgroup label="产品类型">${filters}</optgroup></select></div>
       <p id="cash-class-detail" class="subtle" hidden>账面现金 ${money(account.cash)} 元 · 货币基金 ${finite(account.asset_allocation?.cash) ? `${money(account.asset_allocation.cash - account.cash)} 元` : '待估值'}</p>
       <div class="table-wrap"><table class="account-holdings-table"><thead><tr><th scope="col">标的</th><th scope="col">份额</th><th scope="col">价格 / 元</th><th scope="col">市值 / 元</th><th scope="col">资产占比</th><th scope="col">记账</th></tr></thead><tbody>${rows}${fundRows}<tr id="holdings-empty" hidden><td colspan="6" class="empty">暂无持仓</td></tr></tbody></table></div></section>
-    ${custodySection(account)}${recordSection(account, account.trades)}`;
+    ${custodySection(account)}${recordSection(account)}`;
 }
 
 function pendingFundSection(account, recordedToday=account.dca?.recorded_today || []) {
+  return pendingSubscriptionSection(account, recordedToday) + pendingRedemptionSection(account);
+}
+
+function pendingRedemptionSection(view) {
+  const account = data.accounts[0];
+  const orders = Object.values(account.fund_redeem_pending || {}).filter(order=>view.id==='etf' || order.strategy===view.id);
+  if (!orders.length) return '';
+  const rows = orders.map(order=>`<tr><td>${esc(fundDisplayName(order.code) || order.code)}<small>${esc([order.code, strategyName(order.strategy), account.trading_accounts && custodyName(account,order.trading_account)].filter(Boolean).join(' · '))}</small></td><td>${esc(order.date)}</td><td>${fundShares(order.qty)}</td><td><button type="button" class="text-button" data-redeem-receipt="${esc(order.id)}">确认到账</button> <button type="button" class="text-button" data-redeem-void="${esc(order.id)}">作废</button></td></tr>`).join('');
+  return `<section class="section"><div class="section-heading"><h2>待到账赎回</h2></div><div class="table-wrap"><table><thead><tr><th>基金</th><th>申请日</th><th>申请份额</th><th>操作</th></tr></thead><tbody>${rows}</tbody></table></div></section>`;
+}
+
+function pendingSubscriptionSection(account, recordedToday) {
   const pending = Object.values(account.fund_pending || {});
   const autoNote = recordedToday.length
     ? `今日已自动记账 ${recordedToday.length} 笔（净值日 ${[...new Set(recordedToday)].join('、')}）`
@@ -399,16 +412,87 @@ function pendingFundSection(account, recordedToday=account.dca?.recorded_today |
   return `<section id="fund-pending" class="section"><div class="section-heading"><h2>待确认申购</h2><span class="subtle">在途 ${money(account.pending_fund_value)} 元</span></div>${note}<div class="table-wrap"><table><thead><tr><th>基金</th><th>买入日</th><th>实际扣款 / 元</th><th>状态</th></tr></thead><tbody>${rows}</tbody></table></div></section>`;
 }
 
-function recordSection(view, rows) {
+function recordRows(view) {
+  return view.id === 'etf' ? view.trades : [...(view.trades || [])].reverse();
+}
+
+function recordSection(view) {
+  const rows = recordRows(view);
   const display = recordDisplays.get(view.id);
-  const all = display?.all;
+  const filters = display?.filters || {};
+  const account = data.accounts[0];
+  const options = (values, selected, label) => [...new Set(values)].sort().map(value =>
+    `<option value="${esc(value)}" ${value === selected ? 'selected' : ''}>${esc(label(value))}</option>`).join('');
   return `<section id="account-records" class="section" aria-labelledby="account-records-title" tabindex="-1" ${display?.expanded ? '' : 'hidden'}>
     <div class="section-heading"><h2 id="account-records-title">${view.id === 'etf' ? '账户流水' : '策略流水'}</h2>
       <div class="allocation-actions">
-        ${rows.length > 20 ? `<button type="button" id="all-records" class="text-button">${all ? '只看最近 20 笔' : `查看全部 ${rows.length} 笔`}</button>` : ''}
+        <button type="button" id="export-records" class="text-button">导出 CSV</button>
         <button type="button" id="close-records" class="text-button">收起流水</button>
       </div>
-    </div>${recordTable(all ? rows : rows.slice(0,20))}</section>`;
+    </div>
+    <div id="record-filters" class="allocation-actions">
+      <label>开始日期 <input type="date" name="start" value="${esc(filters.start || '')}"></label>
+      <label>结束日期 <input type="date" name="end" value="${esc(filters.end || '')}"></label>
+      <label>代码 <input type="search" name="code" size="8" value="${esc(filters.code || '')}"></label>
+      <label>交易账户 <select name="account"><option value="">全部</option>${options(rows.flatMap(recordAccounts), filters.account, id => custodyName(account,id))}</select></label>
+      <label>类型 <select name="type"><option value="">全部</option>${options(rows.map(recordType), filters.type, type => type === 'pending_assign' ? '在途申购归属划转' : SIDES[type] || type)}</select></label>
+      <button type="button" id="reset-record-filters" class="text-button">清除筛选</button>
+    </div>
+    <div class="section-heading">
+      <span id="record-count" class="subtle" aria-live="polite"></span>
+      <button type="button" id="all-records" class="text-button" hidden></button>
+    </div>
+    <div id="record-results"></div></section>`;
+}
+
+const recordType = row => row.kind === 'pending' ? 'pending_assign' : row.side;
+
+function recordAccounts(row) {
+  if (!row.trading_account && ['cash_assign','cash_transfer'].includes(row.side)) return [];
+  return [row.trading_account || 'unlocated', row.to_account].filter(Boolean);
+}
+
+function filterRecords(rows, {start, end, code, account, type}) {
+  const query = (code || '').trim().toLowerCase();
+  return rows.filter(row => {
+    const day = reportDate(row.date);
+    return (!start || day >= start) && (!end || day <= end)
+      && (!query || String(row.code || '').toLowerCase().includes(query))
+      && (!account || recordAccounts(row).includes(account))
+      && (!type || recordType(row) === type);
+  });
+}
+
+function recordLabel(row) {
+  if (row.kind === 'pending') return '在途申购归属划转';
+  if (row.side === 'fund_pending') return data.accounts[0].fund_pending?.[row.id] ? '场外申购 · 待确认' : '场外申购扣款';
+  if (row.side === 'fund_redeem' && row.pending_id) return '场外赎回到账';
+  return SIDES[row.side] || row.side;
+}
+
+function recordAmount(row) {
+  return row.kind === 'fund' ? row.transfer_price : row.price ?? row.amount;
+}
+
+const recordCashAllocations = row => Object.entries(row.cash_allocations || {}).map(([key,amount]) =>
+  `${strategyName(key) || key} ${price(amount)} 元`).join(' · ');
+
+function recordCsv(rows) {
+  const account = data.accounts[0];
+  const cells = [['日期','类型','代码','交易账户','转入账户','来源策略','所属策略','份额','价格或金额 / 元','手续费 / 元','现金分配明细']];
+  for (const row of rows) {
+    const [source, destination] = recordAccounts(row);
+    cells.push([row.date, recordLabel(row), row.code ? `'${row.code}` : '',
+      source ? custodyName(account,source) : '', destination ? custodyName(account,destination) : '',
+      strategyName(row.from_strategy) || row.from_strategy,
+      strategyName(row.strategy) || row.strategy, row.qty, recordAmount(row), row.fee, recordCashAllocations(row)]);
+  }
+  return '\uFEFF' + cells.map(row => row.map(value => {
+    const text = String(value ?? '');
+    // Excel can evaluate formula-like text even when the CSV field is quoted.
+    const safe = typeof value !== 'number' && /^(?:[\s\x00-\x1f]*[=+@-]|[\x09-\x0d])/u.test(text) ? `'${text}` : text;
+    return `"${safe.replaceAll('"','""')}"`;
+  }).join(',')).concat('').join(String.fromCharCode(13, 10));
 }
 
 function recordTable(rows) {
@@ -419,20 +503,18 @@ function recordTable(rows) {
     let detail = [name, row.code && name!==row.code ? row.code : '', strategyName(row.strategy || (isFundTrade(row.side) ? 'core' : ''))].filter(Boolean).join(' · ') || '账户资金';
     if (row.side === 'assign') detail = [fund && name, row.code, `${strategyName(row.from_strategy)} → ${strategyName(row.strategy)}`].filter(Boolean).join(' · ');
     if (row.side === 'cash_transfer') detail = `${strategyName(row.from_strategy)} → ${strategyName(row.strategy)}`;
-    if (row.side === 'cash_assign') {
-      detail = Object.entries(row.cash_allocations).map(([key,amount]) => `${strategyName(key)} ${price(amount)} 元`).join(' · ');
-    }
+    if (row.side === 'cash_assign') detail = recordCashAllocations(row);
     const account=data.accounts[0];
     if (account.trading_accounts && (row.trading_account || !['cash_assign','cash_transfer'].includes(row.side))) {
       detail+=' · '+custodyName(account,row.trading_account);
       if (row.to_account) detail+=' → '+custodyName(account,row.to_account);
     }
     const pending = row.side === 'fund_pending';
-    const voided = row.side === 'fund_void';
+    const immutable = ['fund_void','fund_redeem_pending','fund_redeem_void'].includes(row.side) || (row.side === 'fund_redeem' && row.pending_id);
     const waiting = !!data.accounts[0].fund_pending?.[row.id];
-    const label = row.kind==='pending' ? '在途申购归属划转' : pending ? (waiting ? '场外申购 · 待确认' : '场外申购扣款') : SIDES[row.side];
-    const edit = row.kind!=='pending' && !voided && (!pending || waiting) ? `<button type="button" class="text-button" data-edit-event="${esc(row.id)}">修改</button>` : '';
-    const recordPrice = row.kind === 'fund' ? row.transfer_price : row.price ?? row.amount;
+    const label = recordLabel(row);
+    const edit = row.kind!=='pending' && !immutable && (!pending || waiting) ? `<button type="button" class="text-button" data-edit-event="${esc(row.id)}">修改</button>` : '';
+    const recordPrice = recordAmount(row);
     return `<tr><td>${esc(row.date)}</td><td>${esc(label)}<small>${esc(detail)}</small>${edit}</td><td>${fund ? fundShares(row.qty) : number(row.qty)}</td><td>${price(recordPrice)}</td><td>${price(row.fee)}</td></tr>`;
   }).join('');
   return `<div class="table-wrap"><table><thead><tr><th>日期</th><th>类型 / 明细</th><th>份额</th><th>价格或金额 / 元</th><th>手续费 / 元</th></tr></thead><tbody>${body}</tbody></table></div>`;
@@ -449,13 +531,13 @@ function holdingAreaPage(area) {
   return `<div class="stats">${[['资产',area.assets],['持仓与在途',area.invested],['现金',area.cash],['累计盈亏',area.pnl]].map(([label,value])=>`<div class="stat"><span>${label} / 元</span><b>${money(value)}</b></div>`).join('')}</div>
     ${entryActions(area)}<section class="section"><div class="section-heading"><h2>待定持仓</h2></div>
     ${rows ? `<div class="table-wrap"><table><thead><tr><th>标的</th><th>份额</th><th>市值 / 元</th><th>操作</th></tr></thead><tbody>${rows}</tbody></table></div>` : '<p class="empty">暂无待定持仓</p>'}</section>
-    ${pendingFundSection(area,[])}${recordSection(area,[...(area.trades || [])].reverse())}`;
+    ${pendingFundSection(area,[])}${recordSection(area)}`;
 }
 
 function fundedStrategyPage(strategy) {
   if (strategy.holding_only) return holdingAreaPage(strategy);
   const stats = [[finite(strategy.budget) ? money(strategy.budget) : finite(strategy.budget_pct)?'待估值':'待设置','目标资产 / 元'],[money(strategy.invested),strategy.pending_fund_value ? '持仓与在途 / 元' : '持仓市值 / 元'],[`${strategy.pnl>0?'+':''}${money(strategy.pnl)}`,'累计盈亏 / 元'],[money(strategy.cash),'策略现金 / 元']];
-  const trades = [...(strategy.trades || [])].reverse();
+
   const canRecord = data.accounts[0].can_record;
   const status = strategy.status && strategy.status!=='已分配' ? `<p class="subtle">${esc(strategy.status)}</p>` : '';
   const allocation = isAllocation(strategy);
@@ -466,7 +548,7 @@ function fundedStrategyPage(strategy) {
   return `<div class="stats">${stats.map(([value,label])=>`<div class="stat"><span>${label}</span><b>${esc(value)}</b></div>`).join('')}</div>
     ${canRecord ? entryActions(strategy) : ''}${chartSection(strategy)}
     <section class="section"><div class="section-heading"><h2>${allocation ? '持仓与目标配比' : '持仓与调仓建议'}</h2>${actions}</div>${status}${strategyPositionTable(strategy)}</section>
-    ${pending}${canRecord ? recordSection(strategy, trades) : ''}`;
+    ${pending}${canRecord ? recordSection(strategy) : ''}`;
 }
 
 function rotationPositionTable(strategy) {
@@ -714,11 +796,10 @@ function bindAccountActions(view) {
   document.querySelector('#manual-entry').onclick = () => openEntry(account, null, strategy);
   document.querySelector('#position-transfer').onclick = () => openEntry(account, {side:'assign'}, strategy);
   document.querySelector('#cash-transfer').onclick = () => openEntry(account, {side:'cash_transfer'}, strategy);
-  bindRecords(view.id);
   document.querySelectorAll('[data-custody-account]').forEach(button=>button.onclick=()=>{
     openCustodyMove(account,button.dataset.custodyAccount,account.custody_positions[Number(button.dataset.custodyRow)]);
   });
-  document.querySelectorAll('[data-edit-event]').forEach(button=>button.onclick=async()=>{
+  async function editRecordEvent(button) {
     button.disabled=true;
     try {
       const context=await accountRequest('/api/etf/event/context',{revision:account.revision,event_id:button.dataset.editEvent});
@@ -732,7 +813,9 @@ function bindAccountActions(view) {
       else openEntry(before,context.event,context.event.strategy,{edit:context.event});
     } catch(error) {document.querySelector('#status').textContent=error.message;}
     finally {button.disabled=false;}
-  });
+  }
+  document.querySelectorAll('[data-edit-event]').forEach(button=>button.onclick=()=>editRecordEvent(button));
+  bindRecords(view, editRecordEvent);
   document.querySelectorAll('[data-position-side]').forEach(button => button.onclick = () => openEntry(account, {side:button.dataset.positionSide,code:button.dataset.code}, button.dataset.strategy));
   for (const button of document.querySelectorAll('[data-holding-transfer]')) {
     const {code, kind, strategy} = button.dataset;
@@ -752,6 +835,13 @@ function bindAccountActions(view) {
     withGuard(button, () => accountRequest('/api/etf/event', {request_id:crypto.randomUUID(), revision:account.revision,
       side:'fund_void', voided_pending_id:button.dataset.voidEvent, date:shanghaiToday()}),
       '申购已作废，现金已退回所属策略'));
+  document.querySelectorAll('[data-redeem-receipt]').forEach(button=>button.onclick=()=> {
+    const order = account.fund_redeem_pending[button.dataset.redeemReceipt];
+    openFundTrade(account, 'fund_redeem', order.code, order.strategy, null, order);
+  });
+  document.querySelectorAll('[data-redeem-void]').forEach(button=>button.onclick=()=>
+    withGuard(button, () => accountRequest('/api/etf/event', {request_id:crypto.randomUUID(), revision:account.revision,
+      side:'fund_redeem_void', voided_pending_id:button.dataset.redeemVoid, date:shanghaiToday()}), '赎回预登记已作废'));
   for (const button of document.querySelectorAll('[data-fund-side]')) {
     button.onclick = () => openFundTrade(account, button.dataset.fundSide, button.dataset.code, button.dataset.strategy);
   }
@@ -762,7 +852,8 @@ function bindAccountActions(view) {
     withGuard(button, () => accountRequest('/api/etf/dismiss', {revision:account.revision, id:view.suggestions[Number(button.dataset.dismiss)].id})));
 }
 
-function bindRecords(viewId) {
+function bindRecords(view, editRecordEvent) {
+  const viewId = view.id;
   if (!recordDisplays.has(viewId)) recordDisplays.set(viewId, {expanded:false, all:false});
   const display = recordDisplays.get(viewId);
   const trigger = document.querySelector('#account-records-link');
@@ -781,14 +872,44 @@ function bindRecords(viewId) {
   }
   trigger.onclick = () => setExpanded(section.hidden);
   document.querySelector('#close-records').onclick = () => setExpanded(false);
-  const allRecords = document.querySelector('#all-records');
-  if (allRecords) {
-    allRecords.onclick = () => {
-      display.all = !display.all;
-      render();
-      document.querySelector('#all-records').focus({preventScroll:true});
-    };
+  const controls = section.querySelector('#record-filters');
+  const fields = [...controls.querySelectorAll('input, select')];
+  const allRecords = section.querySelector('#all-records');
+  const exportButton = section.querySelector('#export-records');
+  const results = section.querySelector('#record-results');
+  const rows = recordRows(view);
+  let filtered;
+  function updateResults() {
+    display.filters = Object.fromEntries(fields.map(field => [field.name, field.value]));
+    filtered = filterRecords(rows, display.filters);
+    allRecords.hidden = filtered.length <= 20;
+    allRecords.textContent = display.all ? '只看最近 20 笔' : `查看全部 ${filtered.length} 笔`;
+    exportButton.disabled = !filtered.length;
+    section.querySelector('#record-count').textContent = `${filtered.length} 笔流水`;
+    results.innerHTML = recordTable(display.all ? filtered : filtered.slice(0,20));
   }
+  controls.oninput = updateResults;
+  section.querySelector('#reset-record-filters').onclick = () => {
+    for (const field of fields) field.value = '';
+    updateResults();
+  };
+  allRecords.onclick = () => {
+    display.all = !display.all;
+    updateResults();
+  };
+  results.onclick = event => {
+    const button = event.target.closest('[data-edit-event]');
+    if (button) editRecordEvent(button);
+  };
+  exportButton.onclick = () => {
+    const url = URL.createObjectURL(new Blob([recordCsv(filtered)], {type:'text/csv;charset=utf-8'}));
+    const link = document.createElement('a');
+    link.href = url;
+    link.download = `${viewId}-ledger-${shanghaiToday()}.csv`;
+    link.click();
+    setTimeout(() => URL.revokeObjectURL(url), 1000);
+  };
+  updateResults();
 }
 
 function showEntryReceipt(eventId, editing) {
@@ -797,16 +918,18 @@ function showEntryReceipt(eventId, editing) {
   const confirmation = editing ? '已修改' : '已保存';
   const parts = [confirmation];
   if (row) {
-    parts.push(SIDES[row.side], row.code);
+    parts.push(row.side === 'fund_redeem' && row.pending_id ? recordLabel(row) : SIDES[row.side], row.code);
     if (finite(row.qty)) {
       const shares = row.kind === 'fund' || isFundTrade(row.side) ? fundShares(row.qty) : number(row.qty);
       parts.push(`${shares} 份`);
     } else if (finite(row.amount)) {
       parts.push(`${money(row.amount)} 元`);
     }
+    if (row.side === 'fund_redeem' && row.pending_id) parts.push(`到账 ${money(row.amount)} 元`);
     const owner = strategyName(row.strategy);
     parts.push(row.from_strategy ? `${strategyName(row.from_strategy)} → ${owner}` : owner);
     if (account.fund_pending?.[eventId]) parts.push('待确认');
+    if (account.fund_redeem_pending?.[eventId]) parts.push('待到账');
   }
   entryReceipt = parts.filter(Boolean).join(' · ');
   const message = document.querySelector('#entry-receipt') || document.querySelector('#status');
@@ -1303,7 +1426,7 @@ function strategyPositionTable(strategy) {
   return `<div class="table-wrap"><table class="allocation-table core-allocation-table"><thead><tr>${coreSortTh('产品与配置','name')}<th>份额</th><th>价格 / 元</th>${coreSortTh('当前金额 / 元','actual')}${coreSortTh('目标金额 / 元','weight')}${coreSortTh('配比偏离','deviation')}<th>记账</th></tr></thead><tbody>${rows}</tbody></table></div><details class="calculation-note"><summary>配比说明</summary><p>${basisNote}未达到重点高亮阈值时，${allocationToleranceNote}。${thresholdNote} 多产品配置按组内合计金额判断偏离。</p></details>`;
 }
 
-function openFundTrade(account, side, code, strategy, edit=null) {
+function openFundTrade(account, side, code, strategy, edit=null, receipt=null) {
   const dialog = document.querySelector('#fund-dialog');
   const form = document.querySelector('#fund-form');
   const fields = document.querySelector('#fund-fields');
@@ -1312,6 +1435,7 @@ function openFundTrade(account, side, code, strategy, edit=null) {
   const preview = document.querySelector('#fund-preview');
   const field = name => form.elements.namedItem(name);
   const buy = side !== 'fund_redeem';
+  const registerRedemption = !buy && !edit && !receipt;
   const pending = side === 'fund_pending' || (side === 'fund_buy' && !edit);
   const confirming = side === 'fund_confirm';
   const accountFee = pending && !edit ? account.fund_subscription_fee : null;
@@ -1337,14 +1461,17 @@ function openFundTrade(account, side, code, strategy, edit=null) {
   fields.disabled = false;
   save.disabled = false;
   fetchNav.disabled = false;
-  save.textContent = edit ? '保存修改' : '保存记账';
+  const saveLabel = edit ? '保存修改' : receipt ? '确认到账' : registerRedemption ? '保存预登记' : '保存记账';
+  save.textContent = saveLabel;
   error.hidden = true;
-  document.querySelector('#fund-title').textContent = edit ? `修改${SIDES[side]}` : SIDES[side];
+  document.querySelector('#fund-title').textContent = edit ? `修改${SIDES[side]}` : receipt ? '确认赎回到账' : registerRedemption ? SIDES.fund_redeem_pending : SIDES[side];
   document.querySelector('#fund-help').textContent = pending
     ? '扣款计入在途资金。每日更新或刷新估值时查到买入日净值，就会自动确认份额。'
-    : confirming ? '按交易确认单更正份额。' : '请按交易确认单和实际资金变动记账。';
+    : confirming ? '按交易确认单更正份额。' : registerRedemption ? '登记申请份额，实际到账后再录入到账金额。' : '请按交易确认单和实际资金变动记账。';
   document.querySelector('#fund-amount-label').textContent = buy ? '实际扣款 / 元' : '实际到账 / 元';
-  document.querySelector('#fund-qty-label').textContent = buy ? '份额（自动计算，可修正）' : '确认赎回份额';
+  field('amount').parentElement.hidden = registerRedemption;
+  field('amount').disabled = registerRedemption;
+  document.querySelector('#fund-qty-label').textContent = buy ? '份额（自动计算，可修正）' : edit ? '确认赎回份额' : '申请赎回份额';
   options.hidden = !buy;
   options.open = buy && !!edit && !confirming;
   document.querySelector('#fund-buy-tools-label').textContent = accountFee ? '买入日' : '买入日与费用';
@@ -1352,6 +1479,7 @@ function openFundTrade(account, side, code, strategy, edit=null) {
   summary.hidden = !pending && !confirming;
   document.querySelector('#fund-code-field').hidden = pending && !!code && !edit;
   document.querySelector('#fund-record-day-field').hidden = pending && !edit;
+  document.querySelector('#fund-record-day-label').textContent = receipt ? '到账日期' : registerRedemption ? '申请日期' : '记账日期';
   document.querySelector('#fund-qty-field').hidden = pending;
   document.querySelector('#fund-nav-field').hidden = pending;
   document.querySelector('#fund-nav-day-label').textContent = pending ? '买入日' : '申购净值日期';
@@ -1364,8 +1492,9 @@ function openFundTrade(account, side, code, strategy, edit=null) {
   field('code').readOnly = confirming || (!!code && !edit);
   for (const name of ['amount','date']) field(name).readOnly = confirming;
   field('amount').value = edit?.amount ?? '';
-  field('qty').value = edit?.qty ?? '';
-  field('date').min = account.min_date || account.trades[0]?.date || account.start_date;
+  field('qty').readOnly = !!receipt;
+  field('qty').value = (receipt || edit)?.qty ?? '';
+  field('date').min = account.min_date || account.trades[0]?.date || receipt?.date || account.start_date;
   field('date').max = account.max_date || today;
   field('date').value = edit?.date || today;
   field('nav').value = edit?.nav ?? '';
@@ -1403,8 +1532,13 @@ function openFundTrade(account, side, code, strategy, edit=null) {
   }
   function update() {
     const code = field('code').value;
-    const location=custodySelect(account,field('trading_account'),{side,kind:'fund',code,strategy:owner.value,edit});
+    const location=custodySelect(account,field('trading_account'),{side,kind:'fund',code,strategy:owner.value,edit:receipt || edit});
+    if (receipt) field('trading_account').disabled = true;
     const held = location ? location.qty : account.strategy_fund_positions?.[owner.value]?.[code]?.qty || 0;
+    const reserved = !buy && !receipt ? Object.values(account.fund_redeem_pending || {})
+      .filter(order=>order.code===code && order.strategy===owner.value && order.trading_account===(location?.id || 'unlocated'))
+      .reduce((total,order)=>total+order.qty,0) : 0;
+    const available = Math.max(0, Number((held-reserved).toFixed(6)));
     const cash = account.cash_by_strategy[owner.value];
     const amount = Number(field('amount').value);
     const kind = field('fee_kind').value;
@@ -1413,7 +1547,7 @@ function openFundTrade(account, side, code, strategy, edit=null) {
     document.querySelector('#fund-fee-label').textContent = kind === 'rate' ? '实际费率 / %' : '申购费 / 元';
     field('fee').disabled = !usesFee || confirming;
     field('nav_date').max = field('date').value;
-    field('qty').max = buy ? '1000000000' : String(held);
+    field('qty').max = buy ? '1000000000' : String(available);
     if (buy && !pending && !confirming) {
       const estimate = estimateQty(amount, selectedFee(), Number(field('nav').value));
       if (!manualQty) field('qty').value = estimate || '';
@@ -1428,7 +1562,7 @@ function openFundTrade(account, side, code, strategy, edit=null) {
     summary.textContent = [code && `基金 ${code}`, `买入日 ${field('nav_date').value || '待选择'}`, accountFee ? `账户申购费：${feeLabel}` : feeLabel].filter(Boolean).join(' · ');
     preview.hidden = confirming;
     preview.textContent = owner.value
-      ? `${strategyName(owner.value)}现金 ${money(cash)} 元 · 持有 ${fundShares(held)} 份${amount > 0 ? ` · 记账后现金 ${money(cash + (buy ? -amount : amount))} 元` : ''}`
+      ? `${strategyName(owner.value)}现金 ${money(cash)} 元 · ${registerRedemption ? '可申请赎回' : '持有'} ${fundShares(registerRedemption ? available : held)} 份${amount > 0 ? ` · 记账后现金 ${money(cash + (buy ? -amount : amount))} 元` : ''}`
       : '请选择所属策略。';
     if(location?.id) preview.textContent+=' · 账户现金 '+money(location.cash)+' 元';
     field('amount').setCustomValidity(buy && !confirming && amount > cash ? '所属策略现金不足，请先分配现金。' :
@@ -1494,6 +1628,11 @@ function openFundTrade(account, side, code, strategy, edit=null) {
           date:field('date').value, qty:Number(field('qty').value), amount:Number(field('amount').value)};
         if (account.trading_accounts) payload.trading_account=field('trading_account').value;
         if (edit) payload.event_id = edit.id;
+        if (registerRedemption) {
+          payload.side = 'fund_redeem_pending';
+          delete payload.amount;
+        }
+        if (receipt) payload.pending_id = receipt.id;
         if (pending) {
           payload.side = 'fund_pending';
           payload.nav_date = field('nav_date').value;
@@ -1519,7 +1658,7 @@ function openFundTrade(account, side, code, strategy, edit=null) {
       saving = false;
       fields.disabled = saved;
       save.disabled = false;
-      save.textContent = saved ? '刷新账户' : edit ? '保存修改' : '保存记账';
+      save.textContent = saved ? '刷新账户' : saveLabel;
     }
   };
   dialog.showModal();
@@ -1682,12 +1821,18 @@ function openDcaPlans(account, strategy, code='') {
     error.hidden=true;
   }
   function renderPlans() {
-    plansBox.innerHTML=plans.length ? `<table><thead><tr><th>基金</th><th>计划</th><th>状态</th><th></th></tr></thead><tbody>${plans.map(plan=>{
+    plansBox.innerHTML=plans.length ? `<table><thead><tr><th>基金</th><th>计划</th><th>状态</th><th>下次扣款日</th><th>最近一期补记</th><th></th></tr></thead><tbody>${plans.map(plan=>{
       const name=fundDisplayName(plan.code);
       let cadence='每个交易日';
       if (plan.frequency==='monthly') cadence=`每月 ${plan.anchor} 日`;
       if (plan.frequency==='weekly') cadence=`每周${FREQUENCY_ANCHORS.weekly[plan.anchor-1][1].slice(1)}`;
-      return `<tr><td>${name?`${esc(name)}<small>${esc(plan.code)}</small>`:esc(plan.code)}</td><td>${cadence} · ${money(plan.amount)} 元${account.trading_accounts?`<small>${plan.trading_account?esc(custodyName(account,plan.trading_account)):'跟随默认账户'}</small>`:''}${plan.note?`<small>${esc(plan.note)}</small>`:''}</td><td>${plan.enabled?'启用中':'已停用'}</td><td><button type="button" class="text-button" data-dca-edit="${esc(plan.id)}">${code || plan.enabled?'修改':'启用'}</button> <button type="button" class="text-button" data-dca-toggle="${esc(plan.id)}">${plan.enabled?'停用':'启用'}</button> <button type="button" class="text-button" data-dca-delete="${esc(plan.id)}">删除</button></td></tr>`;
+      const result=plan.latest_result;
+      let latest='暂无记录';
+      if (result) {
+        latest=`${result.status==='failed'?'补记失败':'已补记'}<small>扣款日 ${esc(result.due_date)}</small>`;
+        if (result.reason) latest+=`<small>${esc(result.reason)}</small>`;
+      }
+      return `<tr><td>${name?`${esc(name)}<small>${esc(plan.code)}</small>`:esc(plan.code)}</td><td>${cadence} · ${money(plan.amount)} 元${account.trading_accounts?`<small>${plan.trading_account?esc(custodyName(account,plan.trading_account)):'跟随默认账户'}</small>`:''}${plan.note?`<small>${esc(plan.note)}</small>`:''}</td><td>${plan.enabled?'启用中':'已停用'}</td><td>${plan.next_due?esc(plan.next_due):plan.enabled?'暂无日期':'—'}</td><td>${latest}</td><td><button type="button" class="text-button" data-dca-edit="${esc(plan.id)}">${code || plan.enabled?'修改':'启用'}</button> <button type="button" class="text-button" data-dca-toggle="${esc(plan.id)}">${plan.enabled?'停用':'启用'}</button> <button type="button" class="text-button" data-dca-delete="${esc(plan.id)}">删除</button></td></tr>`;
     }).join('')}</tbody></table>` : '<div class="empty">暂无定投计划。请在基金 App 设定自动扣款后，把计划录到这里。</div>';
     plansBox.querySelectorAll('[data-dca-edit]').forEach(button=>button.onclick=()=>{
       const plan=plans.find(row=>row.id===button.dataset.dcaEdit);
