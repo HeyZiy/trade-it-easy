@@ -487,12 +487,13 @@ function recordCsv(rows) {
       strategyName(row.from_strategy) || row.from_strategy,
       strategyName(row.strategy) || row.strategy, row.qty, recordAmount(row), row.fee, recordCashAllocations(row)]);
   }
-  return '\uFEFF' + cells.map(row => row.map(value => {
+  const lines = cells.map(row => row.map(value => {
     const text = String(value ?? '');
     // Excel can evaluate formula-like text even when the CSV field is quoted.
     const safe = typeof value !== 'number' && /^(?:[\s\x00-\x1f]*[=+@-]|[\x09-\x0d])/u.test(text) ? `'${text}` : text;
     return `"${safe.replaceAll('"','""')}"`;
-  }).join(',')).concat('').join(String.fromCharCode(13, 10));
+  }).join(','));
+  return `\uFEFF${lines.join('\r\n')}\r\n`;
 }
 
 function recordTable(rows) {

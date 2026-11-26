@@ -26,7 +26,6 @@ import re
 from calendar import monthrange
 from datetime import date, timedelta
 from pathlib import Path
-from typing import Any
 from uuid import uuid4
 
 from src.account_replay import fund_code, fund_strategy, positive
@@ -60,7 +59,7 @@ def _plans_path(account_path):
     return Path(account_path).parent / PLANS_FILENAME
 
 
-def _read_plans(path) -> dict[str, Any]:
+def _read_plans(path):
     try:
         state = json.loads(path.read_text(encoding="utf-8"))
     except FileNotFoundError:
@@ -211,10 +210,10 @@ def _request_id(plan, due):
 
 
 def _next_due(plan, today, known_ids):
-    if plan.get("enabled", True):
-        dues = _due_dates(plan, today, today + timedelta(days=NEXT_DUE_WINDOW_DAYS))
-        return next((due.isoformat() for due in dues if _request_id(plan, due) not in known_ids), None)
-    return None
+    if not plan.get("enabled", True):
+        return None
+    dues = _due_dates(plan, today, today + timedelta(days=NEXT_DUE_WINDOW_DAYS))
+    return next((due.isoformat() for due in dues if _request_id(plan, due) not in known_ids), None)
 
 
 def _warn_aging_pendings(state, run_day):
@@ -236,8 +235,8 @@ def _save_failures(account_path, failures):
         for plan_id in active_ids.intersection(failures):
             failure = failures[plan_id]
             previous = stored.get(plan_id)
-            if failure != previous and (previous is None or
-                    (failure["due_date"], failure["date"]) >= (previous["due_date"], previous["date"])):
+            newer = previous is None or (failure["due_date"], failure["date"]) >= (previous["due_date"], previous["date"])
+            if newer and failure != previous:
                 stored[plan_id] = failure
                 changed = True
         if changed:

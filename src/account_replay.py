@@ -120,20 +120,19 @@ def _trade_fee(rules, code, side, qty, price):
 
 def _fund_event(payload, view, day):
     side = payload["side"]
+    redemption = None
     if side == "fund_redeem_void" or (side == "fund_redeem" and "pending_id" in payload):
         reference = "voided_pending_id" if side == "fund_redeem_void" else "pending_id"
         pending_id = payload.get(reference)
-        pending = view["fund_redeem_pending"].get(pending_id) if isinstance(pending_id, str) else None
-        if not pending:
+        redemption = view["fund_redeem_pending"].get(pending_id) if isinstance(pending_id, str) else None
+        if not redemption:
             raise ValueError("待到账赎回不存在或已处理")
-        order = {key: pending[key] for key in ("code", "qty", "strategy", "trading_account") if key in pending}
+        order = {key: redemption[key] for key in ("code", "qty", "strategy", "trading_account") if key in redemption}
         if any(payload.get(key, value) != value for key, value in order.items()):
             raise ValueError("到账或作废须沿用原赎回信息")
         if side == "fund_redeem_void":
             return {**order, reference: pending_id}
         payload = {**payload, **order}
-    else:
-        pending = None
     if side == "fund_redeem_pending":
         qty = payload.get("qty")
         if not positive(qty) or qty > 1e9 or round(qty, 6) != qty:
@@ -185,8 +184,8 @@ def _fund_event(payload, view, day):
                               for key in ("strategy", "code", "amount", "nav_date", "subscription_fee")):
             raise ValueError("确认流水须对应同一笔待确认申购")
         result["pending_id"] = pending_id
-    if pending:
-        result.update(pending_id=pending["id"], trading_account=pending.get("trading_account", trading_accounts.UNKNOWN))
+    if redemption:
+        result.update(pending_id=redemption["id"], trading_account=redemption.get("trading_account", trading_accounts.UNKNOWN))
     return result
 
 
@@ -228,6 +227,20 @@ def _assignment(payload, view, *, allow_book_value=False):
         raise ValueError("分配份额无效或超过来源持仓")
     return {"code": code, "name": held["name"], "qty": int(qty), "from_strategy": source,
             "strategy": target, "transfer_price": view["prices"][code]}
+
+
+def _check_redemption_capacity(event, view):
+    """赎回、到账或划转不得占用其他在审赎回已预登记的份额。"""
+    owner = event.get("from_strategy", event.get("strategy"))
+    account = event.get("trading_account", trading_accounts.UNKNOWN)
+    held = next((row["qty"] for row in view["custody_positions"] if
+                 (row["kind"], row["strategy"], row["code"], row["account"]) ==
+                 ("fund", owner, event["code"], account)), 0)
+    reserved = sum(Decimal(str(row["qty"])) for order_id, row in view["fund_redeem_pending"].items()
+                   if order_id != event.get("pending_id") and (row["strategy"], row["code"], row["trading_account"]) ==
+                   (owner, event["code"], account))
+    if reserved and Decimal(str(event["qty"])) + reserved > Decimal(str(held)):
+        raise ValueError("已预登记的赎回占用份额，本次操作超过可用份额")
 
 
 def make_event(payload, request_id, day, view, *, config=None, historical=False, allow_book_value=False):
@@ -322,19 +335,9 @@ def make_event(payload, request_id, day, view, *, config=None, historical=False,
         if side == "fund_redeem" and "pending_id" in event:
             payload = {**payload, "trading_account": event["trading_account"]}
         trading_accounts.prepare(event, payload, view, view.get("trading_accounts"), historical=historical)
-    if side in {"fund_redeem_pending", "fund_redeem", "assign", "custody_transfer"} and (
-        side.startswith("fund_") or event.get("kind") == "fund"
-    ):
-        owner = event.get("from_strategy", event.get("strategy"))
-        account = event.get("trading_account", trading_accounts.UNKNOWN)
-        held = next((row["qty"] for row in view["custody_positions"] if
-                     (row["kind"], row["strategy"], row["code"], row["account"]) ==
-                     ("fund", owner, event["code"], account)), 0)
-        reserved = sum(Decimal(str(row["qty"])) for order_id, row in view["fund_redeem_pending"].items()
-                       if order_id != event.get("pending_id") and (row["strategy"], row["code"], row["trading_account"]) ==
-                       (owner, event["code"], account))
-        if reserved and Decimal(str(event["qty"])) + reserved > Decimal(str(held)):
-            raise ValueError("已预登记的赎回占用份额，本次操作超过可用份额")
+    if side in {"fund_redeem_pending", "fund_redeem"} or (
+            side in {"assign", "custody_transfer"} and event.get("kind") == "fund"):
+        _check_redemption_capacity(event, view)
     return event
 
 
