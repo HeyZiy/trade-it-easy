@@ -139,7 +139,8 @@ def strategy_facts(state, view, key):
             "suggestions": [], "trades": [e for e in map(display_event, state["events"])
                                            if e.get("strategy", "core" if e["side"] in FUND_TRADES else None) == key
                                            or e.get("from_strategy") == key
-                                           or (e["side"] == "cash_assign" and key in e["cash_allocations"])],
+                                           or (e["side"] == "cash_assign" and key in e["cash_allocations"])
+                                           or (e["side"] == "cash_adjust" and key in e.get("cash_allocations", {}))],
             "history": [], "performance": None,
             "benchmark_name": account_benchmarks.benchmark_name(key) if key in portfolio_config.STRATEGY_NAMES else None,
             "residual_pct": max(0, 1 - sum(state["budgets"].values())) if key == portfolio_config.HOLDING_AREA else None,

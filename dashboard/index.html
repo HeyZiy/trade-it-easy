@@ -105,6 +105,7 @@
           <div class="section-heading"><h3 id="dca-form-title">添加计划</h3></div>
           <div class="entry-grid">
             <label>基金代码<input name="code" inputmode="numeric" pattern="[0-9]{6}" maxlength="6" required><span id="dca-fund-name" class="field-hint"></span></label>
+            <label>所属组合<select name="strategy" required></select></label>
             <label>每期金额 / 元<input name="amount" type="number" min="0.01" step="0.01" required></label>
             <label hidden>扣款账户<select name="trading_account" disabled></select></label>
             <label>扣款周期<select name="frequency"><option value="monthly">每月</option><option value="weekly">每周</option><option value="daily">每日（交易日）</option></select></label>
@@ -127,6 +128,19 @@
         </div></fieldset>
         <p class="warning" role="alert" hidden></p>
         <button class="primary-button" type="submit">保存划转</button>
+      </form>
+    </dialog>
+    <dialog id="adjust-dialog" aria-labelledby="adjust-title">
+      <form id="adjust-form">
+        <div class="section-heading"><h2 id="adjust-title">校准现金</h2><button class="text-button" type="button" name="cancel">关闭</button></div>
+        <p class="subtle" id="adjust-source"></p>
+        <fieldset class="entry-fields"><div class="entry-grid">
+          <label>平台实际余额 / 元<input type="number" name="actual" min="0" step="0.01" required></label>
+          <label>登记日期<input type="date" name="date" required></label>
+          <input type="hidden" name="amount">
+        </div><p id="adjust-difference" class="entry-preview" aria-live="polite" hidden></p></fieldset>
+        <p class="warning" role="alert" hidden></p>
+        <button class="primary-button" type="submit">保存校准</button>
       </form>
     </dialog>
     <dialog id="asset-class-dialog" aria-labelledby="asset-class-title">

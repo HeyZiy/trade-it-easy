@@ -8,7 +8,7 @@ const ratio = (part, whole) => finite(part) && finite(whole) && whole > 0 ? `${(
 const accountName = account => account?.name || '账户';
 const reportDate = value => /^\d{8}$/.test(value) ? `${value.slice(0,4)}-${value.slice(4,6)}-${value.slice(6)}` : value;
 const timestamp = day => Date.parse(`${day}T00:00:00Z`);
-const SIDES = {buy:'买入', sell:'卖出', dividend:'分红', deposit:'入金', withdraw:'出金', assign:'持仓划转', cash_assign:'现金分配', cash_transfer:'现金划转', fund_buy:'场外申购', fund_redeem:'场外赎回', fund_pending:'场外申购', fund_confirm:'场外申购确认', fund_void:'申购作废'};
+const SIDES = {buy:'买入', sell:'卖出', dividend:'分红', deposit:'入金', withdraw:'出金', assign:'持仓划转', cash_assign:'现金分配', cash_adjust:'现金校准', cash_transfer:'现金划转', fund_buy:'场外申购', fund_redeem:'场外赎回', fund_pending:'场外申购', fund_confirm:'场外申购确认', fund_void:'申购作废'};
 SIDES.custody_transfer = '账户间划转';
 function ownerViews() {
   const area = data.accounts[0]?.holding_area;
@@ -291,6 +291,7 @@ function entryActions(view) {
   return `<div class="account-entry-bar"><div class="allocation-actions">
     <button type="button" id="manual-entry" class="primary-button">＋ 记一笔</button>
     <button type="button" id="account-records-link" class="secondary-button" aria-controls="account-records" aria-expanded="${expanded}">${expanded ? '收起流水' : '查看流水'}</button>
+    ${view.id === 'etf' ? '<button type="button" id="dca-settings" class="text-button">定投计划</button>' : ''}
     ${view.id === 'etf' || view.holding_only ? '' : '<button type="button" data-cash-rebalance class="text-button">现金再平衡</button>'}
     <button type="button" id="cash-transfer" class="text-button">${data.accounts[0].trading_accounts?'策略间划转现金':'划转现金'}</button>
     <button type="button" id="position-transfer" class="text-button">持仓划转</button>
@@ -502,10 +503,11 @@ function recordTable(rows) {
     const fund = isFundTrade(row.side) || ['fund','pending'].includes(row.kind);
     const name = fund ? fundDisplayName(row.code) || '场外基金' : row.code ? data.accounts[0].positions.find(item=>item.code===row.code)?.name || row.name || row.code : '';
     let detail = [name, row.code && name!==row.code ? row.code : '', strategyName(row.strategy || (isFundTrade(row.side) ? 'core' : ''))].filter(Boolean).join(' · ') || '账户资金';
+    const account=data.accounts[0];
     if (row.side === 'assign') detail = [fund && name, row.code, `${strategyName(row.from_strategy)} → ${strategyName(row.strategy)}`].filter(Boolean).join(' · ');
     if (row.side === 'cash_transfer') detail = `${strategyName(row.from_strategy)} → ${strategyName(row.strategy)}`;
+    if (row.side === 'cash_adjust') detail = `平台 ${custodyName(account,row.trading_account)} 对账差额${Object.entries(row.cash_allocations || {}).map(([key,amount])=>` · ${strategyName(key)||key} ${price(amount)} 元`).join('')}`;
     if (row.side === 'cash_assign') detail = recordCashAllocations(row);
-    const account=data.accounts[0];
     if (account.trading_accounts && (row.trading_account || !['cash_assign','cash_transfer'].includes(row.side))) {
       detail+=' · '+custodyName(account,row.trading_account);
       if (row.to_account) detail+=' → '+custodyName(account,row.to_account);
@@ -543,7 +545,7 @@ function fundedStrategyPage(strategy) {
   const status = strategy.status && strategy.status!=='已分配' ? `<p class="subtle">${esc(strategy.status)}</p>` : '';
   const allocation = isAllocation(strategy);
   const actions = allocation && canRecord
-    ? `<div class="core-actions"><button type="button" data-fund-side="fund_buy" data-code="" data-strategy="${esc(strategy.id)}" class="text-button">场外申购</button><button type="button" id="dca-settings" class="text-button">定投计划</button><a href="/settings/${esc(strategy.id)}" class="text-button">编辑组合配比</a></div>`
+    ? `<div class="core-actions"><button type="button" data-fund-side="fund_buy" data-code="" data-strategy="${esc(strategy.id)}" class="text-button">场外申购</button><a href="/settings/${esc(strategy.id)}" class="text-button">编辑组合配比</a></div>`
     : canRecord && strategy.id==='rotation' ? '<a href="/settings/rotation" class="text-button">编辑标的池</a>' : '';
   const pending = allocation ? pendingFundSection(strategy, data.accounts[0].dca?.recorded_today_by_strategy?.[strategy.id]) : '';
   return `<div class="stats">${stats.map(([value,label])=>`<div class="stat"><span>${label}</span><b>${esc(value)}</b></div>`).join('')}</div>
@@ -800,12 +802,16 @@ function bindAccountActions(view) {
   document.querySelectorAll('[data-custody-account]').forEach(button=>button.onclick=()=>{
     openCustodyMove(account,button.dataset.custodyAccount,account.custody_positions[Number(button.dataset.custodyRow)]);
   });
+  document.querySelectorAll('[data-cash-adjust]').forEach(button=>button.onclick=()=>{
+    openCashAdjust(account,button.dataset.cashAdjust);
+  });
   async function editRecordEvent(button) {
     button.disabled=true;
     try {
       const context=await accountRequest('/api/etf/event/context',{revision:account.revision,event_id:button.dataset.editEvent});
       const before={...account,...context};
       if(context.event.side==='cash_assign') openCashAllocation(before,{edit:context.event});
+      else if(context.event.side==='cash_adjust') openCashAdjust(before,context.event.trading_account || 'unlocated',context.event);
       else if(context.event.side==='custody_transfer') {
         const e=context.event;
         const row=before.custody_positions.find(r=>r.account===e.trading_account && r.kind===e.kind && r.strategy===e.strategy && r.code===e.code);
@@ -829,7 +835,7 @@ function bindAccountActions(view) {
     button.onclick = () => document.getElementById(`tab-${button.dataset.strategyTab}`).click();
   }
   const dcaButton = document.querySelector('#dca-settings');
-  if (dcaButton) dcaButton.onclick = () => openDcaPlans(account, strategy);
+  if (dcaButton) dcaButton.onclick = () => openDcaPlans(account);
   document.querySelectorAll('[data-fund-dca]').forEach(button=>button.onclick=()=>
     openDcaPlans(account, button.dataset.strategy, button.dataset.fundDca));
   document.querySelectorAll('[data-void-event]').forEach(button=>button.onclick=()=>
@@ -1761,7 +1767,7 @@ function openCashAllocation(account, options={}) {
   }
 }
 
-function openDcaPlans(account, strategy, code='') {
+function openDcaPlans(account, strategy='', code='') {
   const dialog=document.querySelector('#dca-dialog');
   const form=document.querySelector('#dca-form');
   const fields=document.querySelector('#dca-fields');
@@ -1772,14 +1778,15 @@ function openDcaPlans(account, strategy, code='') {
   const fundName=code && fundDisplayName(code);
   document.querySelector('#dca-title').textContent=code
     ? `${strategyName(strategy)} · ${fundName || code}定投计划`
-    : `${strategyName(strategy)}定投计划`;
+    : '定投计划';
   const nameHint=document.querySelector('#dca-fund-name');
   const frequencySelect=form.elements.namedItem('frequency');
   const anchorSelect=form.elements.namedItem('anchor');
   const anchorLabel=document.querySelector('#dca-anchor-label');
   const codeInput=form.elements.namedItem('code');
+  const planOwner=form.elements.namedItem('strategy');
   const plans=(account.dca?.plans || []).filter(plan=>
-    (plan.strategy || 'core')===strategy && (!code || plan.code===code));
+    !code || (plan.code===code && (plan.strategy || 'core')===strategy));
   const FREQUENCY_ANCHORS={monthly:Array.from({length:31},(_,i)=>[i+1,`${i+1} 日`]),
     weekly:[[1,'周一'],[2,'周二'],[3,'周三'],[4,'周四'],[5,'周五']]};
   let editing=null, saving=false;
@@ -1790,6 +1797,9 @@ function openDcaPlans(account, strategy, code='') {
   fields.hidden=save.hidden=Boolean(code && plans.length>1);
   codeInput.readOnly=Boolean(code);
   codeInput.value=code;
+  planOwner.innerHTML=`<option value="">请选择所属组合</option>${strategyOptions(ownerViews().filter(acceptsFunds))}`;
+  planOwner.value=strategy;
+  planOwner.disabled=Boolean(code);
   nameHint.textContent=fundName || '';
   nameHint.hidden=!fundName;
   save.textContent='保存计划';formTitle.textContent='添加计划';
@@ -1807,6 +1817,7 @@ function openDcaPlans(account, strategy, code='') {
   function editPlan(plan) {
     editing=plan;
     fields.hidden=save.hidden=false;
+    planOwner.value=plan.strategy || 'core';
     planAccount.value=plan.trading_account || '';
     formTitle.textContent='修改计划';
     save.textContent='保存修改';
@@ -1824,6 +1835,7 @@ function openDcaPlans(account, strategy, code='') {
   function renderPlans() {
     plansBox.innerHTML=plans.length ? `<table><thead><tr><th>基金</th><th>计划</th><th>状态</th><th>下次扣款日</th><th>最近一期补记</th><th></th></tr></thead><tbody>${plans.map(plan=>{
       const name=fundDisplayName(plan.code);
+      const owner=strategyName(plan.strategy || 'core');
       let cadence='每个交易日';
       if (plan.frequency==='monthly') cadence=`每月 ${plan.anchor} 日`;
       if (plan.frequency==='weekly') cadence=`每周${FREQUENCY_ANCHORS.weekly[plan.anchor-1][1].slice(1)}`;
@@ -1833,7 +1845,8 @@ function openDcaPlans(account, strategy, code='') {
         latest=`${result.status==='failed'?'补记失败':'已补记'}<small>扣款日 ${esc(result.due_date)}</small>`;
         if (result.reason) latest+=`<small>${esc(result.reason)}</small>`;
       }
-      return `<tr><td>${name?`${esc(name)}<small>${esc(plan.code)}</small>`:esc(plan.code)}</td><td>${cadence} · ${money(plan.amount)} 元${account.trading_accounts?`<small>${plan.trading_account?esc(custodyName(account,plan.trading_account)):'跟随默认账户'}</small>`:''}${plan.note?`<small>${esc(plan.note)}</small>`:''}</td><td>${plan.enabled?'启用中':'已停用'}</td><td>${plan.next_due?esc(plan.next_due):plan.enabled?'暂无日期':'—'}</td><td>${latest}</td><td><button type="button" class="text-button" data-dca-edit="${esc(plan.id)}">${code || plan.enabled?'修改':'启用'}</button> <button type="button" class="text-button" data-dca-toggle="${esc(plan.id)}">${plan.enabled?'停用':'启用'}</button> <button type="button" class="text-button" data-dca-delete="${esc(plan.id)}">删除</button></td></tr>`;
+      const detail=[name && plan.code, !code && owner].filter(Boolean).join(' · ');
+      return `<tr><td>${esc(name || plan.code)}${detail?`<small>${esc(detail)}</small>`:''}</td><td>${cadence} · ${money(plan.amount)} 元${account.trading_accounts?`<small>${plan.trading_account?esc(custodyName(account,plan.trading_account)):'跟随默认账户'}</small>`:''}${plan.note?`<small>${esc(plan.note)}</small>`:''}</td><td>${plan.enabled?'启用中':'已停用'}</td><td>${plan.next_due?esc(plan.next_due):plan.enabled?'暂无日期':'—'}</td><td>${latest}</td><td><button type="button" class="text-button" data-dca-edit="${esc(plan.id)}">修改</button> <button type="button" class="text-button" data-dca-toggle="${esc(plan.id)}">${plan.enabled?'停用':'启用'}</button> <button type="button" class="text-button" data-dca-delete="${esc(plan.id)}">删除</button></td></tr>`;
     }).join('')}</tbody></table>` : '<div class="empty">暂无定投计划。请在基金 App 设定自动扣款后，把计划录到这里。</div>';
     plansBox.querySelectorAll('[data-dca-edit]').forEach(button=>button.onclick=()=>{
       const plan=plans.find(row=>row.id===button.dataset.dcaEdit);
@@ -1842,43 +1855,52 @@ function openDcaPlans(account, strategy, code='') {
     plansBox.querySelectorAll('[data-dca-toggle]').forEach(button=>button.onclick=()=>{
       const plan=plans.find(row=>row.id===button.dataset.dcaToggle);
       if (!plan) return;
-      withGuard(button, () => accountRequest('/api/etf/dca/save', {...plan, strategy, enabled:!plan.enabled}),
-        plan.enabled?'定投计划已停用':'定投计划已启用');
+      changePlan('/api/etf/dca/save', {...plan, enabled:!plan.enabled},
+        plan.enabled?'定投计划已停用':'定投计划已启用', {keepOpen:true});
     });
     plansBox.querySelectorAll('[data-dca-delete]').forEach(button=>button.onclick=()=>
-      withGuard(button, () => accountRequest('/api/etf/dca/delete', {id:button.dataset.dcaDelete}), '定投计划已删除'));
+      changePlan('/api/etf/dca/delete', {id:button.dataset.dcaDelete}, '定投计划已删除', {keepOpen:true}));
   }
   frequencySelect.onchange=fillAnchors;
   form.elements.namedItem('code').oninput=event=>fillFundName(dialog, session, event.target, nameHint, nameState);
   document.querySelector('#dca-cancel').onclick=()=>{if(!saving)dialog.close();};
   dialog.oncancel=event=>{if(saving)event.preventDefault();};
-  form.onsubmit=async event=>{
-    event.preventDefault();
-    if (saving || save.hidden) return;
-    if (!form.reportValidity()) return;
+  async function changePlan(path, payload, message, {keepOpen=false}={}) {
+    if (saving) return;
     saving=true;save.disabled=true;fields.disabled=true;error.hidden=true;
-    const payload={code:form.elements.namedItem('code').value.trim(),
-      strategy,
+    try {
+      await accountRequest(path, payload);
+    } catch (failure) {
+      error.textContent=failure.message;error.hidden=false;
+      saving=false;fields.disabled=false;save.disabled=false;
+      return;
+    }
+    if (!keepOpen) dialog.close();
+    try {
+      await reloadAccount();
+      if (keepOpen) openDcaPlans(data.accounts[0], strategy, code);
+      document.querySelector('#status').textContent=message;
+    } catch {
+      dialog.close();
+      document.querySelector('#status').textContent=`${message}，请刷新页面核对。`;
+    }
+  }
+  form.onsubmit=event=>{
+    event.preventDefault();
+    if (saving || save.hidden || !form.reportValidity()) return;
+    const payload={code:codeInput.value.trim(),
+      strategy:planOwner.value,
       amount:Number(form.elements.namedItem('amount').value),
       frequency:frequencySelect.value,
       note:form.elements.namedItem('note').value.trim(),
-      enabled: code && editing ? editing.enabled : true};
+      enabled:editing?.enabled ?? true};
     if (!anchorSelect.disabled) payload.anchor=Number(anchorSelect.value);
     if (editing) payload.id=editing.id;
     if(account.trading_accounts) payload.trading_account=planAccount.value;
-    try {
-      await accountRequest('/api/etf/dca/save', payload);
-      await reloadAccount();
-      dialog.close();
-      document.querySelector('#status').textContent=editing?'定投计划已保存':'定投计划已添加';
-    } catch (failure) {
-      error.textContent=failure.message;error.hidden=false;
-    } finally {
-      saving=false;fields.disabled=false;save.disabled=false;save.textContent='保存计划';
-    }
+    changePlan('/api/etf/dca/save', payload, editing?'定投计划已保存':'定投计划已添加');
   };
   fillAnchors();
   renderPlans();
   if (code && plans.length===1) editPlan(plans[0]);
-  dialog.showModal();
+  if (!dialog.open) dialog.showModal();
 }

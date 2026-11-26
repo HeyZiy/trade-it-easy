@@ -64,13 +64,13 @@ def prepare(event, payload, view, settings, *, historical=False):
             account = UNKNOWN
         elif outgoing and len(held) == 1:
             account = next(iter(held))
-        elif outgoing or side in ("custody_transfer", "deposit", "withdraw", "dividend"):
+        elif outgoing or side in ("custody_transfer", "deposit", "withdraw", "dividend", "cash_adjust"):
             raise ValueError("请选择实际交易账户")
         else:
             account = settings["products"].get(f"{kind}:{event.get('code')}", settings["defaults"][kind])
     if not isinstance(account, str) or (account != UNKNOWN and account not in accounts):
         raise ValueError("交易账户不存在")
-    if account == UNKNOWN and settings and not historical and not (pending or outgoing or side == "custody_transfer"):
+    if account == UNKNOWN and settings and not historical and not (pending or outgoing or side in ("custody_transfer", "cash_adjust")):
         raise ValueError("请选择实际交易账户")
     if (event.get("code") and account != UNKNOWN and accounts[account]["channel"] != kind):
         raise ValueError("交易账户与产品渠道不匹配")

@@ -23,6 +23,17 @@ def current_owners(row):
     return {**row, **updates} if updates else row
 
 
+def spread_cash_difference(cash_by_strategy, amount):
+    """对账差额按各策略现金占比分摊，尾差归最后一项；全部为零时归待定组合。"""
+    total = math.fsum(cash_by_strategy.values())
+    owners = list(cash_by_strategy)
+    if total <= 0:
+        return {**dict.fromkeys(owners, 0.0), HOLDING_AREA: amount}
+    shares = [round(amount * cash_by_strategy[key] / total, 2) for key in owners]
+    shares[-1] = round(amount - math.fsum(shares[:-1]), 2)
+    return dict(zip(owners, shares))
+
+
 def display_event(event):
     event = current_owners(event)
     amounts = event.get("cash_allocations", {})
@@ -246,7 +257,8 @@ def _check_redemption_capacity(event, view):
 def make_event(payload, request_id, day, view, *, config=None, historical=False, allow_book_value=False):
     """用流水发生前的账户事实校验并生成流水。"""
     side = payload.get("side")
-    if side not in {"buy", "sell", "dividend", "deposit", "withdraw", "assign", "cash_assign", "cash_transfer", "custody_transfer", *FUND_TRADES}:
+    if side not in {"buy", "sell", "dividend", "deposit", "withdraw", "assign", "cash_assign", "cash_adjust",
+                    "cash_transfer", "custody_transfer", *FUND_TRADES}:
         raise ValueError("不支持的记账类型")
     event = {"id": request_id, "date": day, "side": side, "request": payload}
     payload = current_owners(payload)
@@ -272,6 +284,18 @@ def make_event(payload, request_id, day, view, *, config=None, historical=False,
             raise ValueError("交易账户划转类型无效")
     elif side == "cash_assign":
         event["cash_allocations"] = cash_allocation(payload.get("cash_allocations"), view["cash"])
+    elif side == "cash_adjust":
+        # 对账差额：实际余额减账面余额，可正可负；只动现金，不视作出入金。
+        amount = payload.get("amount")
+        if isinstance(amount, bool) or not isinstance(amount, (int, float)) or not math.isfinite(amount) \
+                or amount == 0 or round(amount, 2) != amount:
+            raise ValueError("对账差额须为非零金额，最多两位小数")
+        spread = spread_cash_difference(view["cash_by_strategy"], amount)
+        if any(round(view["cash_by_strategy"][key] + share, 2) < 0 for key, share in spread.items()):
+            raise ValueError("对账差额超过账面现金")
+        if round(view["custody_cash"].get(payload.get("trading_account"), 0) + amount, 2) < 0:
+            raise ValueError("对账差额超过所选交易账户现金")
+        event.update(amount=amount, cash_allocations=spread)
     elif side == "cash_transfer":
         source, target = payload.get("from_strategy"), payload.get("strategy")
         if source not in view["cash_by_strategy"] or target not in view["cash_by_strategy"] or source == target:
@@ -550,6 +574,12 @@ class _Replay:
                 if delta:
                     self._flow_units(key, delta, assets)
             self.cash_by_strategy = allocations
+        elif side == "cash_adjust":
+            # 对账差额按比例归持有现金的策略，策略份额不变，差额计入收益。
+            for key, share in event["cash_allocations"].items():
+                self.cash_by_strategy[key] = round(self.cash_by_strategy[key] + share, 2)
+                self.net_capital[key] -= share
+            self.cash += event["amount"]
         elif side == "cash_transfer":
             assets = self._strategy_assets(self.marks)
             self._flow_units(event["from_strategy"], -event["amount"], assets)

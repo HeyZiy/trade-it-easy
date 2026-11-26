@@ -57,15 +57,66 @@ function custodySection(account) {
     const assets=valued ? money(cash+inTransit+positions.reduce((sum,r)=>sum+r.market_value,0))+' 元' : '待估值';
     const action=(kind,index)=>Object.entries(options).some(([other,row])=>other!==id && (kind==='cash' || row.channel===kind))
       ? `<button type="button" class="text-button" data-custody-account="${esc(id)}" data-custody-row="${index}">${id==='unlocated'?'分配':'划转'}</button>` : '';
+    const adjust=id!=='unlocated' || cash ? `<button type="button" class="text-button" data-cash-adjust="${esc(id)}">校准</button>` : '';
     const rows=positions.map(row=>{
       const name=row.kind==='fund' ? fundDisplayName(row.code) : account.positions.find(p=>p.code===row.code)?.name;
       return `<tr><td>${esc(name || row.code)}<small>${esc(row.code)} · ${esc(strategyName(row.strategy))}</small></td><td>${fundShares(row.qty)}</td><td>${money(row.market_value)}</td><td>${action(row.kind,account.custody_positions.indexOf(row))}</td></tr>`;
     }).join('');
     return `<details class="custody-group"${id==='unlocated'?' open':''}><summary>${esc(custodyName(account,id))} · ${assets}</summary>
-      <p>现金 ${money(cash)} 元 ${cash>0?action('cash',-1):''}${orders.length?` · 在途申购 ${money(inTransit)} 元`:''}</p>
+      <p>现金 ${money(cash)} 元 ${cash>0?action('cash',-1):''} ${adjust}${orders.length?` · 在途申购 ${money(inTransit)} 元`:''}</p>
       ${rows?`<div class="table-wrap"><table><thead><tr><th>持仓</th><th>份额</th><th>市值 / 元</th><th></th></tr></thead><tbody>${rows}</tbody></table></div>`:''}</details>`;
   }).join('');
   return `<section class="section"><div class="section-heading"><h2>按交易账户查看</h2><a href="/settings/accounts">账户设置</a></div>${groups}</section>`;
+}
+
+function openCashAdjust(account,id,edit=null) {
+  const dialog=document.querySelector('#adjust-dialog');
+  const form=dialog.querySelector('form');
+  const field=name=>form.elements.namedItem(name);
+  const error=form.querySelector('[role=alert]');
+  const preview=document.querySelector('#adjust-difference');
+  const recorded=account.custody_cash[id] || 0;
+  form.reset();
+  error.hidden=true;
+  if(edit) field('actual').value=(recorded+edit.amount).toFixed(2);
+  document.querySelector('#adjust-source').textContent=`${custodyName(account,id)} · 账面现金 ${money(recorded)} 元`;
+  Object.assign(field('date'),{min:account.min_date || account.trades[0]?.date || account.start_date,
+    max:account.max_date || shanghaiToday(),value:edit?.date || shanghaiToday()});
+  const update=()=>{
+    const actual=Number(field('actual').value);
+    const difference=Math.round((actual-recorded)*100)/100;
+    preview.hidden=!(field('actual').value && finite(actual));
+    preview.textContent=!finite(actual) ? '' : difference===0 ? '与账面一致，无需校准。'
+      : `账面将${difference>0?'增加':'减少'} ${money(Math.abs(difference))} 元，按各策略现金占比分摊，计入收益而非出入金。`;
+    preview.classList.toggle('invalid',finite(actual) && difference<0 && Math.round((recorded+difference)*100)<0);
+    field('amount').value=finite(actual) ? String(difference) : '';
+    field('actual').setCustomValidity(!field('actual').value || !finite(actual) ? '' : difference===0 ? '与账面一致，无需校准。'
+      : Math.round((recorded+difference)*100)<0 ? '差额超过所选交易账户现金。' : '');
+  };
+  const submit=form.querySelector('[type=submit]');
+  const fields=form.querySelector('fieldset');
+  fields.disabled=submit.disabled=false;
+  let requestId=crypto.randomUUID(), saved=false;
+  form.oninput=()=>{requestId=crypto.randomUUID();error.hidden=true;update();};
+  field('cancel').onclick=()=>{if(!submit.disabled)dialog.close();};
+  dialog.oncancel=e=>{if(submit.disabled)e.preventDefault();};
+  form.onsubmit=async e=>{
+    e.preventDefault();
+    if(submit.disabled) return;
+    const payload={side:'cash_adjust',trading_account:id,amount:Number(field('amount').value),
+      date:field('date').value,request_id:requestId,revision:account.revision};
+    if(edit) payload.event_id=edit.id;
+    fields.disabled=submit.disabled=true;
+    try {
+      if(!saved) {await accountRequest(edit?'/api/etf/event/edit':'/api/etf/event',payload);saved=true;}
+      await reloadAccount();
+      dialog.close();
+      showEntryReceipt(edit?.id || requestId, !!edit);
+    } catch(failure) {error.textContent=saved?'校准已保存，请刷新账户。':failure.message;error.hidden=false;}
+    finally {fields.disabled=saved;submit.disabled=false;}
+  };
+  update();
+  dialog.showModal();
 }
 
 function openCustodyMove(account,id,row,edit=null) {

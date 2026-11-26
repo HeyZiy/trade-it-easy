@@ -109,6 +109,60 @@ def test_claim_transfer_and_historical_correction(ledger):
     assert view["equity"] - before["equity"] == 20
 
 
+def test_cash_adjust_spreads_difference_by_cash_share_without_touching_nav(ledger):
+    move(ledger, 300, "platform1")
+    post(ledger, "cash_transfer", from_strategy="core", strategy="holding_area", amount=600)
+    before = snapshot(etf_account.load(ledger), DAY)
+    adjustment = post(ledger, "cash_adjust", trading_account="unlocated", amount=3.17)
+    assert adjustment["amount"] == 3.17
+    view = snapshot(etf_account.load(ledger), DAY)
+    assert view["custody_cash"] == {"unlocated": 1703.17, "platform1": 300}
+    assert view["cash"] == 2003.17
+    # 1400:600 按比例分摊 3.17 → 2.22 / 0.95，尾差归后者
+    assert view["cash_by_strategy"] == {"core": 1402.22, "rotation": 0, "quality": 0, "holding_area": 600.95}
+    assert sum(view["cash_by_strategy"].values()) == view["cash"]
+    assert view["units"] == before["units"] and view["equity"] == before["equity"] + 3.17
+    assert view["pnl"] == before["pnl"] + 3.17
+    # 策略份额不变，差额成为持有者的收益：各策略盈亏按分摊额上升。
+    for key in view["strategy_pnl"]:
+        assert view["strategy_pnl"][key] == pytest.approx(before["strategy_pnl"][key] + view["cash_by_strategy"][key] - before["cash_by_strategy"][key])
+
+
+def test_cash_adjust_negative_difference_cannot_push_cash_below_zero(ledger):
+    move(ledger, 300, "platform1")
+    with pytest.raises(ValueError, match="账面现金"):
+        post(ledger, "cash_adjust", trading_account="unlocated", amount=-2500)
+    with pytest.raises(ValueError, match="所选交易账户现金"):
+        post(ledger, "cash_adjust", trading_account="platform1", amount=-301)
+    with pytest.raises(ValueError, match="非零"):
+        post(ledger, "cash_adjust", trading_account="unlocated", amount=0)
+    negative = post(ledger, "cash_adjust", trading_account="unlocated", amount=-40)
+    assert negative["amount"] == -40
+    view = snapshot(etf_account.load(ledger), DAY)
+    assert view["cash"] == 1960 and view["custody_cash"] == {"unlocated": 1660, "platform1": 300}
+    # 策略层只有 core 持有现金，差额全部归 core
+    assert view["cash_by_strategy"] == {"core": 1960, "rotation": 0, "quality": 0, "holding_area": 0}
+
+
+def test_cash_adjust_can_be_corrected_and_replayed(ledger):
+    move(ledger, 300, "platform1")
+    first = post(ledger, "cash_adjust", trading_account="unlocated", amount=3.17)
+    edit = {**{k: v for k, v in first.items() if k != "request"}, "event_id": first["id"],
+            "request_id": str(uuid4()), "revision": etf_account.revision(etf_account.load(ledger)), "amount": 5}
+    corrected = etf_account.edit_event(ledger, edit)
+    assert corrected["amount"] == 5
+    view = snapshot(etf_account.load(ledger), DAY)
+    assert view["cash"] == 2005 and view["custody_cash"] == {"unlocated": 1705, "platform1": 300}
+    assert etf_account.edit_event(ledger, edit) == corrected
+    # 更正后若某策略现金被推成负数，整笔拒绝且不落盘
+    post(ledger, "cash_transfer", from_strategy="core", strategy="holding_area", amount=1000)
+    before = etf_account.load(ledger)["events"]
+    with pytest.raises(ValueError, match="账面现金"):
+        etf_account.edit_event(ledger, {**edit, "request_id": str(uuid4()),
+            "revision": etf_account.revision(etf_account.load(ledger)), "amount": -2500})
+    assert etf_account.load(ledger)["events"] == before
+
+
 def test_two_recurring_plans_charge_their_own_platforms_once(ledger, monkeypatch):
     cp = portfolio_config.path_for(ledger)
     config = portfolio_config.load(cp)
