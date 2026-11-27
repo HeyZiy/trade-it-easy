@@ -11,3 +11,5 @@ async function accountRequest(path, payload) {
   if (!response.ok) throw Error(result.error || (path==='/api/etf/refresh' ? '估值暂时无法更新，请稍后重试。' : '保存失败，请重试。'));
   return result;
 }
+
+export { esc, finite, quoteTime, accountRequest };

@@ -1,6 +1,12 @@
-function createEntryDialog({
-  ownerViews, strategyOptions, strategyName, acceptsFunds,
-  number, money, fundShares, fundDisplayName, shanghaiToday,
+import { esc, finite, accountRequest } from './common.js';
+
+import { number, money, fundShares, acceptsFunds, shanghaiToday } from './dashboard-format.js';
+
+import { custodySelect } from './trading-accounts.js';
+
+export function createEntryDialog({
+  ownerViews, strategyOptions, strategyName,
+  fundDisplayName,
   currentAccount, reloadAccount, showEntryReceipt,
 }) {
   return function openEntry(account, suggestion, strategy='holding_area', options={}) {
