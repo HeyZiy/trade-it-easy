@@ -78,7 +78,7 @@ export function createAccountActions({
       finally {button.disabled=false;}
     }
     document.querySelectorAll('[data-edit-event]').forEach(button=>button.onclick=()=>editRecordEvent(button));
-    bindRecords(view, editRecordEvent);
+    bindRecords(view, editRecordEvent, order=>openFundVoid(account, view, order, 'delete-subscription'));
     document.querySelectorAll('[data-position-side]').forEach(button => button.onclick = () => openEntry(account, {side:button.dataset.positionSide,code:button.dataset.code}, button.dataset.strategy));
     for (const button of document.querySelectorAll('[data-holding-transfer]')) {
       const {code, kind, strategy} = button.dataset;

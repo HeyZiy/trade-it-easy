@@ -111,8 +111,9 @@
     <dialog id="dca-dialog" aria-labelledby="dca-title">
       <form id="dca-form">
         <div class="section-heading"><h2 id="dca-title">定投计划</h2><button id="dca-cancel" type="button" class="text-button">关闭</button></div>
-        <p class="subtle">基金 App 负责扣款，收盘任务于 18:30 按计划将当天到期的扣款登记为待确认申购。</p>
+        <p class="subtle">收盘任务于 18:30 按计划登记当天到期的扣款。历史漏记请先核对基金 App，再从每期记录补记。</p>
         <div id="dca-plans" class="table-wrap"></div>
+        <section id="dca-installments" aria-labelledby="dca-installments-title" hidden></section>
         <fieldset id="dca-fields" class="entry-fields">
           <div class="section-heading"><h3 id="dca-form-title">添加计划</h3></div>
           <div class="entry-grid">

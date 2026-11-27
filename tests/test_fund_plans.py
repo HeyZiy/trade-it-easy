@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""场外基金定投：计划校验、到期推算、补记幂等与 fail-closed 行为。"""
+"""场外基金定投计划和记账。"""
 
 from datetime import date, timedelta
 import logging
@@ -50,9 +50,8 @@ def save(account, **fields):
 
 
 def save_backdated(account, monkeypatch, created_on='2024-12-01', **fields):
-    """以更早的 created_on 建计划：补记场景的到期日都落在建计划日期之前。"""
     monkeypatch.setattr('src.fund_plans._today', lambda: date.fromisoformat(created_on))
-    plan = save(account, **fields)
+    plan = save(account, **({'anchor': 7} | fields))
     monkeypatch.setattr('src.fund_plans._today', lambda: date(2025, 1, 7))
     return plan
 
@@ -98,7 +97,7 @@ def test_plan_validation_rejects_bad_fields(account):
 
 
 def test_switching_to_daily_starts_the_new_schedule_on_save(account, weekend_calendar, monkeypatch):
-    weekly = save_backdated(account, monkeypatch, frequency='weekly')
+    weekly = save_backdated(account, monkeypatch, frequency='weekly', anchor=5)
     daily = fund_plans.save_plan(account, weekly | {'frequency': 'daily'})
     assert daily['anchor'] is None
     assert daily['created_on'] == weekly['created_on']
@@ -131,7 +130,7 @@ def test_next_due_skips_a_recorded_installment(account, weekend_calendar):
     save(account, frequency='daily')
     fee_event(account)
     assert fund_plans.dca_status(account)['plans'][0]['next_due'] == '2025-01-07'
-    fund_plans.record_due_subscriptions(account, include_today=True)
+    fund_plans.record_due_subscriptions(account)
     assert fund_plans.dca_status(account)['plans'][0]['next_due'] == '2025-01-08'
 
 
@@ -165,7 +164,7 @@ def test_due_dates_respect_created_on(weekend_calendar):
     assert fund_plans._due_dates(plan, date(2025, 1, 1), date(2025, 4, 30)) == [date(2025, 4, 10)]
 
 
-# ---------- 补记 ----------
+# ---------- 记账 ----------
 
 def test_record_is_silent_noop_without_plans_file(account, monkeypatch):
     fetched = []
@@ -183,13 +182,13 @@ def test_record_is_silent_noop_without_plans_file(account, monkeypatch):
 def test_record_due_subscription_with_fee_and_postponement(account, weekend_calendar, monkeypatch):
     save_backdated(account, monkeypatch, anchor=5)  # 2025-01-05 周日 → 顺延 1-06 周一
     fee_event(account, subscription_fee={"kind": "rate", "value": 0.5})
-    recorded = fund_plans.record_due_subscriptions(account)
+    recorded = fund_plans.record_due_subscriptions(account, run_day=date(2025, 1, 6))
     assert len(recorded) == 1
     event = recorded[0]
     assert event['side'] == 'fund_pending'
     assert event['code'] == '000051' and event['amount'] == 100.0
     assert event['nav_date'] == '2025-01-06'
-    assert event['date'] == '2025-01-07'
+    assert event['date'] == '2025-01-06'
     assert event['subscription_fee'] == {"kind": "rate", "value": 0.5}
     view = account_data(account)
     assert view['cash_by_strategy']['core'] == 890.0  # 1000 - 10（登记费率的买入）- 100
@@ -197,8 +196,8 @@ def test_record_due_subscription_with_fee_and_postponement(account, weekend_cale
 
 
 def test_same_fund_dca_charges_each_plan_strategy_and_void_refunds_its_cash(account, weekend_calendar, monkeypatch):
-    save_backdated(account, monkeypatch, anchor=5, strategy='core')
-    plan = save_backdated(account, monkeypatch, anchor=5, strategy='holding_area', amount=150)
+    save_backdated(account, monkeypatch, strategy='core')
+    plan = save_backdated(account, monkeypatch, strategy='holding_area', amount=150)
     plan.pop('strategy')
     assert fund_plans.save_plan(account, plan | {'note': '待定持仓'})['strategy'] == 'holding_area'
     fee_event(account)
@@ -212,7 +211,7 @@ def test_same_fund_dca_charges_each_plan_strategy_and_void_refunds_its_cash(acco
     assert view['cash_by_strategy']['core'] == 690
     assert view['cash_by_strategy']['holding_area'] == 50
     status = fund_plans.dca_status(account)
-    assert status['recorded_today_by_strategy'] == {'core': ['2025-01-06'], 'holding_area': ['2025-01-06']}
+    assert status['recorded_today_by_strategy'] == {'core': ['2025-01-07'], 'holding_area': ['2025-01-07']}
     with pytest.raises(ValueError, match='属于其他策略'):
         void_event(account, recorded['holding_area']['id'], strategy='core')
     assert void_event(account, recorded['holding_area']['id'])['strategy'] == 'holding_area'
@@ -236,7 +235,7 @@ def test_account_fee_covers_first_subscription_for_dca(account, weekend_calendar
 
 
 def test_record_is_idempotent_across_reruns(account, weekend_calendar, monkeypatch):
-    save_backdated(account, monkeypatch, anchor=5)
+    save_backdated(account, monkeypatch)
     fee_event(account)
     assert len(fund_plans.record_due_subscriptions(account)) == 1
     assert fund_plans.record_due_subscriptions(account) == []
@@ -245,29 +244,79 @@ def test_record_is_idempotent_across_reruns(account, weekend_calendar, monkeypat
     assert pendings[0]['id'].startswith('dca-')
 
 
-def test_catchup_records_missed_day_with_correct_nav_date(account, weekend_calendar, monkeypatch):
-    # 回看窗口 14 天覆盖 2025-01-01；元旦（周三）按周末日历是交易日，正常补记。
-    save_backdated(account, monkeypatch, anchor=1)
+def test_missed_day_is_listed_and_can_be_recorded_manually(account, weekend_calendar, monkeypatch):
+    plan = save_backdated(account, monkeypatch, anchor=6)
     fee_event(account)
-    recorded = fund_plans.record_due_subscriptions(account)
-    assert len(recorded) == 1
-    assert recorded[0]['nav_date'] == '2025-01-01'
-    assert recorded[0]['date'] == '2025-01-07'
+    before = load(account)
+    assert fund_plans.record_due_subscriptions(account) == []
+    assert load(account)['events'] == before['events']
+    installment = next(row for row in fund_plans.dca_status(account)['plans'][0]['installments']
+                       if row['due_date'] == '2025-01-06')
+    assert installment['status'] == 'missing'
+
+    payload = dict(id=plan['id'], due_date='2025-01-06', request_id=str(uuid4()),
+                   code=plan['code'], strategy='core', plan_amount=plan['amount'], amount=95,
+                   revision=revision(before), subscription_fee={'kind': 'none', 'value': 0})
+    with pytest.raises(ValueError, match='不在当前计划内'):
+        fund_plans.record_installment(account, payload | {'due_date': '2025-01-05'})
+    recorded = fund_plans.record_installment(account, payload)
+    assert recorded['date'] == '2025-01-07' and recorded['nav_date'] == '2025-01-06'
+    assert fund_plans.record_installment(account, payload) == recorded
+    with pytest.raises(ValueError, match='已有流水'):
+        fund_plans.record_installment(account, payload | {'request_id': str(uuid4())})
+    view = wallet.snapshot(load(account), '2025-01-07')
+    assert view['cash'] == 895 and view['pending_fund_value'] == 95
+    status = fund_plans.dca_status(account)
+    assert status['sources'][recorded['id']] == 'manual' and status['recorded_today'] == []
+    assert status['plans'][0]['installments'][0]['status'] == 'pending'
+    assert status['plans'][0]['installments'][0]['amount'] == 95
+    void_event(account, recorded['id'])
+    assert fund_plans.dca_status(account)['plans'][0]['installments'][0]['status'] == 'voided'
+    assert wallet.snapshot(load(account), '2025-01-07')['cash'] == 990
 
 
-def test_evening_run_records_today_once_without_duplicating_catchup(account, weekend_calendar, monkeypatch):
+def test_automatic_run_records_only_today(account, weekend_calendar, monkeypatch):
     save_backdated(account, monkeypatch, anchor=6)
     save_backdated(account, monkeypatch, anchor=7)
     fee_event(account)
-    previous, = fund_plans.record_due_subscriptions(account)
-    assert previous['nav_date'] == '2025-01-06'
-    today, = fund_plans.record_due_subscriptions(account, include_today=True)
+    today, = fund_plans.record_due_subscriptions(account)
     assert today['side'] == 'fund_pending'
     assert today['nav_date'] == today['date'] == '2025-01-07'
-    assert fund_plans.record_due_subscriptions(account, include_today=True) == []
+    assert fund_plans.record_due_subscriptions(account) == []
 
 
-def test_daily_catchup_records_each_elapsed_trading_day_once(account, weekend_calendar, monkeypatch):
+def test_deleted_dca_installment_stays_deleted_after_scheduler_retry(account, weekend_calendar, monkeypatch):
+    save_backdated(account, monkeypatch)
+    fee_event(account)
+    entry, = fund_plans.record_due_subscriptions(account)
+    wallet.delete_fund_subscription(account, {'request_id': str(uuid4()), 'event_id': entry['id'],
+                                               'revision': revision(load(account))})
+    assert fund_plans.record_due_subscriptions(account) == []
+    assert wallet.snapshot(load(account), '2025-01-07')['cash'] == 990
+    status = fund_plans.dca_status(account)
+    assert status['recorded_today'] == []
+    assert status['plans'][0]['installments'][0]['status'] == 'deleted'
+
+
+def test_same_day_manual_records_require_reconciliation_and_do_not_double_charge(account, weekend_calendar, monkeypatch):
+    plan = save_backdated(account, monkeypatch)
+    fee_event(account, date='2025-01-07', nav_date='2025-01-07', amount=100)
+    status = fund_plans.dca_status(account)
+    assert status['plans'][0]['installments'][0]['possible_manual']
+    assert fund_plans.record_due_subscriptions(account) == []
+    assert wallet.snapshot(load(account), '2025-01-07')['cash'] == 900
+
+    payload = dict(id=plan['id'], due_date='2025-01-07', request_id=str(uuid4()),
+                   code=plan['code'], strategy='core', plan_amount=plan['amount'], amount=100,
+                   revision=revision(load(account)), subscription_fee={'kind': 'none', 'value': 0})
+    # The app shows a distinct second debit, so the user explicitly records it against the plan.
+    entry = fund_plans.record_installment(account, payload)
+    assert fund_plans.record_due_subscriptions(account) == []
+    assert wallet.snapshot(load(account), '2025-01-07')['cash'] == 800
+    assert fund_plans.dca_status(account)['sources'][entry['id']] == 'manual'
+
+
+def test_daily_plan_lists_missed_trading_days_without_recording_them(account, weekend_calendar, monkeypatch):
     monkeypatch.setattr(fund_plans, '_today', lambda: date(2024, 12, 31))
     plan = fund_plans.save_plan(account, {'code': '000051', 'amount': 100, 'frequency': 'daily'})
     assert plan['anchor'] is None
@@ -279,8 +328,11 @@ def test_daily_catchup_records_each_elapsed_trading_day_once(account, weekend_ca
     fee_event(account)
 
     events = fund_plans.record_due_subscriptions(account)
-    assert [event['nav_date'] for event in events] == ['2024-12-31', '2025-01-02', '2025-01-03', '2025-01-06']
-    assert all(event['amount'] == 100 for event in events)
+    assert [event['nav_date'] for event in events] == ['2025-01-07']
+    installments = fund_plans.dca_status(account)['plans'][0]['installments']
+    assert [(row['due_date'], row['status']) for row in installments] == [
+        ('2025-01-07', 'pending'), ('2025-01-06', 'missing'),
+    ]
     assert fund_plans.record_due_subscriptions(account) == []
 
 
@@ -313,7 +365,7 @@ def test_latest_result_tracks_failure_and_retry_per_plan(account, weekend_calend
     fee_event(account)
     assert len(fund_plans.record_due_subscriptions(account)) == 1
     latest = results()
-    assert latest[first['id']] == {'status': 'recorded', 'due_date': '2025-01-06', 'date': '2025-01-07'}
+    assert latest[first['id']] == {'status': 'recorded', 'due_date': '2025-01-07', 'date': '2025-01-07'}
     assert latest[second['id']]['status'] == 'failed'
     assert '现金不足' in latest[second['id']]['reason']
     save(account, id=second['id'], amount=950, note='保留失败原因')
@@ -329,7 +381,7 @@ def test_cash_shortage_fails_one_plan_others_continue(account, weekend_calendar,
         recorded = fund_plans.record_due_subscriptions(account)
     assert len(recorded) == 1
     assert recorded[0]['amount'] == 600.0
-    assert any('现金不足' in row.message or '补记失败' in row.message for row in caplog.records)
+    assert any('现金不足' in row.message for row in caplog.records)
     assert sum(e['amount'] for e in load(account)['events'] if e['side'] == 'fund_pending') == 600.0
 
 
@@ -383,7 +435,6 @@ def test_void_then_snapshot_replay_is_consistent(account, weekend_calendar, monk
 # ---------- 告警与日期边界 ----------
 
 def test_aging_pending_warns_after_threshold(account, weekend_calendar, monkeypatch, caplog):
-    # nav_date 远早于今日：超过 5 个交易日未确认份额即在补记流程末尾告警。
     save_backdated(account, monkeypatch, anchor=5)
     record_event(account, dict(request_id=str(uuid4()), revision=revision(load(account)),
                                date='2025-01-07', side='fund_pending', code='000051',

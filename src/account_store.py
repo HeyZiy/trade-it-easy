@@ -43,11 +43,18 @@ def _counted(event, asof, include_transfers):
             and (include_transfers or event["side"] not in {"assign", "cash_assign", "cash_transfer"}))
 
 
+def deleted_subscription_events(state):
+    return {event["id"]: event for deletion in state.get("subscription_deletions", [])
+            for event in deletion["events"]}
+
+
 def revision(state, asof=None, *, include_transfers=False):
     # 划转不影响账户整体净值，默认排除；策略净值受划转影响，策略成绩须含划转。
     facts = {"initial": state["initial"],
              "events": [e for e in state["events"] if _counted(e, asof, include_transfers)]}
     if asof is None:
+        if state.get("subscription_deletions"):
+            facts["subscription_deletions"] = [row["id"] for row in state["subscription_deletions"]]
         facts["budgets"] = state.get("budgets", {})
         facts["targets"] = state.get("targets", {})
         if "_config_revision" in state:

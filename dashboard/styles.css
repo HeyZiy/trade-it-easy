@@ -336,6 +336,14 @@ dialog details { margin: 15px 0; color: var(--muted); font-size: 12px; }
 .fund-void-action { color: #8c3930; }
 .fund-void-action:hover { color: #72291f; background: #fcf1ed; }
 #fund-void-dialog { max-width: 460px; }
+#dca-installments { margin: 18px 0; }
+#dca-installments .section-heading { padding-bottom: 8px; border: 0; }
+.dca-history-table { max-height: min(320px, 45dvh); overflow: auto; }
+.dca-history-table table { min-width: 0; }
+.dca-history-table th { position: sticky; top: 0; }
+.dca-history-table :is(th, td) { padding: 9px 10px; }
+.dca-history-table td:first-child,
+.dca-history-table button { white-space: nowrap; }
 .fund-void-order { margin: 16px 0; line-height: 1.7; overflow-wrap: anywhere; }
 .entry-success { color: var(--green-deep); background: var(--green-soft); border-radius: 10px; padding: 12px; line-height: 1.7; }
 .cash-plan-table { min-width: 0; table-layout: fixed; }

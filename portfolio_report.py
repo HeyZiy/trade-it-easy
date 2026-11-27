@@ -125,13 +125,13 @@ def run(*, asof=None, dry_run=False, now=None, backfill=False, no_notify=False):
                     logger.warning("场外净值未能更新，保留已有净值：%s", "、".join(funds["failed"]))
             except Exception:
                 logger.exception("每日场外净值更新失败，保留已有净值")
-            try:
-                # 先确认已有申购，新记的扣款留待后续收盘任务确认。
-                recorded = record_due_subscriptions(path, include_today=(now.hour, now.minute) >= DCA_RECORDING_TIME)
-                if recorded:
-                    logger.info("定投补记 %s 笔待确认申购", len(recorded))
-            except Exception:
-                logger.exception("定投补记失败，跳过本轮（下次运行自动补上）")
+            if (now.hour, now.minute) >= DCA_RECORDING_TIME:
+                try:
+                    recorded = record_due_subscriptions(path, run_day=today)
+                    if recorded:
+                        logger.info("定投登记 %s 笔待确认申购", len(recorded))
+                except Exception:
+                    logger.exception("当日定投记账失败，请核对定投计划")
             state = load_core(path)
         first_day = datetime.fromisoformat(state["initial"]["date"]).date() + timedelta(days=1)
         healed, lingering = _backfill_records(

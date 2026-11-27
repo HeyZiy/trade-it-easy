@@ -12,6 +12,10 @@ const reportDate = value => /^\d{8}$/.test(value) ? `${value.slice(0,4)}-${value
 const timestamp = day => Date.parse(`${day}T00:00:00Z`);
 const isoDay = value => /^\d{4}\/\d{1,2}\/\d{1,2}/.test(value) ? value.replace(/(\d{4})\/(\d{1,2})\/(\d{1,2}).*/, (_,y,m,d) => `${y}-${m.padStart(2,'0')}-${d.padStart(2,'0')}`) : value;
 const SIDES = {buy:'买入', sell:'卖出', dividend:'分红', deposit:'入金', withdraw:'出金', assign:'持仓划转', cash_assign:'现金分配', cash_adjust:'现金校准', cash_transfer:'现金划转', fund_buy:'场外申购', fund_redeem:'场外赎回', fund_pending:'场外申购', fund_confirm:'场外申购确认', fund_void:'申购作废'};
+
+export function dcaSourceLabel(source) {
+  return {automatic:'定投自动记账', automatic_backfill:'定投自动补记', manual:'定投手动补记'}[source] || '';
+}
 SIDES.custody_transfer = '账户间划转';
 
 const isAllocation = strategy => strategy.kind === 'allocation';

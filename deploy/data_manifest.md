@@ -18,7 +18,7 @@
 
 | 文件                                           | 类别 | 说明                                                                                    |
 | -------------------------------------------- | -- | ------------------------------------------------------------------------------------- |
-| `etf_account.json`                           | 账本 | 投资账户事件账本（含 dca 定投补记流水）。带 revision + lock                                              |
+| `etf_account.json`                           | 账本 | 投资账户事件账本（含定投流水）。带 revision + lock                                                        |
 | `etf_config.json`                            | 配置 | 核心仓 15 品种权重、budgets、trade\_fees、fund\_subscription\_fee。看板可改，历史在 `etf_config.history` |
 | `fund_plans.json`                            | 配置 | 场外基金定投计划。账本同目录随账本迁移                                                                   |
 | `etf_config.history`                         | 归档 | etf\_config 每次改动的历史快照，随配置一起推                                                          |

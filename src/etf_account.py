@@ -14,9 +14,9 @@ from src import account_advice, account_benchmarks, account_valuation, portfolio
 from src.account_advice import strategy_views
 from src.account_replay import (
     FUND_TRADES, REDEMPTION_ORDERS, cash_allocation, current_owners, display_event, fund_code, holding_kind, make_event, money,
-    net_subscription, positive, replay_edit, snapshot, validate_day,
+    net_subscription, positive, replay_edit, replay_without_subscription, snapshot, validate_day,
 )
-from src.account_store import ACCOUNT_PATH, FILENAME, load, revision
+from src.account_store import ACCOUNT_PATH, FILENAME, deleted_subscription_events, load, revision
 from src.account_store import save as _save
 from src.account_valuation import valuation_day
 from src.json_store import locked as _locked
@@ -124,7 +124,7 @@ def confirm_fund_subscriptions(path, day):
 
     with _locked(path):
         state = load(path)
-        if state["events"][-1]["date"] > day:
+        if not state["events"] or state["events"][-1]["date"] > day:
             return []
         view = snapshot(state, day)
         confirmed = []
@@ -208,6 +208,8 @@ def record_event(path, payload):
         request_id = payload.get("request_id")
         if not isinstance(request_id, str) or not 8 <= len(request_id) <= 100:
             raise ValueError("缺少有效的记账标识")
+        if request_id in deleted_subscription_events(state):
+            raise ValueError("原申购已删除，请重新发起记账")
         duplicate = next((e for e in state["events"] if e["id"] == request_id), None)
         if duplicate:
             if duplicate["request"] != payload:
@@ -339,6 +341,41 @@ def edit_event(path, payload):
         return state["events"][index]
 
 
+def delete_fund_subscription(path, payload):
+    """整笔删除误录申购，并保留原始流水供审计。"""
+    with _locked(path):
+        state = load(path)
+        request_id = payload.get("request_id")
+        if not isinstance(request_id, str) or not 8 <= len(request_id) <= 100:
+            raise ValueError("缺少有效的删除标识")
+        deletions = state.setdefault("subscription_deletions", [])
+        previous = next((row for row in deletions if row["id"] == request_id), None)
+        if previous:
+            if previous["request"] != payload:
+                raise ValueError("同一删除标识的内容不一致")
+            return previous
+        if payload.get("revision") != revision(state):
+            raise ValueError("账户已更新，请刷新后重新核对")
+        events = state["events"]
+        selected = next((row for row in events if row["id"] == payload.get("event_id")), None)
+        if selected is None:
+            raise ValueError("申购流水不存在，请刷新后核对")
+        if selected["side"] not in {"fund_buy", "fund_pending", "fund_confirm"}:
+            raise ValueError("请选择一笔申购流水")
+        order_id = selected["pending_id"] if selected["side"] == "fund_confirm" else selected["id"]
+        removed = [row for row in events if row["id"] == order_id
+                   or (row["side"] == "fund_confirm" and row["pending_id"] == order_id)]
+        if any(row["side"] == "fund_void" and row["voided_pending_id"] == order_id for row in events):
+            raise ValueError("该申购已作废")
+        state["events"] = replay_without_subscription(state, {row["id"] for row in removed})
+        today = _today().isoformat()
+        deletion = {"id": request_id, "request": payload, "date": today, "events": removed}
+        deletions.append(deletion)
+        account_advice.invalidate_after_edit(state, today)
+        _save(path, state)
+        return deletion
+
+
 def set_budgets(path, payload):
     with _locked(path):
         state = load(path)
@@ -439,7 +476,7 @@ def refresh_close_prices(path, today, price_day, close_prices):
 
 
 def subscription_fees(state):
-    """各场外基金最近登记的申购费率（后一笔覆盖前一笔），供表单预填与定投补记。"""
+    """各场外基金最近登记的申购费率，供表单预填和定投登记。"""
     return {event["code"]: event["subscription_fee"] for event in state["events"]
             if event["side"] in {"fund_buy", "fund_pending"} and "subscription_fee" in event}
 

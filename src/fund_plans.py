@@ -1,23 +1,7 @@
 # -*- coding: utf-8 -*-
-"""场外基金定投：把基金 App 的周期扣款自动补记进投资账户。
+"""登记基金 App 定投扣款。收盘任务登记当期，历史漏记由用户逐期核对。
 
-机制：
-- 真实扣款永远发生在基金 App；本模块只在其后补记账，不下单、不扣款。
-- 时间线：T 日 App 扣款 → 当晚收盘任务先刷新净值、确认已有在途申购，
-  再把 T 日及回看窗口内漏掉的扣款记为 fund_pending（nav_date=T）。
-  后续收盘任务按公布的净值确认份额，确认前可在 dashboard 作废申购。
-- 幂等：request_id = "dca-{plan_id}-{due}"，同一次扣款只补记一次；重跑、
-  补跑都安全。先扫描账本跳过已存在的 request_id，不依赖重试内容比对。
-- 回看窗口：每次运行补记 CATCHUP_WINDOW_DAYS 个自然日内漏掉的到期日，
-  收盘任务达到晚间扣款登记时间后也处理当天到期日。
-- 优先使用账户统一申购费用；未设置时沿用该基金最近登记的费用，两者都缺失则跳过并告警。
-  所属策略现金不足时该笔记账失败并告警，不影响其他计划；
-  交易日历不可用时不猜测扣款日，整体跳过。
-- 待确认申购超过 AGING_TRADING_DAYS 个交易日未确认份额 → 告警（多为净值未公布）。
-
-计划存放在账本同目录的 fund_plans.json，是配置而非账本事实：可随时修改、
-停用、删除；已补记的流水不受影响，记错了走「申购作废」补偿流水。计划结构
-由 save_plan 校验生成，手工编辑需保持字段完整。
+自动和手动登记共用计划 ID 与扣款日生成的流水标识，防止同一期重复扣减账面现金。
 """
 
 import json
@@ -28,7 +12,8 @@ from datetime import date, timedelta
 from pathlib import Path
 from uuid import uuid4
 
-from src.account_replay import fund_code, fund_strategy, positive
+from src.account_replay import display_event, fund_code, fund_strategy, positive
+from src.account_store import deleted_subscription_events
 from src.etf_account import (
     load as load_account,
     record_event,
@@ -37,6 +22,7 @@ from src.etf_account import (
     subscription_fees,
 )
 from src.json_store import locked as _locked, save as _json_save
+from src.trading_accounts import UNKNOWN
 from src.trading_calendar import get_trading_dates, trading_days_lag
 from src.trading_calendar import shanghai_today as _today
 
@@ -45,7 +31,8 @@ logger = logging.getLogger(__name__)
 PLANS_FILENAME = "fund_plans.json"
 DCA_REQUEST_PREFIX = "dca-"
 FREQUENCIES = ("monthly", "weekly", "daily")
-CATCHUP_WINDOW_DAYS = 14   # 补记回看自然日数：覆盖春节长假与漏跑
+HISTORY_DAYS = 60
+PLAN_TERMS = ("code", "strategy", "amount", "frequency", "anchor", "trading_account")
 POSTPONE_MAX_DAYS = 10     # 扣款日休市时顺延查找下一交易日的最大跨度
 AGING_TRADING_DAYS = 5     # 待确认超过该交易日数未确认份额即告警
 NEXT_DUE_WINDOW_DAYS = 31 + POSTPONE_MAX_DAYS
@@ -104,7 +91,7 @@ def load_plans(account_path):
 
 
 def save_plan(account_path, payload):
-    """新增或更新一条定投计划。计划是配置：改动不影响已补记的流水。"""
+    """从条款变更日开始用新条款推算计划期次。"""
     plan = _validated_plan(payload)
     if payload.get("trading_account"):
         settings = load_account(account_path)["_config"].get("trading_accounts", {})
@@ -126,8 +113,8 @@ def save_plan(account_path, payload):
             if "strategy" not in payload:
                 plan["strategy"] = fund_strategy(previous)
             plan["created_on"] = previous.get("created_on") or _today().isoformat()
-            old_frequency = previous["frequency"]
-            if old_frequency != plan["frequency"] and "daily" in (old_frequency, plan["frequency"]):
+            if (any(plan.get(key) != previous.get(key) for key in PLAN_TERMS)
+                    or (plan["enabled"] and not previous.get("enabled", True))):
                 plan["effective_on"] = _today().isoformat()
             elif "effective_on" in previous:
                 plan["effective_on"] = previous["effective_on"]
@@ -142,7 +129,7 @@ def save_plan(account_path, payload):
 
 
 def delete_plan(account_path, payload):
-    """删除定投计划。只删配置；已补记的流水保留，错误记账走「申购作废」。"""
+    """删除定投计划配置。"""
     plan_id = str((payload or {}).get("id") or "")
     if not plan_id:
         raise ValueError("缺少定投计划标识")
@@ -243,40 +230,65 @@ def _save_failures(account_path, failures):
             _json_save(path, state)
 
 
-def record_due_subscriptions(account_path, *, include_today=False):
-    """把回看窗口内漏记的扣款日补记为待确认申购。
+def _subscription_payload(plan, due, run_day, account_revision):
+    payload = {
+        "request_id": _request_id(plan, due),
+        "revision": account_revision,
+        "side": "fund_pending",
+        "strategy": fund_strategy(plan),
+        "code": plan["code"],
+        "amount": plan["amount"],
+        "date": run_day.isoformat(),
+        "nav_date": due.isoformat(),
+    }
+    if plan.get("trading_account"):
+        payload["trading_account"] = plan["trading_account"]
+    return payload
 
-    无计划（文件不存在或为空）时静默返回 []，不触碰账本与交易日历。
-    """
+
+def _manual_subscription_key(row):
+    return (row.get("nav_date") or row["date"], row["code"], row.get("strategy", "core"), row["amount"])
+
+
+def _unlinked_subscriptions(events, voided_ids):
+    matches = {}
+    for event in events:
+        if (event["side"] in {"fund_pending", "fund_buy"}
+                and event["id"] not in voided_ids and not _DCA_EVENT_RE.fullmatch(event["id"])):
+            key = _manual_subscription_key(display_event(event))
+            matches.setdefault(key, set()).add(event.get("trading_account", UNKNOWN))
+    return matches
+
+
+def _has_matching_manual(unlinked, plan, due, settings):
+    key = (due, plan["code"], fund_strategy(plan), plan["amount"])
+    accounts = unlinked.get(key, ())
+    account = plan.get("trading_account")
+    if not account and settings:
+        account = settings["products"].get(f"fund:{plan['code']}", settings["defaults"]["fund"])
+    return account in accounts or UNKNOWN in accounts
+
+
+def record_due_subscriptions(account_path, *, run_day=None):
+    """登记当天到期的定投申购。"""
     plans = load_plans(account_path)["plans"]
     if not plans:
         return []
-    run_day = _today()
-    window_end = run_day if include_today else run_day - timedelta(days=1)
-    window_start = run_day - timedelta(days=CATCHUP_WINDOW_DAYS)
+    run_day = run_day or _today()
     state = load_account(account_path)
-    known_ids = {event["id"] for event in state["events"]}
-    due_plans = sorted(
-        ((due, plan) for plan in plans if plan.get("enabled", True)
-         for due in _due_dates(plan, window_start, window_end)),
-        key=lambda pair: pair[0])
+    events = state["events"]
+    known_ids = {event["id"] for event in events} | deleted_subscription_events(state).keys()
+    unlinked = _unlinked_subscriptions(events, {event["voided_pending_id"] for event in events
+                                                if event["side"] == "fund_void"})
     recorded, failures = [], {}
-    for due, plan in due_plans:
-        request_id = _request_id(plan, due)
-        if request_id in known_ids:
-            continue  # 已补记过：幂等跳过
-        payload = {
-            "request_id": request_id,
-            "revision": revision(state),
-            "side": "fund_pending",
-            "strategy": plan.get("strategy", "core"),
-            "code": plan["code"],
-            "amount": plan["amount"],
-            "date": run_day.isoformat(),
-            "nav_date": due.isoformat(),
-        }
-        if plan.get("trading_account"):
-            payload["trading_account"] = plan["trading_account"]
+    for plan in plans:
+        if not plan.get("enabled", True) or run_day not in _due_dates(plan, run_day, run_day):
+            continue
+        if _request_id(plan, run_day) in known_ids:
+            continue
+        payload = _subscription_payload(plan, run_day, run_day, revision(state))
+        if _has_matching_manual(unlinked, plan, run_day.isoformat(), state["_config"].get("trading_accounts")):
+            continue
         try:
             if "fund_subscription_fee" not in state["_config"]:
                 fee = subscription_fees(state).get(plan["code"])
@@ -285,23 +297,62 @@ def record_due_subscriptions(account_path, *, include_today=False):
                 payload["subscription_fee"] = fee
             event = record_event(account_path, payload)
         except ValueError as error:
-            failures[plan["id"]] = {"status": "failed", "due_date": due.isoformat(),
+            failures[plan["id"]] = {"status": "failed", "due_date": run_day.isoformat(),
                                     "date": run_day.isoformat(), "reason": str(error)}
-            logger.warning("[定投] %s %s 扣款 %.2f 元补记失败：%s",
-                           plan["code"], due, plan["amount"], error)
+            logger.warning("[定投] %s %s 扣款 %.2f 元记账失败：%s",
+                           plan["code"], run_day, plan["amount"], error)
             continue
         state = load_account(account_path)  # 记账成功后重读，保证下一笔 revision 有效
         recorded.append(event)
-        logger.info("[定投] 已补记 %s %s 扣款 %.2f 元（净值日 %s）",
-                    plan["code"], due, plan["amount"], due)
+        logger.info("[定投] 已登记 %s %s 扣款 %.2f 元", plan["code"], run_day, plan["amount"])
     if failures:
         _save_failures(account_path, failures)
     _warn_aging_pendings(state, run_day)
     return recorded
 
 
+def record_installment(account_path, payload):
+    """按用户确认的扣款金额登记指定期次。"""
+    today = _today()
+    date_text = payload.get("due_date")
+    try:
+        due = date.fromisoformat(date_text)
+    except (TypeError, ValueError):
+        raise ValueError("扣款日无效") from None
+    if due.isoformat() != date_text:
+        raise ValueError("扣款日无效")
+    plan_id = payload.get("id")
+    manual_id = payload.get("request_id")
+    if not isinstance(manual_id, str) or not 8 <= len(manual_id) <= 100:
+        raise ValueError("缺少有效的补记标识")
+    plans_path = _plans_path(account_path)
+    with _locked(plans_path):
+        state = load_account(account_path)
+        plan = next((row for row in _read_plans(plans_path)["plans"] if row["id"] == plan_id), None)
+        if plan is None:
+            raise ValueError("定投计划已更新，请刷新后核对")
+        entry = _subscription_payload(plan, due, today, payload.get("revision"))
+        existing = next((row for row in state["events"] if row["id"] == entry["request_id"]), None)
+        if existing:
+            if existing.get("request", {}).get("dca_manual") == manual_id:
+                return existing
+            raise ValueError("该期已有流水，请刷新定投记录核对")
+        start = max(today - timedelta(days=HISTORY_DAYS - 1), date.fromisoformat(state["initial"]["date"]))
+        if (not plan.get("enabled", True) or not start <= due <= today
+                or due not in _due_dates(plan, due, due)
+                or (payload.get("code"), payload.get("strategy"), payload.get("plan_amount"), payload.get("plan_account"))
+                != (plan["code"], fund_strategy(plan), plan["amount"], plan.get("trading_account"))):
+            raise ValueError("该期不在当前计划内，请刷新后核对")
+        entry.update(amount=payload.get("amount"), dca_manual=manual_id)
+        if not plan.get("trading_account") and payload.get("trading_account"):
+            entry["trading_account"] = payload["trading_account"]
+        if payload.get("subscription_fee") is not None:
+            entry["subscription_fee"] = payload["subscription_fee"]
+        return record_event(account_path, entry)
+
+
 def dca_status(account_path):
-    """账户页计划展示：下次扣款日、最近一期补记结果、今天补记的净值日。"""
+    """从交易日历推算期次，从账本读取登记来源和确认状态。"""
     try:
         state = load_plans(account_path)
         plans = state["plans"]
@@ -313,26 +364,60 @@ def dca_status(account_path):
     today = _today()
     today_iso = today.isoformat()
     recorded_today, by_strategy = [], {}
-    events = load_account(account_path)["events"]
-    known_ids = {event["id"] for event in events}
-    for event in events:
+    account = load_account(account_path)
+    events = account["events"]
+    start = max(today - timedelta(days=HISTORY_DAYS - 1), date.fromisoformat(account["initial"]["date"]))
+    deleted = deleted_subscription_events(account)
+    known_ids = {event["id"] for event in events} | deleted.keys()
+    confirmed = {event["pending_id"] for event in events if event["side"] == "fund_confirm"}
+    voided = {event["voided_pending_id"] for event in events if event["side"] == "fund_void"}
+    unlinked = _unlinked_subscriptions(events, voided)
+    installments, sources = {}, {}
+    for event in (*events, *deleted.values()):
         match = _DCA_EVENT_RE.fullmatch(event["id"])
         if event["side"] != "fund_pending" or match is None:
             continue
         plan_id, due_date = match.groups()
         nav_date = event["nav_date"]
+        source = ("manual" if event.get("request", {}).get("dca_manual")
+                  else "automatic" if event["date"] == due_date else "automatic_backfill")
+        is_deleted = event["id"] in deleted
+        if not is_deleted:
+            sources[event["id"]] = source
+        if start.isoformat() <= due_date <= today_iso:
+            status = ("deleted" if is_deleted else "voided" if event["id"] in voided
+                      else "confirmed" if event["id"] in confirmed else "pending")
+            installments.setdefault(plan_id, {})[due_date] = {
+                "due_date": due_date, "status": status, "source": source,
+                "date": event["date"], "amount": event["amount"], "code": event["code"],
+            }
         previous = latest.get(plan_id)
         if previous is None or due_date >= previous["due_date"]:
-            latest[plan_id] = {"status": "recorded", "due_date": due_date, "date": event["date"]}
-        if event["date"] == today_iso:
+            latest[plan_id] = {"status": "deleted" if is_deleted else "recorded",
+                               "due_date": due_date, "date": event["date"]}
+        if not is_deleted and event["date"] == today_iso and source != "manual" and event["id"] not in voided:
             recorded_today.append(nav_date)
             by_strategy.setdefault(event.get("strategy", "core"), []).append(nav_date)
     views = []
     for plan in plans:
+        rows = installments.get(plan["id"], {})
         try:
             next_due = _next_due(plan, today, known_ids)
+            if plan.get("enabled", True) and start <= today:
+                for due in _due_dates(plan, start, today):
+                    day = due.isoformat()
+                    if day in rows:
+                        continue
+                    failure = latest.get(plan["id"], {})
+                    rows[day] = {
+                        "due_date": day, "status": "missing", "amount": plan["amount"], "code": plan["code"],
+                        "possible_manual": _has_matching_manual(unlinked, plan, day, account["_config"].get("trading_accounts")),
+                        "reason": failure.get("reason") if failure.get("due_date") == day else None,
+                    }
         except (KeyError, TypeError, ValueError):
             logger.warning("[定投] 无法计算计划 %s 的下次扣款日", plan.get("id"), exc_info=True)
             next_due = None
-        views.append({**plan, "next_due": next_due, "latest_result": latest.get(plan.get("id"))})
-    return {"plans": views, "recorded_today": recorded_today, "recorded_today_by_strategy": by_strategy}
+        views.append({**plan, "next_due": next_due, "latest_result": latest.get(plan["id"]),
+                      "installments": [rows[day] for day in sorted(rows, reverse=True)]})
+    return {"plans": views, "recorded_today": recorded_today, "recorded_today_by_strategy": by_strategy,
+            "sources": sources, "history_days": HISTORY_DAYS}

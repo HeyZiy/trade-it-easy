@@ -168,7 +168,7 @@ def test_two_recurring_plans_charge_their_own_platforms_once(ledger, monkeypatch
     config = portfolio_config.load(cp)
     config["fund_subscription_fee"] = {"kind": "none", "value": 0}
     portfolio_config.save_config(cp, config, portfolio_config.current_revision(cp))
-    monkeypatch.setattr(fund_plans, "_today", lambda: date(2025, 1, 7))
+    monkeypatch.setattr(fund_plans, "_today", lambda: date.fromisoformat(DAY))
     monkeypatch.setattr(fund_plans, "_due_dates", lambda *_: [date.fromisoformat(DAY)])
     monkeypatch.setattr(fund_plans, "trading_days_lag", lambda *_: 1)
     for account in ("platform1", "platform2"):

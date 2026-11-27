@@ -142,6 +142,75 @@ def test_edit_rejects_later_insufficient_cash_without_writing(path):
     assert path.read_bytes() == before
 
 
+def test_delete_confirmed_subscription_replays_cash_shares_and_keeps_audit(path, monkeypatch):
+    keep = account.record_event(path, payload(path, 'fund_buy', code='019736', qty=38, amount=50,
+                                              nav=1.31, nav_date='2025-01-06'))
+    original = payload(path, 'fund_pending', code='019736', amount=10, nav_date='2025-01-06',
+                       subscription_fee={'kind': 'none', 'value': 0})
+    debit = account.record_event(path, original)
+    monkeypatch.setattr('data_provider.fund_nav.latest_fund_nav', lambda code, day: (day, 1.312))
+    assert account.confirm_fund_subscriptions(path, '2025-01-07') == [debit['id']]
+    confirmation = account.load(path)['events'][-1]
+    assert confirmation['qty'] == 7.62
+    state = account.load(path)
+    before = account.snapshot(state, '2025-01-07')
+    assert before['cash_by_strategy']['core'] == before['custody_cash']['unlocated'] == 940
+    assert before['fund_positions']['019736']['qty'] == pytest.approx(45.62)
+
+    request = {'request_id': str(uuid4()), 'revision': account.revision(state), 'event_id': confirmation['id']}
+    deletion = account.delete_fund_subscription(path, request)
+    assert deletion['events'] == [debit, confirmation]
+    assert account.delete_fund_subscription(path, request) == deletion
+    state = account.load(path)
+    assert state['events'] == [keep] and state['subscription_deletions'] == [deletion]
+    after = account.snapshot(state, '2025-01-07')
+    assert after['cash'] == after['cash_by_strategy']['core'] == after['custody_cash']['unlocated'] == 950
+    assert after['pending_fund_value'] == 0
+    assert after['fund_positions']['019736']['qty'] == 38
+    assert after['fund_positions']['019736']['nav'] == 1.31
+    with pytest.raises(ValueError, match='原申购已删除'):
+        account.record_event(path, original)
+
+
+@pytest.mark.parametrize('side', ['fund_buy', 'fund_pending'])
+def test_delete_single_subscription_from_ledger(path, side):
+    fields = {'qty': 7.62, 'nav': 1.312} if side == 'fund_buy' else {'subscription_fee': {'kind': 'none', 'value': 0}}
+    before = account.revision(account.load(path))
+    entry = account.record_event(path, payload(path, side, code='019736', amount=10,
+                                               nav_date='2025-01-06', **fields))
+    account.delete_fund_subscription(path, {'request_id': str(uuid4()), 'event_id': entry['id'],
+                                            'revision': account.revision(account.load(path))})
+    state = account.load(path)
+    after = account.snapshot(state, '2025-01-07')
+    assert not state['events'] and account.revision(state) != before
+    assert after['cash'] == 1000 and after['pending_fund_value'] == 0 and not after['fund_positions']
+
+
+def test_delete_subscription_rejects_dependent_redemption_atomically(path):
+    entry = account.record_event(path, payload(path, 'fund_buy', code='019736', qty=100,
+                                               amount=100, nav=1, nav_date='2025-01-06'))
+    account.record_event(path, payload(path, 'fund_redeem_pending', code='019736', qty=80))
+    before = path.read_bytes()
+    with pytest.raises(ValueError, match='删除申购会使第2笔流水'):
+        account.delete_fund_subscription(path, {'request_id': str(uuid4()), 'event_id': entry['id'],
+                                                'revision': account.revision(account.load(path))})
+    assert path.read_bytes() == before
+
+
+def test_delete_pending_while_nav_fetch_is_in_progress(path, monkeypatch):
+    entry = account.record_event(path, payload(path, 'fund_pending', code='019736', amount=10,
+                                               nav_date='2025-01-06', subscription_fee={'kind': 'none', 'value': 0}))
+
+    def fetch(code, day):
+        account.delete_fund_subscription(path, {'request_id': str(uuid4()), 'event_id': entry['id'],
+                                                'revision': account.revision(account.load(path))})
+        return day, 1.312
+
+    monkeypatch.setattr('data_provider.fund_nav.latest_fund_nav', fetch)
+    assert account.confirm_fund_subscriptions(path, '2025-01-07') == []
+    assert not account.load(path)['events']
+
+
 def test_edit_rejects_later_overselling_and_stale_revision(path):
     first = account.record_event(path, payload(path, 'sell', code='588000', qty=500, price=3, fee=1))
     old_request = edit_payload(path, first, qty=600)
@@ -368,6 +437,17 @@ def test_correction_api_context_and_edit_are_authenticated_and_idempotent(path, 
         change = edit_payload(api_path, original, amount=200)
         assert post('/api/etf/event/edit', change) == {'ok': True}
         assert post('/api/etf/event/edit', change) == {'ok': True}
+        assert account.account_data(api_path)['cash'] == 1200
+        subscription = account.record_event(api_path, payload(api_path, 'fund_buy', code='019736',
+                                                                 qty=7.62, amount=10, nav=1.312,
+                                                                 nav_date='2025-01-06'))
+        delete_route = '/api/etf/event/delete-subscription'
+        deletion = {'request_id': str(uuid4()), 'event_id': subscription['id'],
+                    'revision': account.revision(account.load(api_path))}
+        with pytest.raises(urllib.error.HTTPError) as denied:
+            post(delete_route, deletion, {'Content-Type': 'application/json'})
+        assert denied.value.code == 401
+        assert post(delete_route, deletion) == post(delete_route, deletion) == {'ok': True}
         assert account.account_data(api_path)['cash'] == 1200
         classified = {'revision': account.account_data(api_path)['config_revision'],
                       'kind': 'listed', 'code': '588000', 'asset_class': 'commodity'}

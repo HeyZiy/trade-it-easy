@@ -729,33 +729,54 @@ def replay_edit(state, index, payload, min_day, max_day):
         if any(payload.get(key) != old[key] for key in ("date", "code", "amount", "nav", "nav_date", "subscription_fee")):
             raise ValueError("已确认申购仅可更正份额")
         payload = {**payload, "pending_id": old["pending_id"]}
+    if old.get("request", {}).get("dca_manual"):
+        payload = {**payload, "dca_manual": old["request"]["dca_manual"]}
     day = validate_day(payload.get("date", ""))
     if not min_day <= day <= max_day:
         raise ValueError("更正日期须在相邻流水日期之间")
+    return _replay_correction(state, edit_index=index, replacement=payload)
+
+
+def replay_without_subscription(state, removed_ids):
+    """验证去掉误录申购后，其他流水仍能按原内容记账。"""
+    return _replay_correction(state, removed_ids=removed_ids)
+
+
+def _replay_correction(state, *, edit_index=None, replacement=None, removed_ids=frozenset()):
     replay = _Replay(state)
     events = []
+    changed = False
     for i, stored in enumerate(state["events"]):
-        candidate = payload if i == index else stored
-        if (i != index and stored["side"] in {"assign", "cash_transfer"}
+        if stored["id"] in removed_ids:
+            changed = True
+            continue
+        editing = i == edit_index
+        if edit_index is None and not changed:
+            replay.apply(stored)
+            events.append(stored)
+            continue
+        candidate = replacement if editing else stored
+        if (not editing and stored["side"] in {"assign", "cash_transfer"}
                 and {stored["strategy"], stored["from_strategy"]} == {HOLDING_AREA, "unassigned"}):
             replay.apply(stored)
             events.append(stored)
             continue
         try:
-            event_day = day if i == index else validate_day(stored["date"])
-            if i == index and "trading_account" not in candidate and "trading_account" in stored:
+            event_day = validate_day(candidate["date"])
+            if editing and "trading_account" not in candidate and "trading_account" in stored:
                 candidate = {**candidate, "trading_account": stored["trading_account"]}
             checked = make_event(candidate, stored["id"], event_day, replay.view(event_day),
                                  allow_book_value=stored.get("transfer_basis") == "book",
-                                 historical=i != index or stored.get("trading_account", trading_accounts.UNKNOWN) == trading_accounts.UNKNOWN)
-            if i == index and "commission" in stored and all(
+                                 historical=not editing or stored.get("trading_account", trading_accounts.UNKNOWN) == trading_accounts.UNKNOWN)
+            if editing and "commission" in stored and all(
                 checked.get(key) == stored[key] for key in ("side", "code", "qty", "price", "fee")
             ):
                 checked.update(commission=stored["commission"], stamp_duty=stored["stamp_duty"])
             # 已确认流水沿用记录的划转估值和资金流价格。
-            event = checked if i == index else stored
+            event = checked if editing else stored
             replay.apply(event)
         except (ValueError, KeyError, ZeroDivisionError) as error:
-            raise ValueError(f"更正会使第{i + 1}笔流水（{candidate['date']}）无效：{error}") from error
+            action = "更正" if edit_index is not None else "删除申购"
+            raise ValueError(f"{action}会使第{i + 1}笔流水（{candidate['date']}）无效：{error}") from error
         events.append(event)
     return events

@@ -1,6 +1,6 @@
 import { esc, finite } from './common.js';
 
-import { number, price, money, reportDate, SIDES, isFundTrade, fundShares, shanghaiToday } from './dashboard-format.js';
+import { number, price, money, reportDate, SIDES, isFundTrade, fundShares, shanghaiToday, dcaSourceLabel } from './dashboard-format.js';
 
 import { custodyName } from './trading-accounts.js';
 
@@ -61,8 +61,16 @@ export function createRecords({currentAccount, strategyName, fundDisplayName}) {
 
   function recordLabel(row) {
     if (row.kind === 'pending') return '在途申购归属划转';
-    if (row.side === 'fund_pending') return currentAccount().fund_pending?.[row.id] ? '场外申购 · 待确认' : '场外申购扣款';
     if (row.side === 'fund_redeem' && row.pending_id) return '场外赎回到账';
+    if (['fund_buy', 'fund_pending', 'fund_confirm', 'fund_void'].includes(row.side)) {
+      const account = currentAccount();
+      const orderId = row.pending_id || row.voided_pending_id || row.id;
+      const source = dcaSourceLabel(account.dca?.sources?.[orderId]) || '手动申购';
+      const label = row.side === 'fund_pending'
+        ? (account.fund_pending?.[row.id] ? '场外申购 · 待确认' : '场外申购扣款')
+        : SIDES[row.side];
+      return `${label} · ${source}`;
+    }
     return SIDES[row.side] || row.side;
   }
 
@@ -112,13 +120,15 @@ export function createRecords({currentAccount, strategyName, fundDisplayName}) {
       const waiting = !!currentAccount().fund_pending?.[row.id];
       const label = recordLabel(row);
       const edit = row.kind!=='pending' && !immutable && (!pending || waiting) ? `<button type="button" class="text-button" data-edit-event="${esc(row.id)}">修改</button>` : '';
+      const remove = row.side==='fund_buy' || row.side==='fund_confirm' || (pending && waiting)
+        ? `<button type="button" class="text-button fund-void-action" data-delete-subscription="${esc(row.id)}">删除申购</button>` : '';
       const recordPrice = recordAmount(row);
-      return `<tr><td>${esc(row.date)}</td><td>${esc(label)}<small>${esc(detail)}</small>${edit}</td><td class="num">${fund ? fundShares(row.qty) : number(row.qty)}</td><td class="num">${price(recordPrice)}</td><td class="num">${price(row.fee)}</td></tr>`;
+      return `<tr><td>${esc(row.date)}</td><td>${esc(label)}<small>${esc(detail)}</small>${edit}${remove}</td><td class="num">${fund ? fundShares(row.qty) : number(row.qty)}</td><td class="num">${price(recordPrice)}</td><td class="num">${price(row.fee)}</td></tr>`;
       }).join('');
       return `<div class="table-wrap"><table><thead><tr><th>日期</th><th>类型 / 明细</th><th class="num">份额</th><th class="num">价格或金额 / 元</th><th class="num">手续费 / 元</th></tr></thead><tbody>${body}</tbody></table></div>`;
   }
 
-  function bindRecords(view, editRecordEvent) {
+  function bindRecords(view, editRecordEvent, deleteSubscription) {
     const viewId = view.id;
     if (!recordDisplays.has(viewId)) recordDisplays.set(viewId, {expanded:false, all:false});
     const display = recordDisplays.get(viewId);
@@ -166,6 +176,8 @@ export function createRecords({currentAccount, strategyName, fundDisplayName}) {
     results.onclick = event => {
       const button = event.target.closest('[data-edit-event]');
       if (button) editRecordEvent(button);
+      const remove = event.target.closest('[data-delete-subscription]');
+      if (remove) deleteSubscription(rows.find(row=>row.id===remove.dataset.deleteSubscription));
     };
     exportButton.onclick = () => {
       const url = URL.createObjectURL(new Blob([recordCsv(filtered)], {type:'text/csv;charset=utf-8'}));
