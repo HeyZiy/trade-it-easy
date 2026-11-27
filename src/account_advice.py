@@ -106,9 +106,15 @@ def allocation_groups(assets, strategy, prices, names):
     return groups
 
 
+def strategy_identity(key):
+    owner = portfolio_config.OWNERS[key]
+    return {"id": key, "name": owner.name, "account_id": "etf", "kind": owner.kind,
+            "holding_only": owner.kind == "holding", "accepts_funds": owner.accepts_funds}
+
+
 def strategy_facts(state, view, key):
     """按策略标识提供账户事实，不计算建议；供展示、发布和成交处理共用。"""
-    name = portfolio_config.OWNER_NAMES[key]
+    identity = strategy_identity(key)
     positions = [r for r in view["strategy_positions"] if r["strategy"] == key]
     funds = view["strategy_fund_positions"].get(key, {})
     holdings = [*positions, *funds.values()]
@@ -124,12 +130,15 @@ def strategy_facts(state, view, key):
               else "待估值" if remaining is None
               else "已分配" if holdings or pending or cash > 0 else "暂无持仓")
     thresholds = None
-    allocation = key in portfolio_config.ALLOCATION_NAMES
+    allocation = identity["kind"] == "allocation"
     if allocation:
         from src.etf.config import MIN_TRADE_AMOUNT, REBALANCE_RELATIVE_THRESHOLD, REBALANCE_SINGLE_THRESHOLD
         thresholds = {"trade_amount": MIN_TRADE_AMOUNT, "single": REBALANCE_SINGLE_THRESHOLD,
                       "relative": REBALANCE_RELATIVE_THRESHOLD}
-    return {"id": key, "name": name, "account_id": "etf", "positions": positions,
+    return {**identity, "positions": positions, "fund_positions": funds,
+            "fund_pending": {order_id: order for order_id, order in view["fund_pending"].items()
+                             if order["strategy"] == key},
+            "pending_fund_value": pending,
             "budget_pct": weight, "budget": budget, "invested": invested,
             "pnl": view["strategy_pnl"][key] if invested is not None else None,
             "target_weights": ({r["code"]: r["weight"] for r in state["_config"].get(key, ())}
@@ -143,7 +152,7 @@ def strategy_facts(state, view, key):
                                            or (e["side"] == "cash_adjust" and key in e.get("cash_allocations", {}))],
             "history": [], "performance": None,
             "benchmark_name": account_benchmarks.benchmark_name(key) if key in portfolio_config.STRATEGY_NAMES else None,
-            "residual_pct": max(0, 1 - sum(state["budgets"].values())) if key == portfolio_config.HOLDING_AREA else None,
+            "residual_pct": max(0, 1 - sum(state["budgets"].values())) if identity["holding_only"] else None,
             "cash": cash, "assets": assets, "actual_pct": assets / view["equity"] if view["equity"] and assets is not None else None,
             "deviation": round(assets - budget, 2) if budget is not None and assets is not None else None, "status": status}
 
@@ -153,11 +162,7 @@ def allocation_view(state, view, key, *, names=None):
     from src.etf.rebalancer import allocation_deviation
 
     row = strategy_facts(state, view, key)
-    row.update(fund_positions=view["strategy_fund_positions"].get(key, {}),
-               fund_pending={order_id: order for order_id, order in view["fund_pending"].items()
-                             if order["strategy"] == key},
-               pending_fund_value=view["strategy_pending_fund_value"][key],
-               allocation_budget=row["budget"], allocation_assets=row["assets"])
+    row.update(allocation_budget=row["budget"], allocation_assets=row["assets"])
     assets = state["_config"].get(key, ())
     groups = allocation_groups(assets, row, view["prices"], names or {})
     deviations = {}
@@ -203,10 +208,8 @@ def strategy_views(state, view, *, today, names=None):
     for key in portfolio_config.OWNER_NAMES:
         row = (allocation_view(state, view, key, names=names) if key in portfolio_config.ALLOCATION_NAMES
                else strategy_facts(state, view, key))
-        if key == portfolio_config.HOLDING_AREA:
-            row.update(holding_only=True, status=row["name"], fund_positions=view["strategy_fund_positions"].get(key, {}),
-                       fund_pending={i: order for i, order in view["fund_pending"].items() if order["strategy"] == key},
-                       pending_fund_value=view["strategy_pending_fund_value"][key])
+        if row["holding_only"]:
+            row["status"] = row["name"]
             result.append(row)
             continue
         row["history"] = strategy_history(state, key, today.isoformat())

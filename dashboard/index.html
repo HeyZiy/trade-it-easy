@@ -16,12 +16,12 @@
     <div class="masthead-actions"><a id="account-settings" class="private-label" href="/settings" hidden>账户设置</a><a class="private-label" href="/research/timing">ETF 择时研究 →</a></div>
   </div></header>
   <main>
-    <div class="intro"><p>账户资产与策略持仓</p><p id="status" role="status">正在加载…</p></div>
+    <div class="intro"><p>账户资产与策略持仓</p><div class="intro-status"><p id="status" role="status">正在加载…</p><button id="overview-retry" type="button" class="secondary-button" hidden>重试</button></div></div>
     <div id="app" hidden>
       <div id="status-bar" class="status-bar" hidden></div>
       <nav class="tabs" id="tabs" role="tablist" aria-label="账户与策略"></nav>
       <div id="quote-panel" class="quote-panel" hidden>
-        <div class="quote-copy"><p id="quote-status" role="status" aria-live="polite"></p><p id="quote-message" class="quote-message" role="status" hidden></p></div>
+        <div class="quote-copy"><p id="quote-status" role="status" aria-live="polite"></p><p id="quote-message" class="quote-message" role="status" hidden></p><div id="quote-missing" hidden></div></div>
         <button id="quote-refresh" type="button" class="secondary-button">刷新估值</button>
       </div>
       <div id="account" role="tabpanel"></div>
@@ -51,7 +51,11 @@
           <label hidden>交易账户<select name="trading_account" disabled required></select></label>
           <label data-trade-field><span id="entry-code-label">证券代码</span><input name="code" inputmode="numeric" pattern="[0-9]{6}" maxlength="6" list="entry-securities" autocomplete="off" required><datalist id="entry-securities"></datalist><span id="entry-security" class="field-hint"></span></label>
           <label id="entry-kind-field" hidden>标的类型<select name="kind" required disabled><option value="">请选择</option><option value="listed">场内证券</option><option value="fund">场外基金</option></select></label>
-          <label data-trade-field><span id="entry-qty-label">成交份额</span><input name="qty" type="number" min="1" step="1" required><button type="button" id="entry-all" class="text-button" hidden>全部卖出</button></label>
+          <div data-trade-field>
+            <label><span id="entry-qty-label">成交份额</span><input name="qty" type="number" min="1" step="1" required></label>
+            <div id="entry-reference" class="entry-quantity-action" hidden><span id="entry-reference-qty" class="field-hint"></span><button type="button" id="entry-use-reference" class="text-button">带入建议份额</button></div>
+            <button type="button" id="entry-all" class="text-button" hidden>全部卖出</button>
+          </div>
           <label data-trade-field>成交均价 / 元<input name="price" type="number" min="0.000001" step="any" required></label>
           <label data-trade-field><span id="entry-fee-label">手续费 / 元</span><input name="fee" type="number" min="0" step="0.01"></label>
           <label data-cash-field hidden>到账 / 转出金额 / 元<input name="amount" type="number" min="0.01" step="0.01" required disabled></label>
@@ -59,9 +63,19 @@
         <p id="entry-context" class="entry-preview" aria-live="polite"></p>
         <p id="event-preview" class="entry-preview" aria-live="polite" hidden></p>
         <p id="entry-validation" class="warning" role="status" hidden></p>
+        <p id="entry-armed-note" class="warning" role="status" hidden></p>
         </fieldset>
         <p id="event-error" class="warning" role="alert" hidden></p>
         <div class="entry-footer"><button id="event-save" type="submit" class="primary-button">保存记账</button><button id="event-continue" type="submit" class="secondary-button">保存并继续</button><button id="event-refresh" type="button" class="secondary-button" hidden>刷新账户</button></div>
+      </form>
+    </dialog>
+    <dialog id="fund-void-dialog" aria-labelledby="fund-void-title" aria-describedby="fund-void-order fund-void-impact">
+      <form id="fund-void-form">
+        <div class="section-heading"><h2 id="fund-void-title"></h2></div>
+        <p id="fund-void-order" class="fund-void-order"></p>
+        <p id="fund-void-impact" class="entry-preview"></p>
+        <p id="fund-void-error" class="warning" role="alert" hidden></p>
+        <div class="entry-footer"><button type="button" id="fund-void-cancel" class="secondary-button" autofocus>取消</button><button type="submit" id="fund-void-save" class="secondary-button fund-void-action">确认作废</button></div>
       </form>
     </dialog>
     <dialog id="fund-dialog" aria-labelledby="fund-title">

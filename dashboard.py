@@ -16,6 +16,7 @@ import re
 import time
 
 from src import fund_plans
+from src.account_advice import strategy_identity
 from src.etf_account import FILENAME as ETF_FILENAME, SHANGHAI, account_data as etf_account_data
 from src.dashboard_quotes import QuoteRefresh
 from src.dashboard_timing import QueueFull, TimingReports
@@ -129,12 +130,14 @@ def dashboard_data(root=ROOT):
     except Exception:
         logging.exception("读取投资账户失败")
         account = {"error": "账户数据读取失败，请检查服务器日志。", "positions": [], "trades": []}
-    strategies = account.pop("strategies", [
-        {"id": key, "name": name, "account_id": "etf", "positions": [], "trades": [],
-         "budget": None, "budget_pct": None, "invested": 0, "buying_power": None,
-         "suggestions": [], "status": "账户未初始化", "history": [], "performance": None,
-         "holding_only": key == HOLDING_AREA}
-        for key, name in OWNER_NAMES.items()])
+    strategies = account.pop("strategies", None)
+    if strategies is None:
+        strategies = [
+            {**strategy_identity(key), "positions": [], "trades": [], "allocation_groups": [],
+             "budget": None, "budget_pct": None, "invested": 0, "buying_power": None,
+             "suggestions": [], "status": "账户未初始化", "history": [], "performance": None}
+            for key in OWNER_NAMES
+        ]
     account["holding_area"] = next((row for row in strategies if row["id"] == HOLDING_AREA), None)
     strategies = [row for row in strategies if row["id"] in STRATEGY_NAMES]
     account.update(id="etf", name="投资账户")

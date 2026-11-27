@@ -44,6 +44,28 @@ def test_missing_and_corrupt_accounts_are_isolated(tmp_path):
     assert overview["reports"] == []
 
 
+@pytest.mark.parametrize("initialized", [False, True])
+def test_dashboard_exposes_owner_kind_and_fund_permission(tmp_path, initialized):
+    if initialized:
+        from src.etf_account import initialize
+
+        initialize(tmp_path / "data" / "etf_account.json", asof="2025-01-02", cash=1000,
+                   positions=[dict(code="510300", count=100, price=3, strategy="core")])
+
+    overview = dashboard_data(tmp_path)
+    area = overview["accounts"][0]["holding_area"]
+    rows = {row["id"]: row for row in [*overview["strategies"], area]}
+    assert {key: (row["kind"], row["accepts_funds"]) for key, row in rows.items()} == {
+        "core": ("allocation", True),
+        "rotation": ("signal", False),
+        "quality": ("signal", False),
+        "holding_area": ("holding", True),
+    }
+    assert isinstance(rows["core"]["allocation_groups"], list)
+    assert area["holding_only"]
+    assert bool(overview["accounts"][0].get("can_record")) == initialized
+
+
 def basic(user, password):
     return "Basic " + base64.b64encode(f"{user}:{password}".encode()).decode()
 

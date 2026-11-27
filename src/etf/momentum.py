@@ -31,7 +31,7 @@ class EtfOrder:
 
 
 def momentum_score(close_tail: Sequence[float], last_price: float) -> float:
-    """25 根已完成日线收盘 + 当日现价 → 加权回归趋势分（CONTEXT.md「趋势分」）。
+    """25 根已完成日线收盘 + 当日现价
 
     对数价格对 w=linspace(1,2) 加权线性回归 → 年化 = exp(斜率×250)-1 →
     score = 年化 × 加权 R²（R² 的残差平方和、总离差与均值都用 w² 加权，

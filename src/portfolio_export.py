@@ -104,10 +104,10 @@ def _configuration(book, state, view, names):
     equity = view["equity"]
     strategies = {key: strategy_facts(state, view, key) for key in OWNER_NAMES}
     strategy_rows = [
-        [STRATEGIES[key], row["residual_pct"] if row["residual_pct"] is not None else row["budget_pct"],
+        [row["name"], row["residual_pct"] if row["residual_pct"] is not None else row["budget_pct"],
          _share(row["assets"], equity), row["assets"], row["cash"],
-         view["strategy_pending_fund_value"].get(key, 0)]
-        for key, row in strategies.items()
+         row["pending_fund_value"]]
+        for row in strategies.values()
     ]
     _table(book, "策略配比", ["策略", "目标占账户", "实际占账户", "策略总资产 / 元",
                           "账面现金 / 元", "申购在途 / 元"], strategy_rows,
@@ -117,10 +117,7 @@ def _configuration(book, state, view, names):
     allocation_rows = []
     for key, strategy_name in ALLOCATION_NAMES.items():
         assets = config.get(key, ())
-        strategy = {**strategies[key], "fund_positions": view["strategy_fund_positions"].get(key, {}),
-                    "fund_pending": {order_id: order for order_id, order in view["fund_pending"].items()
-                                     if order["strategy"] == key}}
-        groups = {group["id"]: group for group in allocation_groups(assets, strategy, view["prices"], names)
+        groups = {group["id"]: group for group in allocation_groups(assets, strategies[key], view["prices"], names)
                   if not group.get("outside")}
         budget = budgets.get(key)
         for asset in assets:

@@ -1,5 +1,6 @@
 """投资账户的唯一生效配置。手工编辑和网页保存使用同一校验规则。"""
 from copy import deepcopy
+from dataclasses import dataclass
 from datetime import datetime, timezone
 import hashlib
 import json
@@ -10,11 +11,24 @@ import re
 from src.json_store import locked, save
 from src import trading_accounts
 
-STRATEGY_NAMES = {"core": "长期配置", "rotation": "跨资产动量", "quality": "质量动量"}
+@dataclass(frozen=True, slots=True)
+class PortfolioOwner:
+    name: str
+    kind: str
+    accepts_funds: bool = False
+
+
 HOLDING_AREA = "holding_area"
-OWNER_NAMES = {**STRATEGY_NAMES, HOLDING_AREA: "待定组合"}
-FUND_OWNERS = {"core", HOLDING_AREA}
-ALLOCATION_NAMES = {"core": STRATEGY_NAMES["core"]}
+OWNERS = {
+    "core": PortfolioOwner("长期配置", "allocation", accepts_funds=True),
+    "rotation": PortfolioOwner("跨资产动量", "signal"),
+    "quality": PortfolioOwner("质量动量", "signal"),
+    HOLDING_AREA: PortfolioOwner("待定组合", "holding", accepts_funds=True),
+}
+OWNER_NAMES = {key: owner.name for key, owner in OWNERS.items()}
+STRATEGY_NAMES = {key: owner.name for key, owner in OWNERS.items() if owner.kind != "holding"}
+FUND_OWNERS = {key for key, owner in OWNERS.items() if owner.accepts_funds}
+ALLOCATION_NAMES = {key: owner.name for key, owner in OWNERS.items() if owner.kind == "allocation"}
 ASSET_CLASSES = {"equity", "bond", "commodity", "cash", "mixed"}
 
 FILENAME = "etf_config.json"

@@ -1,7 +1,7 @@
 # 看板部署与排障
 
 - 服务器连接参数见本地 `deploy/server_ssh.md`，迁移范围见[运行数据清单](data_manifest.md)。
-- 账户盈亏与配比口径见看板内的「盈亏对账」和「配比说明」，策略规则见 [ALLOCATION.md](../ALLOCATION.md)，定时任务见 [crontab.server](crontab.server)。
+- 账户盈亏与配比口径见看板内的「盈亏对账」和「配比说明」，策略规则见 [ALLOCATION.md](../docs/ALLOCATION.md)，定时任务见 [crontab.server](crontab.server)。
 
 ## 服务配置
 
