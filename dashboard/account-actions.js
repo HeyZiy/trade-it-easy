@@ -94,8 +94,8 @@ export function createAccountActions({
     if (dcaButton) dcaButton.onclick = () => openDcaPlans(account);
     document.querySelectorAll('[data-fund-dca]').forEach(button=>button.onclick=()=>
       openDcaPlans(account, button.dataset.strategy, button.dataset.fundDca));
-    document.querySelectorAll('[data-void-event]').forEach(button=>button.onclick=()=>
-      openFundVoid(account, view, view.fund_pending[button.dataset.voidEvent], 'fund_void'));
+    document.querySelectorAll('[data-delete-pending-subscription]').forEach(button=>button.onclick=()=>
+      openFundVoid(account, view, view.fund_pending[button.dataset.deletePendingSubscription], 'delete-subscription'));
     document.querySelectorAll('[data-redeem-receipt]').forEach(button=>button.onclick=()=> {
       const order = account.fund_redeem_pending[button.dataset.redeemReceipt];
       openFundTrade(account, 'fund_redeem', order.code, order.strategy, null, order);

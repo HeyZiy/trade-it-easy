@@ -23,7 +23,7 @@ export function createFundDialogs({
     const orders = Object.values(account.fund_redeem_pending || {}).filter(order=>view.id==='etf' || order.strategy===view.id);
     const receipt = fundVoidStatus(view, 'fund_redeem_void');
     if (!orders.length && !receipt) return '';
-    const rows = orders.map(order=>`<tr><td>${esc(fundDisplayName(order.code) || order.code)}<small>${esc([order.code, strategyName(order.strategy), account.trading_accounts && custodyName(account,order.trading_account)].filter(Boolean).join(' · '))}</small><small class="pending-fund-mobile">${esc(order.date)} · ${fundShares(order.qty)} 份</small></td><td class="num">${esc(order.date)}</td><td class="num">${fundShares(order.qty)}</td><td><div class="pending-fund-actions"><button type="button" class="text-button" data-redeem-receipt="${esc(order.id)}">确认到账</button><button type="button" class="text-button fund-void-action" data-redeem-void="${esc(order.id)}">作废</button></div></td></tr>`).join('');
+    const rows = orders.map(order=>`<tr><td>${esc(fundDisplayName(order.code) || order.code)}<small>${esc([order.code, strategyName(order.strategy), account.trading_accounts && custodyName(account,order.trading_account)].filter(Boolean).join(' · '))}</small><small class="pending-fund-mobile">${esc(order.date)} · ${fundShares(order.qty)} 份</small></td><td class="num">${esc(order.date)}</td><td class="num">${fundShares(order.qty)}</td><td><div class="pending-fund-actions"><button type="button" class="text-button" data-redeem-receipt="${esc(order.id)}">确认到账</button><button type="button" class="text-button fund-void-action" data-redeem-void="${esc(order.id)}">撤销登记</button></div></td></tr>`).join('');
     return `<section class="section"><div class="section-heading"><h2>待到账赎回</h2></div>${receipt}${rows ? `<div class="table-wrap"><table class="pending-fund-table"><thead><tr><th>基金</th><th class="num">申请日</th><th class="num">申请份额</th><th>操作</th></tr></thead><tbody>${rows}</tbody></table></div>` : ''}</section>`;
   }
 
@@ -32,14 +32,13 @@ export function createFundDialogs({
     const autoNote = recordedToday.length
       ? `今日已自动记账 ${recordedToday.length} 笔（净值日 ${[...new Set(recordedToday)].join('、')}）`
       : '';
-    const receipt = fundVoidStatus(account, 'fund_void');
-    if (!pending.length && !autoNote && !receipt) return '';
+    if (!pending.length && !autoNote) return '';
     const rows = pending.map(order => {
       const name = fundDisplayName(order.code);
-      return `<tr><td>${esc(name || order.code)}<small>${esc([name && order.code, strategyName(order.strategy), account.trading_accounts && custodyName(account,order.trading_account)].filter(Boolean).join(' · '))}</small><small class="pending-fund-mobile">${esc(order.nav_date)} · ${money(order.amount)} 元</small></td><td class="num">${esc(order.nav_date)}</td><td class="num">${money(order.amount)}</td><td><div class="pending-fund-actions"><button type="button" class="text-button" data-edit-event="${esc(order.id)}">修改</button><button type="button" class="text-button fund-void-action" data-void-event="${esc(order.id)}">作废</button></div></td></tr>`;
+      return `<tr><td>${esc(name || order.code)}<small>${esc([name && order.code, strategyName(order.strategy), account.trading_accounts && custodyName(account,order.trading_account)].filter(Boolean).join(' · '))}</small><small class="pending-fund-mobile">${esc(order.nav_date)} · ${money(order.amount)} 元</small></td><td class="num">${esc(order.nav_date)}</td><td class="num">${money(order.amount)}</td><td><div class="pending-fund-actions"><button type="button" class="text-button" data-edit-event="${esc(order.id)}">修改</button><button type="button" class="text-button fund-void-action" data-delete-pending-subscription="${esc(order.id)}">删除申购</button></div></td></tr>`;
     }).join('');
     const note = autoNote ? `<p class="subtle">${esc(autoNote)}</p>` : '';
-    return `<section id="fund-pending" class="section"><div class="section-heading"><h2>待确认申购</h2>${rows ? `<span class="subtle">在途 ${money(account.pending_fund_value)} 元</span>` : ''}</div>${receipt}${note}${rows ? `<div class="table-wrap"><table class="pending-fund-table"><thead><tr><th>基金</th><th class="num">买入日</th><th class="num">实际扣款 / 元</th><th>操作</th></tr></thead><tbody>${rows}</tbody></table></div>` : ''}</section>`;
+    return `<section id="fund-pending" class="section"><div class="section-heading"><h2>待确认申购</h2>${rows ? `<span class="subtle">在途 ${money(account.pending_fund_value)} 元</span>` : ''}</div>${note}${rows ? `<div class="table-wrap"><table class="pending-fund-table"><thead><tr><th>基金</th><th class="num">买入日</th><th class="num">实际扣款 / 元</th><th>操作</th></tr></thead><tbody>${rows}</tbody></table></div>` : ''}</section>`;
   }
 
   async function fillFundName(dialog, session, input, hint, state) {
@@ -67,20 +66,17 @@ export function createFundDialogs({
     const save = document.querySelector('#fund-void-save');
     const cancel = document.querySelector('#fund-void-cancel');
     const deleting = side === 'delete-subscription';
-    const subscription = deleting || side === 'fund_void';
     const name = fundDisplayName(order.code);
     const product = name ? `${name}（${order.code}）` : order.code;
     const strategy = strategyName(order.strategy);
-    const date = subscription ? `买入日 ${order.nav_date || order.date}` : `申请日 ${order.date}`;
-    const type = subscription ? '申购' : '赎回预登记';
-    const amount = subscription ? `${money(order.amount)} 元` : `${fundShares(order.qty)} 份`;
+    const date = deleting ? `买入日 ${order.nav_date || order.date}` : `申请日 ${order.date}`;
+    const type = deleting ? '申购' : '赎回预登记';
+    const amount = deleting ? `${money(order.amount)} 元` : `${fundShares(order.qty)} 份`;
     const location = account.trading_accounts && custodyName(account, order.trading_account);
     const impact = deleting
       ? '请确认这笔申购是误录。删除后会按剩余流水重算工作台的账面现金、份额和成本。'
-      : subscription
-      ? `作废工作台记录后，${amount}将退回「${strategy}」的策略现金。`
-      : `作废工作台记录后，将释放预登记占用的 ${amount}，策略现金不变。`;
-    const action = deleting ? '删除' : '作废';
+      : `撤销登记后，将释放预登记占用的 ${amount}，策略现金不变。`;
+    const action = deleting ? '删除' : '撤销';
     const shares = deleting && finite(order.qty) ? `${fundShares(order.qty)} 份` : '';
     const source = deleting ? dcaSourceLabel(account.dca?.sources?.[order.pending_id || order.id]) || '手动申购' : '';
     document.querySelector('#fund-void-title').textContent = `${action}${type}`;
@@ -110,8 +106,7 @@ export function createFundDialogs({
           await accountRequest(deleting ? '/api/etf/event/delete-subscription' : '/api/etf/event', payload);
           saved = true;
           if (!deleting) {
-            const detail = subscription ? `${amount}已退回「${strategy}」的策略现金。` : `已释放 ${amount}。`;
-            fundVoidReceipt = {view:view.id, side, message:`${product} · ${type}已作废。${detail}`};
+            fundVoidReceipt = {view:view.id, side, message:`${product} · ${type}已撤销。已释放 ${amount}。`};
           }
         }
         await reloadAccount();
@@ -174,7 +169,8 @@ export function createFundDialogs({
     const saveLabel = installment ? '确认补记' : edit ? '保存修改' : receipt ? '确认到账' : registerRedemption ? '保存预登记' : '保存记账';
     save.textContent = saveLabel;
     error.hidden = true;
-    document.querySelector('#fund-title').textContent = installment ? '手动补记定投' : edit ? `修改${SIDES[side]}` : receipt ? '确认赎回到账' : registerRedemption ? SIDES.fund_redeem_pending : SIDES[side];
+    const installmentTitle = installment?.row.restoration_terms ? '重新补记定投' : '手动补记定投';
+    document.querySelector('#fund-title').textContent = installment ? installmentTitle : edit ? `修改${SIDES[side]}` : receipt ? '确认赎回到账' : registerRedemption ? SIDES.fund_redeem_pending : SIDES[side];
     document.querySelector('#fund-help').textContent = installment
       ? (installment.row.possible_manual ? '账本已有同日同额的手动申购。请核对基金 App，确认这笔扣款尚未登记后再补记。' : '请先核对基金 App 的实际扣款。扣款计入在途资金，之后按公布净值确认份额。')
       : pending
@@ -490,12 +486,14 @@ export function createFundDialogs({
       installmentsBox.hidden = !selectedPlan;
       if (!selectedPlan) return;
       const plan = selectedPlan;
-      const statuses = {missing:'未记账', pending:'待确认份额', confirmed:'已确认', voided:'已作废', deleted:'已删除'};
+      const statuses = {missing:'未记账', pending:'待确认份额', confirmed:'已确认', voided:'已撤销登记', deleted:'已删除'};
       const rows = (plan.installments || []).map(row => {
-        const status = row.possible_manual ? '有手动申购待核对' : statuses[row.status];
+        const status = statuses[row.status];
+        const action = row.restoration_terms ? '重新补记' : row.status==='missing' ? '手动补记' : '';
         const detail = [row.code!==plan.code ? row.code : '', dcaSourceLabel(row.source),
-          row.date && row.date!==row.due_date ? `记账 ${row.date}` : '', row.reason].filter(Boolean).join(' · ');
-        return `<tr><td>${esc(row.due_date)}</td><td class="num">${money(row.amount)}</td><td>${esc(status)}${detail ? `<small>${esc(detail)}</small>` : ''}</td><td>${row.status==='missing' ? `<button type="button" class="text-button" data-dca-due="${esc(row.due_date)}">手动补记</button>` : '—'}</td></tr>`;
+          row.date && row.date!==row.due_date ? `记账 ${row.date}` : '',
+          row.possible_manual ? '有手动申购待核对' : '', row.reason].filter(Boolean).join(' · ');
+        return `<tr><td>${esc(row.due_date)}</td><td class="num">${money(row.amount)}</td><td>${esc(status)}${detail ? `<small>${esc(detail)}</small>` : ''}</td><td>${action ? `<button type="button" class="text-button" data-dca-due="${esc(row.due_date)}">${action}</button>` : '—'}</td></tr>`;
       }).join('');
       installmentsBox.innerHTML = `<div class="section-heading"><h3 id="dca-installments-title">${esc(fundDisplayName(plan.code) || plan.code)} · 每期记录</h3><span class="subtle">最近 ${esc(account.dca.history_days)} 天</span></div>
         ${rows ? `<div class="table-wrap dca-history-table"><table><thead><tr><th>扣款日</th><th class="num">金额 / 元</th><th>记账状态</th><th>操作</th></tr></thead><tbody>${rows}</tbody></table></div>` : '<p class="subtle">这段时间暂无到期记录。</p>'}`;
@@ -503,8 +501,9 @@ export function createFundDialogs({
         button.onclick = () => {
           if (saving) return;
           const row = plan.installments.find(item=>item.due_date===button.dataset.dcaDue);
-          openFundTrade(account, 'fund_pending', plan.code, plan.strategy || 'core', null, null, {
-            plan, row,
+          const terms = {...plan, ...row.restoration_terms};
+          openFundTrade(account, 'fund_pending', terms.code, terms.strategy || 'core', null, null, {
+            plan:terms, row,
             onSaved: () => {
               openDcaPlans(currentAccount(), strategy, code, plan.id);
               document.querySelector('#status').textContent = '定投已补记';

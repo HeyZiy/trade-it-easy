@@ -291,16 +291,16 @@ def _edit_location(state, payload):
         raise ValueError("流水不存在")
     if any(row.get("side") in REDEMPTION_ORDERS or (row.get("side") == "fund_redeem" and "pending_id" in row)
            for row in (events[index], payload)):
-        raise ValueError("赎回预登记、作废及到账确认流水不可更正")
+        raise ValueError("赎回预登记、撤销及到账确认流水不可更正")
     if events[index].get("kind") == "pending":
         raise ValueError("在途申购归属迁移流水不可更正")
     if events[index]["side"] == "fund_pending":
         if any(e.get("pending_id") == events[index]["id"] for e in events[index + 1:]):
             raise ValueError("申购已确认，请在确认流水中更正份额")
         if any(e.get("voided_pending_id") == events[index]["id"] for e in events[index + 1:]):
-            raise ValueError("申购已作废，流水不可更正")
+            raise ValueError("申购已撤销，流水不可更正")
     if events[index]["side"] == "fund_void" or payload.get("side") == "fund_void":
-        raise ValueError("作废流水不可更正")
+        raise ValueError("撤销流水不可更正")
     min_day = events[index - 1]["date"] if index else state["initial"]["date"]
     max_day = events[index + 1]["date"] if index + 1 < len(events) else _today().isoformat()
     return index, min_day, max_day
@@ -366,7 +366,7 @@ def delete_fund_subscription(path, payload):
         removed = [row for row in events if row["id"] == order_id
                    or (row["side"] == "fund_confirm" and row["pending_id"] == order_id)]
         if any(row["side"] == "fund_void" and row["voided_pending_id"] == order_id for row in events):
-            raise ValueError("该申购已作废")
+            raise ValueError("该申购已撤销")
         state["events"] = replay_without_subscription(state, {row["id"] for row in removed})
         today = _today().isoformat()
         deletion = {"id": request_id, "request": payload, "date": today, "events": removed}

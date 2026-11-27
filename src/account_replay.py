@@ -140,7 +140,7 @@ def _fund_event(payload, view, day):
             raise ValueError("待到账赎回不存在或已处理")
         order = {key: redemption[key] for key in ("code", "qty", "strategy", "trading_account") if key in redemption}
         if any(payload.get(key, value) != value for key, value in order.items()):
-            raise ValueError("到账或作废须沿用原赎回信息")
+            raise ValueError("到账或撤销须沿用原赎回信息")
         if side == "fund_redeem_void":
             return {**order, reference: pending_id}
         payload = {**payload, **order}
@@ -150,7 +150,7 @@ def _fund_event(payload, view, day):
             raise ValueError("申请份额须为正数，最多六位小数")
         return {"code": fund_code(payload.get("code")), "qty": qty, "strategy": fund_strategy(payload)}
     if side == "fund_void":
-        # 作废只引用在途申购，不带 code/amount：金额与标的取自原申购流水。
+        # 撤销只引用在途申购，不带 code/amount：金额与标的取自原申购流水。
         pending_id = payload.get("voided_pending_id")
         pending = view["fund_pending"].get(pending_id)
         if not pending:
@@ -480,7 +480,7 @@ class _Replay:
                                                "strategy": strategy}
             change = -event["amount"]
         elif side == "fund_void":
-            # 作废补偿流水：撤销在途申购，现金原路退回（扣款失败/误记）。
+            # 撤销补偿流水：撤销在途申购，现金原路退回（扣款失败/误记）。
             del self.fund_pending[event["voided_pending_id"]]
             change = event["amount"]
         else:

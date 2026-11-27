@@ -38,7 +38,7 @@ AGING_TRADING_DAYS = 5     # 待确认超过该交易日数未确认份额即告
 NEXT_DUE_WINDOW_DAYS = 31 + POSTPONE_MAX_DAYS
 
 _PLAN_ID_RE = re.compile(r"[0-9a-f]{32}")
-_DCA_EVENT_RE = re.compile(rf"{DCA_REQUEST_PREFIX}({_PLAN_ID_RE.pattern})-(\d{{4}}-\d{{2}}-\d{{2}})")
+_DCA_EVENT_RE = re.compile(rf"{DCA_REQUEST_PREFIX}({_PLAN_ID_RE.pattern})-(\d{{4}}-\d{{2}}-\d{{2}})(?:-r([1-9]\d*))?")
 
 
 def _plans_path(account_path):
@@ -196,6 +196,11 @@ def _request_id(plan, due):
     return f"{DCA_REQUEST_PREFIX}{plan['id']}-{due.isoformat()}"
 
 
+def _restoration_terms(event):
+    return {"code": event["code"], "strategy": fund_strategy(event), "amount": event["amount"],
+            "trading_account": event.get("request", {}).get("trading_account")}
+
+
 def _next_due(plan, today, known_ids):
     if not plan.get("enabled", True):
         return None
@@ -331,20 +336,34 @@ def record_installment(account_path, payload):
         plan = next((row for row in _read_plans(plans_path)["plans"] if row["id"] == plan_id), None)
         if plan is None:
             raise ValueError("定投计划已更新，请刷新后核对")
-        entry = _subscription_payload(plan, due, today, payload.get("revision"))
-        existing = next((row for row in state["events"] if row["id"] == entry["request_id"]), None)
-        if existing:
+        base_id = _request_id(plan, due)
+        deleted = deleted_subscription_events(state)
+        voided = {row["voided_pending_id"] for row in state["events"] if row["side"] == "fund_void"}
+        attempts = {}
+        for row in (*state["events"], *deleted.values()):
+            match = _DCA_EVENT_RE.fullmatch(row["id"])
+            if match and match.group(1, 2) == (plan_id, date_text):
+                attempts[int(match[3] or 0)] = row
+        attempt = max(attempts, default=-1)
+        existing = attempts.get(attempt)
+        if existing and existing["id"] not in deleted and existing["id"] not in voided:
             if existing.get("request", {}).get("dca_manual") == manual_id:
                 return existing
             raise ValueError("该期已有流水，请刷新定投记录核对")
+        if existing and any(row.get("request", {}).get("dca_manual") == manual_id for row in attempts.values()):
+            raise ValueError("该次补记已撤销或删除，请重新发起补记")
+        terms = {**plan, **_restoration_terms(existing)} if existing else plan
         start = max(today - timedelta(days=HISTORY_DAYS - 1), date.fromisoformat(state["initial"]["date"]))
-        if (not plan.get("enabled", True) or not start <= due <= today
-                or due not in _due_dates(plan, due, due)
+        if (not start <= due <= today
+                or (existing is None and (not plan.get("enabled", True) or due not in _due_dates(plan, due, due)))
                 or (payload.get("code"), payload.get("strategy"), payload.get("plan_amount"), payload.get("plan_account"))
-                != (plan["code"], fund_strategy(plan), plan["amount"], plan.get("trading_account"))):
+                != (terms["code"], fund_strategy(terms), terms["amount"], terms.get("trading_account"))):
             raise ValueError("该期不在当前计划内，请刷新后核对")
+        entry = _subscription_payload(terms, due, today, payload.get("revision"))
+        if existing:
+            entry["request_id"] = f"{base_id}-r{attempt + 1}"
         entry.update(amount=payload.get("amount"), dca_manual=manual_id)
-        if not plan.get("trading_account") and payload.get("trading_account"):
+        if not terms.get("trading_account") and payload.get("trading_account"):
             entry["trading_account"] = payload["trading_account"]
         if payload.get("subscription_fee") is not None:
             entry["subscription_fee"] = payload["subscription_fee"]
@@ -373,11 +392,12 @@ def dca_status(account_path):
     voided = {event["voided_pending_id"] for event in events if event["side"] == "fund_void"}
     unlinked = _unlinked_subscriptions(events, voided)
     installments, sources = {}, {}
+    attempts = []
     for event in (*events, *deleted.values()):
         match = _DCA_EVENT_RE.fullmatch(event["id"])
-        if event["side"] != "fund_pending" or match is None:
-            continue
-        plan_id, due_date = match.groups()
+        if event["side"] == "fund_pending" and match:
+            attempts.append((match[1], match[2], int(match[3] or 0), event))
+    for plan_id, due_date, _, event in sorted(attempts, key=lambda row: row[:3]):
         nav_date = event["nav_date"]
         source = ("manual" if event.get("request", {}).get("dca_manual")
                   else "automatic" if event["date"] == due_date else "automatic_backfill")
@@ -391,6 +411,13 @@ def dca_status(account_path):
                 "due_date": due_date, "status": status, "source": source,
                 "date": event["date"], "amount": event["amount"], "code": event["code"],
             }
+            if status in {"deleted", "voided"}:
+                terms = _restoration_terms(event)
+                installments[plan_id][due_date].update(
+                    restoration_terms=terms,
+                    possible_manual=_has_matching_manual(unlinked, terms, due_date,
+                                                         account["_config"].get("trading_accounts")),
+                )
         previous = latest.get(plan_id)
         if previous is None or due_date >= previous["due_date"]:
             latest[plan_id] = {"status": "deleted" if is_deleted else "recorded",

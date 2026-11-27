@@ -275,6 +275,39 @@ def test_missed_day_is_listed_and_can_be_recorded_manually(account, weekend_cale
     assert wallet.snapshot(load(account), '2025-01-07')['cash'] == 990
 
 
+@pytest.mark.parametrize('removed_status', ['voided', 'deleted'])
+def test_removed_installment_can_be_recorded_again(account, weekend_calendar, monkeypatch, removed_status):
+    from src.etf_account import delete_fund_subscription
+
+    plan = save_backdated(account, monkeypatch, amount=100)
+    fee_event(account)
+    original, = fund_plans.record_due_subscriptions(account)
+    current = original
+    for expected_amount in (95, 90):
+        if removed_status == 'voided':
+            void_event(account, current['id'])
+        else:
+            delete_fund_subscription(account, dict(event_id=current['id'], request_id=str(uuid4()),
+                                                   revision=revision(load(account))))
+        row = fund_plans.dca_status(account)['plans'][0]['installments'][0]
+        assert row['status'] == removed_status
+        terms = row['restoration_terms']
+        payload = dict(id=plan['id'], due_date=row['due_date'], request_id=str(uuid4()),
+                       code=terms['code'], strategy=terms['strategy'], plan_amount=terms['amount'],
+                       plan_account=terms['trading_account'], amount=expected_amount,
+                       revision=revision(load(account)), subscription_fee={'kind': 'none', 'value': 0})
+        restored = fund_plans.record_installment(account, payload)
+        assert restored['id'] != current['id'] and restored['nav_date'] == original['nav_date']
+        assert fund_plans.record_installment(account, payload) == restored
+        with pytest.raises(ValueError, match='已有流水'):
+            fund_plans.record_installment(account, payload | {'request_id': str(uuid4())})
+        assert fund_plans.record_due_subscriptions(account) == []
+        row = fund_plans.dca_status(account)['plans'][0]['installments'][0]
+        assert (row['status'], row['amount']) == ('pending', expected_amount)
+        assert wallet.snapshot(load(account), '2025-01-07')['pending_fund_value'] == expected_amount
+        current = restored
+
+
 def test_automatic_run_records_only_today(account, weekend_calendar, monkeypatch):
     save_backdated(account, monkeypatch, anchor=6)
     save_backdated(account, monkeypatch, anchor=7)
@@ -415,7 +448,7 @@ def test_voided_pending_blocks_edit_of_original(account, weekend_calendar, monke
     fee_event(account)
     pending_id = fund_plans.record_due_subscriptions(account)[0]['id']
     void_event(account, pending_id)
-    with pytest.raises(ValueError, match='已作废'):
+    with pytest.raises(ValueError, match='已撤销'):
         event_context(account, {'event_id': pending_id, 'revision': revision(load(account))})
 
 

@@ -53,7 +53,7 @@ def prepare(event, payload, view, settings, *, historical=False):
     if pending:
         origin = pending.get("trading_account", UNKNOWN)
         if account is not None and account != origin:
-            raise ValueError("确认或作废须沿用原申购账户")
+            raise ValueError("确认或撤销须沿用原申购账户")
         account = origin
     owner = event.get("from_strategy", event.get("strategy"))
     held = {r["account"]: r["qty"] for r in owners if
