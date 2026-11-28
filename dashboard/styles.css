@@ -38,6 +38,7 @@ main { max-width: 1200px; margin: auto; padding: 22px 30px 52px; }
 .status-bar-item:first-child { border-left: 0; padding-left: 0; }
 .status-bar-item span { flex-shrink: 0; color: var(--muted); font-size: 11px; letter-spacing: .02em; }
 .status-bar-item b { font-size: 15px; font-weight: 650; font-variant-numeric: tabular-nums; color: var(--green-deep); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.status-bar-item small, .stat small { display: block; color: var(--muted); font-size: 11px; }
 .status-bar-item b.is-gain { color: var(--gain); }
 .status-bar-item b.is-loss { color: var(--loss); }
 @media (max-width: 680px) {

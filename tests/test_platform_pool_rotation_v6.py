@@ -76,7 +76,8 @@ def start(world, script='pool_rotation.py'):
     stub, strategy, codes = create(script)
     for code in codes:
         stub.quote_overrides[code] = {'low_limit': .01}
-    strategy.after_trading_end = lambda context: None  # 交易桩每天调用这个可选回调。
+    if not hasattr(strategy, 'after_trading_end'):
+        strategy.after_trading_end = lambda context: None  # 交易桩每天调用这个可选回调。
     return stub, strategy, codes, calendar
 
 
@@ -164,3 +165,182 @@ def test_ma20_exit_and_next_day_recovery(world, block_sale, financial_exit):
     stub.run_days(calendar[272:273])
     assert code not in stub.g.trend_exit_pending
     assert (code not in strategy._held(stub.ctx)) == financial_exit
+
+
+EPS_SCRIPT = 'pool_rotation_eps_retention.py'
+
+
+def eps_portfolio(world, script=EPS_SCRIPT):
+    stub, strategy, codes, cal = start(world, script)
+    old, new = codes[0], codes[6]
+    stub.closes[new] += pd.Series(range(len(cal)), index=cal) / 100
+    stub.date_tables['valuation'].loc[6, 'pe_ratio'] = 40.
+    stub.run_days(cal[270:271])
+    assert strategy._held(stub.ctx) == set(codes[:6])
+    stub.date_tables['valuation'].loc[6, 'pe_ratio'] = 20.
+    report = stub.date_tables['indicator']
+    report.loc[0, ['statDate', 'pubDate']] = ['2024-12-31', str(cal[271].date())]
+    return stub, strategy, codes, cal, old, new
+
+
+@pytest.mark.parametrize('case', ['weak', 'flat', 'growing', 'unknown', 'entry_day', 'limit_up',
+                                  'partial_sale', 'buy_rejected', 'delayed_buy', 'tied_momentum',
+                                  'industry', 'vacancy'])
+def test_eps_replacement_from_signal_through_fills(world, case):
+    stub, strategy, codes, cal, old, new = eps_portfolio(world)
+    reads = []
+
+    def eps(code, report, cutoff):
+        reads.append((code, cutoff))
+        assert code == old and report == pd.Timestamp('2024-12-31') and cutoff < stub.today
+        return {'growing': (1.01, 1.), 'flat': (1., 1.), 'unknown': None}.get(case, (.9, 1.))
+
+    strategy._read_eps = eps
+    if case == 'entry_day':
+        stub.date_tables['indicator'].loc[0, 'pubDate'] = str(cal[270].date())
+    if case == 'limit_up':
+        stub.quote_overrides[new]['high_limit'] = stub.closes[new][cal[272]]
+    if case == 'partial_sale':
+        stub.sell_caps[old] = 100
+    if case == 'buy_rejected':
+        stub.reject_buys.add(new)
+    if case == 'delayed_buy':
+        # 模拟委托返回时的 filled 尚未更新，收盘时账户已出现新仓。
+        submit = strategy.order_target
+        def delayed(code, shares):
+            order = submit(code, shares)
+            if code == new and order is not None:
+                order.filled = 0
+            return order
+        strategy.order_target = delayed
+    if case == 'tied_momentum':
+        stub.closes[new][:] = 10.
+    if case == 'industry':
+        strategy.get_industry = lambda securities, date: {
+            c: {'sw_l1': {'industry_code': 'X' if c in [codes[1], codes[2], new] else c}}
+            for c in securities}
+    if case == 'vacancy':
+        stub.date_tables['indicator'].loc[5, 'inc_net_profit_year_on_year'] = 4.
+
+    stub.run_days(cal[271:272])
+    assert not reads and old in strategy._held(stub.ctx)
+    stub.run_days(cal[272:273])
+    holdings = strategy._held(stub.ctx)
+    paired = case in ('weak', 'flat', 'delayed_buy')
+    assert (new in holdings) == (paired or case == 'vacancy')
+    assert (old in holdings) == (not paired and case != 'buy_rejected')
+    assert len(reads) == (case != 'entry_day')
+    assert len(strategy.g.fill_pairs) == paired
+    if case in ('partial_sale', 'buy_rejected'):
+        assert len(stub.orders) == 7 and stub.orders[-1][0] == 'S'
+    if case == 'limit_up':
+        stub.quote_overrides[new].pop('high_limit')
+        stub.run_days(cal[273:274])
+        assert new in strategy._held(stub.ctx) and len(reads) == 1
+    if case == 'weak':
+        def bars(codes, start_date, end_date, **kwargs):
+            assert kwargs['fq'] == 'post' and start_date == cal[272].date() and end_date == cal[331].date()
+            return pd.DataFrame({'code': codes + codes, 'time': [start_date] * 2 + [end_date] * 2,
+                                 'open': [10, 20, 10, 20], 'close': [10, 20, 11, 25], 'paused': 0})
+        strategy.get_price = bars
+        stub.ctx.current_dt = cal[331]
+        strategy.on_strategy_end(stub.ctx)
+        assert '平均差=15.00' in stub.logs[-1]
+
+
+def test_eps_strategy_tracks_control_until_disclosure(world):
+    def trades(script):
+        stub, strategy, codes, cal, old, new = eps_portfolio(world, script)
+        if script == EPS_SCRIPT:
+            strategy._read_eps = lambda *args: (1.1, 1.)
+        stub.date_tables['indicator'].loc[1, 'inc_net_profit_year_on_year'] = 3.
+        stub.run_days(cal[271:276])
+        return stub.orders, stub.portfolio.cash
+    assert trades(EPS_SCRIPT) == trades('pool_rotation_ma20.py')
+
+
+def test_rolling_eps_uses_disclosed_comparatives_and_same_share_units(world):
+    _, strategy, _, _ = start(world, EPS_SCRIPT)
+    report, pub = pd.Timestamp('2024-06-30'), pd.Timestamp('2024-08-20')
+    def row(year, month, published, value, kind=0):
+        end = pd.Period('%d-%02d' % (year, month), freq='M').end_time.date()
+        return (str(year) + '-01-01', str(end), published, value, kind)
+    rows = pd.DataFrame([
+        row(2024, 6, '2024-08-20', .32), row(2023, 6, '2024-08-20', .30, 1),
+        row(2023, 6, '2023-08-15', .60), row(2022, 6, '2023-08-15', .48, 1),
+        row(2023, 12, '2024-03-20', 1.40), row(2022, 12, '2024-03-20', 1.20, 1),
+        row(2024, 6, '2025-08-20', .50, 1),
+    ], columns=['start_date', 'end_date', 'pub_date', 'basic_eps', 'report_type'])
+    # 十送十之后的报告已把上年同期从 .60 重列为 .30。此前报告仍须换算。
+    actions = pd.DataFrame({'a_xr_date': pd.to_datetime(['2024-04-02', '2024-06-02']),
+                            'dividend_ratio': [None, 10.], 'transfer_ratio': [None, None]})
+    assert strategy._rolling_eps(rows, actions, report, pub) == (.72, .66)
+    assert strategy._rolling_eps(rows.drop(index=3), actions, report, pub) is None
+    conflict = pd.concat([rows, rows.iloc[[0]].assign(basic_eps=.41)])
+    assert strategy._rolling_eps(conflict, actions, report, pub) is None
+
+
+@pytest.mark.parametrize('confirm, first_growth, second_growth, other_failure, sell_offset', [
+    (False, 9.9, None, False, 271),
+    (True, 9.9, 8., False, 274),
+    (True, 10., 12., False, None),
+    (True, 0., None, False, 271),
+    (True, -3., None, False, 271),
+    (True, 9.9, None, True, 271),
+])
+def test_growth_confirmation_replays_two_distinct_reports(
+        world, confirm, first_growth, second_growth, other_failure, sell_offset):
+    stub, strategy, codes, cal = start(world, 'pool_rotation_ma20.py')
+    strategy.CONFIRM_GROWTH_EXIT = confirm
+    old, candidate = codes[0], codes[6]
+    indicators = stub.date_tables['indicator']
+    indicators.loc[0, 'inc_net_profit_year_on_year'] = 10.1
+    rows = pd.DataFrame([
+        [old, '2024q1', cal[269], 10.1],
+        [old, '2024q2', cal[270], first_growth],
+        [old, '2024q3', cal[273], second_growth],
+    ], columns=indicators.columns[[0, 2, 3, 1]])
+
+    def history(securities, fields, watch_date, count, interval, stat_by_year):
+        assert securities == [old]
+        assert pd.Timestamp(watch_date) < stub.today
+        assert count == 4 and interval == '1q' and stat_by_year is False
+        # 同时返回当时尚不可见的行，检查策略会自行按披露日过滤。
+        return rows
+
+    strategy.get_history_fundamentals = history
+    stub.run_days(cal[270:271])
+    indicators.loc[0, ['statDate', 'pubDate', 'inc_net_profit_year_on_year']] = [
+        '2024q2', str(cal[270].date()), first_growth]
+    indicators.loc[6, 'inc_net_profit_year_on_year'] = 9.9
+    if other_failure:
+        stub.date_tables['valuation'].loc[0, 'pe_ratio'] = 30.
+    stub.run_days(cal[271:274])
+    if second_growth is not None:
+        indicators.loc[0, ['statDate', 'pubDate', 'inc_net_profit_year_on_year']] = [
+            '2024q3', str(cal[273].date()), second_growth]
+    stub.run_days(cal[274:276])
+
+    sales = [row[:3] for row in stub.orders if row[0] == 'S']
+    assert sales == ([('S', str(cal[sell_offset].date()), old)] if sell_offset else [])
+    assert candidate not in strategy._held(stub.ctx)
+    assert len(strategy.g.growth_waits) == (second_growth is not None)
+
+
+def test_growth_confirmation_needs_visible_adjacent_quarter(world):
+    stub, strategy, codes, cal = start(world, 'pool_rotation_ma20.py')
+    strategy.CONFIRM_GROWTH_EXIT = True
+    old = codes[0]
+    strategy.get_history_fundamentals = lambda *args, **kwargs: pd.DataFrame({
+        'code': [old, old], 'statDate': ['2024q1', '2024q2'],
+        'pubDate': [cal[268], cal[272]], 'inc_net_profit_year_on_year': [4., 9.9],
+    })
+    stub.run_days(cal[270:271])
+    stub.date_tables['indicator'].loc[0, ['statDate', 'pubDate', 'inc_net_profit_year_on_year']] = [
+        '2024q3', str(cal[270].date()), 8.]
+    stub.run_days(cal[271:273])
+    assert old in strategy._held(stub.ctx)
+    assert (old, pd.Timestamp('2024-09-30')) in strategy.g.growth_missing
+    stub.run_days(cal[273:274])
+    assert stub.orders[-1][0] == 'B'
+    assert ('S', str(cal[273].date()), old) in [row[:3] for row in stub.orders]

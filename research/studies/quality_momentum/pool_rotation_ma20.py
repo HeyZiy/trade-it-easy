@@ -1,6 +1,49 @@
 # -*- coding: utf-8 -*-
 """质量动量 v6 聚宽实验组：补位时跳过昨收低于下行 MA20 的候选。
 回测：日频，2016-01-04 至 2026-09-01，100 万元，中证 800。
+将 CONFIRM_GROWTH_EXIT 改为 True，用同样设置回测两季确认退出。
+策略收益
+360.99%
+策略年化收益
+15.89%
+超额收益
+293.63%
+基准收益
+17.11%
+阿尔法
+0.136
+贝塔
+0.703
+夏普比率
+0.594
+胜率
+0.611
+盈亏比
+2.291
+最大回撤 
+30.20%
+索提诺比率
+0.862
+日均超额收益
+0.06%
+超额收益最大回撤
+34.39%
+超额收益夏普比率
+0.645
+日胜率
+0.512
+盈利次数
+69
+亏损次数
+44
+信息比率
+0.913
+策略波动率
+0.200
+基准波动率
+0.194
+最大回撤区间
+2024/05/14,2025/04/07
 """
 from jqdata import *
 from jqfactor import get_factor_values
@@ -15,6 +58,7 @@ MAX_HOLDINGS = 6
 INDUSTRY_CAP = 2
 ROE_MIN = 12.0
 GROWTH_MIN = 10.0
+CONFIRM_GROWTH_EXIT = False
 PE_MAX = 30.0
 PB_MAX = 5.0
 VOLATILITY_MAX = 35.0
@@ -35,6 +79,7 @@ def initialize(context):
     set_slippage(PriceRelatedSlippage(SLIPPAGE_SPREAD))
     log.set_level('order', 'error')
     g.exit_pending = {}
+    g.growth_waits, g.growth_missing = set(), set()
     g.entry_plan = None
     g.last_signal_day = g.last_execution_day = g.sell_tax = None
     _set_costs(context)
@@ -83,7 +128,8 @@ def _financials(asof, codes):
     if _b.isinstance(financial, pd.DataFrame) and financial.empty and _b.len(codes) <= 4500:
         financial = get_fundamentals(q, date=asof)
     financial = _indexed(financial, fields, 'financial').reindex(codes)
-    visible = ((financial['statDate'].map(_report_date) <= asof)
+    report_period = financial['statDate'].map(_report_date)
+    visible = ((report_period <= asof)
                & (pd.to_datetime(financial['pubDate'], errors='coerce') <= asof))
     factors = get_factor_values(securities=codes, factors=['roe_ttm'], end_date=asof.date(), count=1)
     roe = factors['roe_ttm']
@@ -95,14 +141,70 @@ def _financials(asof, codes):
     values = valuations[['pe_ratio', 'pb_ratio']].apply(pd.to_numeric, errors='coerce')
     values['roe'] = (pd.to_numeric(roe.iloc[-1], errors='coerce').reindex(codes) * 100).where(visible)
     values['growth'] = pd.to_numeric(financial[fields[0]], errors='coerce').where(visible)
-    return values.replace([np.inf, -np.inf], np.nan)
+    values = values.replace([np.inf, -np.inf], np.nan)
+    values['report_period'] = report_period.where(visible)
+    return values
 
 
-def _quality(asof, universe, requested):
+def _previous_growth(asof, report_periods):
+    field = 'inc_net_profit_year_on_year'
+    try:
+        history = get_history_fundamentals(
+            _b.list(report_periods.index),
+            [indicator.statDate, indicator.pubDate, indicator.inc_net_profit_year_on_year],
+            watch_date=asof.date(), count=4, interval='1q', stat_by_year=False)
+        history = history[['code', 'statDate', 'pubDate', field]].copy()
+    except Exception as exc:
+        log.info('上一季利润增速查询失败：%s' % exc)
+        return {}
+    history['report'] = history['statDate'].map(_report_date)
+    history['published'] = pd.to_datetime(history['pubDate'], errors='coerce').dt.normalize()
+    visible = history[history['published'].le(asof) & history['published'].ge(history['report'])]
+    result = {}
+    for code, report in report_periods.items():
+        previous = (report.to_period('Q') - 1).end_time.normalize()
+        rows = visible.loc[visible['code'].eq(code) & visible['report'].eq(previous)]
+        if rows.empty:
+            continue
+        latest = rows.loc[rows['published'].eq(rows['published'].max()), field]
+        growth = pd.to_numeric(latest, errors='coerce')
+        if np.isfinite(growth).all() and growth.nunique() == 1:
+            result[code] = growth.iloc[0]
+    return result
+
+
+def _confirm_growth_exits(asof, values, violations, held):
+    soft = values.index.isin(held) & values.growth.gt(0) & violations['profit_growth_low']
+    reports = values.loc[soft, 'report_period']
+    if reports.empty:
+        return set()
+    previous = _previous_growth(asof, reports)
+    other_failure = violations.drop(columns=['profit_growth_low']).any(axis=1)
+    waiting = set()
+    for code, report in reports.items():
+        prior = previous.get(code)
+        if prior is not None and prior <= GROWTH_MIN:
+            continue
+        violations.at[code, 'profit_growth_low'] = False
+        if other_failure.at[code]:
+            continue
+        if prior is None:
+            g.growth_missing.add((code, report))
+        else:
+            waiting.add(code)
+            key = (code, report)
+            if key not in g.growth_waits:
+                g.growth_waits.add(key)
+                log.info('%s 等待下季利润确认：%s，%.2f%% → %.2f%%'
+                         % (code, report.date(), prior, values.at[code, 'growth']))
+    return waiting
+
+
+def _quality(asof, universe, requested, held):
     failed = {code: 'not_in_mainboard_universe' for code in requested - universe}
     codes = _b.sorted(requested & universe)
     if not codes:
-        return set(), failed
+        return set(), failed, set()
     values = _financials(asof, codes)
     quotes = get_current_data()
     flags = {}
@@ -119,11 +221,15 @@ def _quality(asof, universe, requested):
         'pb_nonpos': values.pb_ratio.le(0), 'pb_high': values.pb_ratio.ge(PB_MAX),
         'st': st.eq(True),
     })
+    complete = values.notna().all(axis=1) & st.notna()
+    passed = set(values.index[~violations.any(axis=1) & complete])
+    waiting = set()
+    if CONFIRM_GROWTH_EXIT:
+        waiting = _confirm_growth_exits(asof, values, violations, held)
     out = violations.any(axis=1)
     for code, row in violations.loc[out].iterrows():
         failed[code] = '|'.join(row.index[row])
-    passed = set(values.index[~out & values.notna().all(axis=1) & st.notna()])
-    return passed, failed
+    return passed, failed, waiting & set(complete.index[complete])
 
 
 def _rank_entries(asof, codes):
@@ -172,11 +278,11 @@ def _update_exits(held, passed, failed):
 
 def _review_holdings(asof, universe, held):
     try:
-        passed, failed = _quality(asof, universe, held)
+        passed, failed, waiting = _quality(asof, universe, held, held)
     except Exception as exc:
         log.info('持仓快照异常：%s' % exc)
         return False
-    _update_exits(held, passed, failed)
+    _update_exits(held, passed | waiting, failed)
     return True
 
 
@@ -211,13 +317,13 @@ def on_signal(context):
         return
 
     try:
-        passed, failed = _quality(asof, universe, universe | held)
+        passed, failed, waiting = _quality(asof, universe, universe | held, held)
     except Exception as exc:
         if held and not reviewed:
             _review_holdings(asof, universe, held)
         log.info('全市场快照异常：%s' % exc)
         return
-    _update_exits(held, passed, failed)
+    _update_exits(held, passed | waiting, failed)
     kept = held - set(g.exit_pending)
     try:
         if _b.len(kept) >= MAX_HOLDINGS:
@@ -312,3 +418,9 @@ def on_open(context):
         shares = _b.int(_b.min(budget / price, affordable) // 100) * 100
         if shares >= 100:
             _order_target(code, shares)
+
+
+def on_strategy_end(context):
+    if CONFIRM_GROWTH_EXIT:
+        log.info('旧仓利润两季确认：观察 %d 个股票/报告期，前季数据缺失 %d 个股票/报告期'
+                 % (_b.len(g.growth_waits), _b.len(g.growth_missing)))

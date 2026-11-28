@@ -1,6 +1,6 @@
 import { esc, finite, accountRequest } from './common.js';
 
-import { money, fundShares, shanghaiToday } from './dashboard-format.js';
+import { money, fundShares, shanghaiToday, includedPending } from './dashboard-format.js';
 
 function custodyName(account,id) {
   return account.trading_accounts?.accounts[id]?.name || '待归属';
@@ -66,8 +66,8 @@ function custodySection(account, {strategyName, fundDisplayName}) {
       const name=row.kind==='fund' ? fundDisplayName(row.code) : account.positions.find(p=>p.code===row.code)?.name;
       return `<tr><td>${esc(name || row.code)}<small>${esc(row.code)} · ${esc(strategyName(row.strategy))}</small></td><td>${fundShares(row.qty)}</td><td>${money(row.market_value)}</td><td>${action(row.kind,account.custody_positions.indexOf(row))}</td></tr>`;
     }).join('');
-    return `<details class="custody-group"${id==='unlocated'?' open':''}><summary>${esc(custodyName(account,id))} · ${assets}</summary>
-      <p>现金 ${money(cash)} 元 ${cash>0?action('cash',-1):''} ${adjust}${orders.length?` · 在途申购 ${money(inTransit)} 元`:''}</p>
+    return `<details class="custody-group"${id==='unlocated'?' open':''}><summary>${esc(custodyName(account,id))} · ${assets}${inTransit > 0 ? ` · ${includedPending(inTransit)}` : ''}</summary>
+      <p>现金 ${money(cash)} 元 ${cash>0?action('cash',-1):''} ${adjust}</p>
       ${rows?`<div class="table-wrap"><table><thead><tr><th>持仓</th><th>份额</th><th>市值 / 元</th><th></th></tr></thead><tbody>${rows}</tbody></table></div>`:''}</details>`;
   }).join('');
   return `<section class="section"><div class="section-heading"><h2>按交易账户查看</h2><a href="/settings/accounts">账户设置</a></div>${groups}</section>`;

@@ -1,6 +1,6 @@
 import { esc, finite } from './common.js';
 
-import { number, price, money, signed, percent, ratio, isAllocation, acceptsFunds, HOLDING_NAMES, ASSET_NAMES, fundShares, quotePrice, valuationLabel } from './dashboard-format.js';
+import { number, price, money, signed, percent, ratio, isAllocation, acceptsFunds, HOLDING_NAMES, ASSET_NAMES, fundShares, quotePrice, valuationLabel, includedPending } from './dashboard-format.js';
 
 import { chartSection } from './performance.js';
 
@@ -9,6 +9,8 @@ import { custodyProduct, custodySection } from './trading-accounts.js';
 const ALLOCATION_TOLERANCE = 0.01;
 const allocationToleranceNote = `${ALLOCATION_TOLERANCE*100} 个百分点内视为配平`;
 const isAllocationBalanced = deviation => Math.abs(deviation) <= ALLOCATION_TOLERANCE + Number.EPSILON;
+
+const pendingNote = amount => amount > 0 ? `<small>${includedPending(amount)}</small>` : '';
 
 export function createPortfolioView({
   currentAccount, ownerViews, strategyName, fundDisplayName,
@@ -76,7 +78,7 @@ export function createPortfolioView({
       `<div><dt>${esc(name)}</dt><dd>${money(account.cash_by_strategy[id])}</dd></div>`).join('');
     return `<section class="reconciliation" aria-label="账户摘要">
       <div class="reconciliation-top">
-        <div><span>总资产 / 元</span><strong>${finite(account.equity) ? money(account.equity) : '待估值'}</strong><small>${esc(valuationLabel(account.valuation))}</small></div>
+        <div><span>总资产 / 元</span><strong>${finite(account.equity) ? money(account.equity) : '待估值'}</strong><small>${esc(valuationLabel(account.valuation))}</small>${pendingNote(account.pending_fund_value)}</div>
         <div><span>累计盈亏 / 元</span><b class="${account.pnl > 0 ? 'is-gain' : account.pnl < 0 ? 'is-loss' : ''}">${pnl}</b></div>
         <div><span>累计收益率</span><b>${percent(latest?.nav)}</b>${latest ? `<small>收盘 · ${esc(latest.date)}</small>` : ''}</div>
         <div><span>账面现金 / 元</span><button type="button" id="account-cash-toggle" aria-label="查看各策略现金明细" aria-controls="account-cash-detail" aria-expanded="false"><b>${money(account.cash)}</b></button></div>
@@ -118,24 +120,35 @@ export function createPortfolioView({
 
   function accountDetails(account) {
     const assetFilters = Object.keys(account.asset_allocation || {}).map(kind => `<option value="class:${kind}">${ASSET_NAMES[kind]}</option>`).join('');
-    const filters = Object.keys(account.holdings_by_kind).map(kind => `<option value="${kind}">${HOLDING_NAMES[kind]}</option>`).join('');
+    const pendingByFund = new Map();
+    for (const order of Object.values(account.fund_pending || {})) {
+      pendingByFund.set(order.code, (pendingByFund.get(order.code) || 0) + order.amount);
+    }
+    const fundPositions = account.fund_positions || {};
+    const fundCodes = new Set([...Object.keys(fundPositions), ...pendingByFund.keys()]);
+    const kinds = new Set(Object.keys(account.holdings_by_kind));
+    if (fundCodes.size) kinds.add('fund');
+    const filters = [...kinds].map(kind => `<option value="${kind}">${HOLDING_NAMES[kind]}</option>`).join('');
     const rows = account.positions.map(row => {
       const owners = account.strategy_positions.filter(item=>item.code===row.code && item.count>0);
       const ownership = holdingOwnership(row.code, owners.map(owner => ({strategy:owner.strategy, shares:number(owner.count)})), 'listed') + custodyProduct(account,'listed',row.code) + assetClassButton(row, 'listed');
       return `<tr data-holding-kind="${row.kind}" data-asset-class="${row.asset_class || 'unknown'}"><td>${esc(row.name)}<small>${esc(row.code)}<span class="holding-mobile-count"> · ${number(row.count)} 份</span></small>${ownership}</td><td class="num">${number(row.count)}</td><td class="num">${quotePrice(row)}</td><td class="num">${finite(row.market_value) ? money(row.market_value) : '待估值'}</td><td class="num">${ratio(row.market_value,account.equity)}</td><td>${positionActions(row.code, owners.length===1 ? owners[0].strategy : '')}</td></tr>`;
     }).join('');
-    const fundRows = Object.values(account.fund_positions || {}).map(row => {
+    const fundRows = [...fundCodes].map(code => {
+      const row = fundPositions[code] || {code, market_value:0};
+      const pending = pendingByFund.get(code) || 0;
+      const amount = finite(row.market_value) ? row.market_value + pending : null;
       const owners = Object.entries(account.strategy_fund_positions || {})
         .filter(([, positions]) => positions[row.code]?.qty > 0)
         .map(([strategy, positions]) => ({strategy, shares:fundShares(positions[row.code].qty)}));
       const ownership = holdingOwnership(row.code, owners, 'fund') + custodyProduct(account,'fund',row.code) + assetClassButton(row, 'fund');
-      return `<tr data-holding-kind="fund" data-asset-class="${row.asset_class || 'unknown'}"><td>${esc(fundDisplayName(row.code) || '场外基金')}<small>${esc(row.code)}<span class="holding-mobile-count"> · ${fundShares(row.qty)} 份</span></small>${ownership}</td><td class="num">${fundShares(row.qty)}</td><td class="num">${fundMark(row)}</td><td class="num">${finite(row.market_value) ? money(row.market_value) : '待估值'}</td><td class="num">${ratio(row.market_value,account.equity)}</td><td>${fundActions(row.code,true)}</td></tr>`;
+      return `<tr data-holding-kind="fund" data-asset-class="${row.asset_class || 'unknown'}"><td>${esc(fundDisplayName(row.code) || '场外基金')}<small>${esc(row.code)}${row.qty ? `<span class="holding-mobile-count"> · ${fundShares(row.qty)} 份</span>` : ''}</small>${ownership}</td><td class="num">${fundShares(row.qty)}</td><td class="num">${row.qty ? fundMark(row) : '—'}</td><td class="num">${finite(amount) ? money(amount) : '待估值'}${pendingNote(pending)}</td><td class="num">${ratio(amount,account.equity)}</td><td>${fundActions(row.code,!!row.qty)}</td></tr>`;
     }).join('');
     return `${accountSummary(account)}${entryActions(account)}
       ${strategyAllocation(account)}${chartSection(account)}${pendingFundSection(account)}
       <section id="account-holdings" class="section" aria-labelledby="account-holdings-title" tabindex="-1"><div class="section-heading"><h2 id="account-holdings-title">账户持仓</h2><select id="holding-filter" aria-label="持仓类别"><option value="">全部持仓</option><optgroup label="资产类别">${assetFilters}</optgroup><optgroup label="产品类型">${filters}</optgroup></select></div>
         <p id="cash-class-detail" class="subtle" hidden>账面现金 ${money(account.cash)} 元 · 货币基金 ${finite(account.asset_allocation?.cash) ? `${money(account.asset_allocation.cash - account.cash)} 元` : '待估值'}</p>
-        <div class="table-wrap"><table class="account-holdings-table"><thead><tr><th scope="col">标的</th><th scope="col" class="num">份额</th><th scope="col" class="num">价格 / 元</th><th scope="col" class="num">市值 / 元</th><th scope="col" class="num">资产占比</th><th scope="col">记账</th></tr></thead><tbody>${rows}${fundRows}<tr id="holdings-empty" hidden><td colspan="6" class="empty">暂无持仓</td></tr></tbody></table></div></section>
+        <div class="table-wrap"><table class="account-holdings-table"><thead><tr><th scope="col">标的</th><th scope="col" class="num">份额</th><th scope="col" class="num">价格 / 元</th><th scope="col" class="num">当前金额 / 元</th><th scope="col" class="num">资产占比</th><th scope="col">记账</th></tr></thead><tbody>${rows}${fundRows}<tr id="holdings-empty" hidden><td colspan="6" class="empty">暂无持仓</td></tr></tbody></table></div></section>
       ${custodySection(account, {strategyName, fundDisplayName})}${recordSection(account)}`;
   }
 
@@ -147,7 +160,7 @@ export function createPortfolioView({
       const name=fund ? fundDisplayName(row.code) : row.name;
       return `<tr><td>${esc(name || row.code)}<small>${esc(row.code)}</small></td><td>${fund ? fundShares(row.qty) : number(row.count)}</td><td>${money(row.market_value)}</td><td>${fund ? fundActions(row.code,true,area.id) : positionActions(row.code,area.id)} ${holdingOwnership(row.code,[{strategy:area.id,shares:fund ? fundShares(row.qty) : number(row.count)}],row.kind)}</td></tr>`;
     }).join('');
-    return `<div class="stats">${[['资产',area.assets],['持仓与在途',area.invested],['现金',area.cash],['累计盈亏',area.pnl]].map(([label,value])=>`<div class="stat"><span>${label} / 元</span><b>${money(value)}</b></div>`).join('')}</div>
+    return `<div class="stats">${[['资产',area.assets,area.pending_fund_value],['持仓与在途',area.invested,area.pending_fund_value],['现金',area.cash],['累计盈亏',area.pnl]].map(([label,value,pending])=>`<div class="stat"><span>${label} / 元</span><b>${money(value)}</b>${pendingNote(pending)}</div>`).join('')}</div>
       ${entryActions(area)}<section class="section"><div class="section-heading"><h2>待定持仓</h2></div>
       ${rows ? `<div class="table-wrap"><table><thead><tr><th>标的</th><th>份额</th><th>市值 / 元</th><th>操作</th></tr></thead><tbody>${rows}</tbody></table></div>` : '<p class="empty">暂无待定持仓</p>'}</section>
       ${pendingFundSection(area,[])}${recordSection(area)}`;
@@ -155,7 +168,7 @@ export function createPortfolioView({
 
   function fundedStrategyPage(strategy) {
     if (strategy.holding_only) return holdingAreaPage(strategy);
-    const stats = [[finite(strategy.budget) ? money(strategy.budget) : finite(strategy.budget_pct)?'待估值':'待设置','目标资产 / 元'],[money(strategy.invested),strategy.pending_fund_value ? '持仓与在途 / 元' : '持仓市值 / 元'],[`${strategy.pnl>0?'+':''}${money(strategy.pnl)}`,'累计盈亏 / 元'],[money(strategy.cash),'策略现金 / 元']];
+    const stats = [[finite(strategy.budget) ? money(strategy.budget) : finite(strategy.budget_pct)?'待估值':'待设置','目标资产 / 元'],[money(strategy.invested),strategy.pending_fund_value ? '持仓与在途 / 元' : '持仓市值 / 元',strategy.pending_fund_value],[`${strategy.pnl>0?'+':''}${money(strategy.pnl)}`,'累计盈亏 / 元'],[money(strategy.cash),'策略现金 / 元']];
 
     const canRecord = currentAccount().can_record;
     const status = strategy.status && strategy.status!=='已分配' ? `<p class="subtle">${esc(strategy.status)}</p>` : '';
@@ -165,7 +178,7 @@ export function createPortfolioView({
       : strategy.id==='rotation' ? '<a href="/settings/rotation" class="text-button">编辑标的池</a>' : '';
     const actions = canRecord && (fundBuy || settings) ? `<div class="core-actions">${fundBuy}${settings}</div>` : '';
     const pending = acceptsFunds(strategy) ? pendingFundSection(strategy, currentAccount().dca?.recorded_today_by_strategy?.[strategy.id]) : '';
-    return `<div class="stats">${stats.map(([value,label])=>`<div class="stat"><span>${label}</span><b>${esc(value)}</b></div>`).join('')}</div>
+    return `<div class="stats">${stats.map(([value,label,pending])=>`<div class="stat"><span>${label}</span><b>${esc(value)}</b>${pendingNote(pending)}</div>`).join('')}</div>
       ${canRecord ? entryActions(strategy) : ''}
       <section class="section"><div class="section-heading"><h2>${allocation ? '持仓与目标配比' : '持仓与调仓建议'}</h2>${actions}</div>${status}${strategyPositionTable(strategy)}</section>
       ${pending}${chartSection(strategy)}${canRecord ? recordSection(strategy) : ''}`;
@@ -192,7 +205,7 @@ export function createPortfolioView({
     const latest = (account.history || []).filter(row => finite(row.nav) && row.nav > 0).at(-1);
     const gain = latest ? `${signed((latest.nav - 1) * 100)}%` : '—';
     const pnl = finite(account.pnl) ? `${account.pnl > 0 ? '+' : ''}${value(account.pnl)}` : '—';
-    return `<div class="status-bar-item"><span>总资产</span><b>${value(account.equity)}</b></div>
+    return `<div class="status-bar-item"><span>总资产</span><div><b>${value(account.equity)}</b>${pendingNote(account.pending_fund_value)}</div></div>
       <div class="status-bar-item"><span>累计盈亏</span><b class="${account.pnl > 0 ? 'is-gain' : account.pnl < 0 ? 'is-loss' : ''}">${pnl}</b></div>
       <div class="status-bar-item"><span>累计收益率</span><b>${gain}</b></div>
       <div class="status-bar-item"><span>现金</span><b>${value(account.cash)}</b></div>`;
@@ -241,7 +254,7 @@ export function createPortfolioView({
         <div class="allocation-row-top">${name}<b>${finite(row.assets) ? `${money(row.assets)} 元` : '待估值'}</b></div>
         <div class="allocation-row-labels"><span>实际 ${actual === null ? (finite(account.equity) ? '—' : '待估值') : `${actual.toFixed(1)}%`}</span><span>${target === null ? '目标未设置' : `${row.holding_only ? '预算余量' : '目标'} ${target.toFixed(1)}%`}</span></div>
         <div class="allocation-track" aria-hidden="true">${actual === null ? '' : `<div class="allocation-fill allocation-${esc(row.id)}" style="width:${Math.max(0, Math.min(100, actual))}%"></div>`}${target === null ? '' : `<i class="allocation-target" style="left:${target}%"></i>`}</div>
-        <div class="allocation-row-foot"><span>持仓 ${positions} · 现金 ${money(row.cash)} 元${pending ? ` · 在途 ${money(pending)} 元` : ''}</span><strong class="${emphasized ? 'allocation-gap' : ''}">${deviation}</strong></div>
+        <div class="allocation-row-foot"><span>持仓 ${positions} · 现金 ${money(row.cash)} 元${pending ? ` · ${includedPending(pending)}` : ''}</span><strong class="${emphasized ? 'allocation-gap' : ''}">${deviation}</strong></div>
       </div>`;
     };
     const layer = (title, hint, groupRows) => `<div class="allocation-layer"><div class="allocation-layer-head"><h3>${title}</h3><span>${hint}</span></div>${groupRows.map(bar).join('')}</div>`;
@@ -347,6 +360,7 @@ export function createPortfolioView({
         relative_deviation:relative, absolute_review:absReview, relative_review:relReview,
         trade_eligible:tradeEligible} = group;
       const name = fundDisplayName(group.name_fund_code) || group.name;
+      const pending = products.reduce((total, product) => total + (product.pending_amount || 0), 0);
       const position = products.length === 1 ? products[0] : null;
       const fund = position?.kind === 'fund';
       const held = fund ? position.qty > 0 : position?.count > 0;
@@ -376,15 +390,14 @@ export function createPortfolioView({
         actions = fund ? fundActions(position.code, held, strategy.id)
           : positionActions(position.code, strategy.id, held, item ? {...item,index} : null);
         const productName = fund ? fundDisplayName(position.code) : position.name;
-        const notes = [productName !== name && productName, position.code,
-          position.pending_amount && `待确认 ${money(position.pending_amount)} 元`].filter(Boolean);
+        const notes = [productName !== name && productName, position.code].filter(Boolean);
         details = `<small>${esc(notes.join(' · '))}</small>`;
         if (held) details += `<div class="allocation-product-mobile"><small>${shares} 份${fund ? ` · ${mark}` : ''}</small></div>`;
       } else {
         details = '<small>组内合计</small>';
         productRows = products.map(product => allocationProductRow(product, strategy.id)).join('');
       }
-      return `<tr data-allocation-code="${esc(code)}"${level ? ` class="allocation-${level}"` : ''}><td>${esc(name)}${group.outside ? '<small>目标外持仓</small>' : ''}${details}</td><td>${shares}</td><td>${mark}</td><td>${money(actual)}<small>配置内 ${pct(assets>0 && finite(actual)?actual/assets:null)}</small></td><td>${money(target)}<small>目标权重 ${pct(weight)}</small></td><td>${difference}<span class="allocation-mobile-values">现 ${money(actual)}<br>目标 ${money(target)}</span>${reference}</td><td>${actions}</td></tr>${productRows}`;
+      return `<tr data-allocation-code="${esc(code)}"${level ? ` class="allocation-${level}"` : ''}><td>${esc(name)}${group.outside ? '<small>目标外持仓</small>' : ''}${details}</td><td>${shares}</td><td>${mark}</td><td>${money(actual)}${pendingNote(pending)}<small>配置内 ${pct(assets>0 && finite(actual)?actual/assets:null)}</small></td><td>${money(target)}<small>目标权重 ${pct(weight)}</small></td><td>${difference}<span class="allocation-mobile-values">现 ${money(actual)}${pending ? `<br>${includedPending(pending)}` : ''}<br>目标 ${money(target)}</span>${reference}</td><td>${actions}</td></tr>${productRows}`;
     }).join('');
     return `<div class="table-wrap"><table class="allocation-table core-allocation-table"><thead><tr>${coreSortTh('产品与配置','name')}<th>份额</th><th>价格 / 元</th>${coreSortTh('当前金额 / 元','actual')}${coreSortTh('目标金额 / 元','weight')}${coreSortTh('配比偏离','deviation')}<th>记账</th></tr></thead><tbody>${rows}</tbody></table></div><details class="calculation-note"><summary>配比说明</summary><p>${basisNote}未达到重点高亮阈值时，${allocationToleranceNote}。${thresholdNote} 多产品配置按组内合计金额判断偏离。</p></details>`;
   }
