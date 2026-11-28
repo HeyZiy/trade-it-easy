@@ -262,6 +262,8 @@ def test_missed_day_is_listed_and_can_be_recorded_manually(account, weekend_cale
     recorded = fund_plans.record_installment(account, payload)
     assert recorded['date'] == '2025-01-07' and recorded['nav_date'] == '2025-01-06'
     assert fund_plans.record_installment(account, payload) == recorded
+    with pytest.raises(ValueError, match='同一补记标识的内容不一致'):
+        fund_plans.record_installment(account, payload | {'amount': 96})
     with pytest.raises(ValueError, match='已有流水'):
         fund_plans.record_installment(account, payload | {'request_id': str(uuid4())})
     view = wallet.snapshot(load(account), '2025-01-07')
@@ -291,6 +293,7 @@ def test_removed_installment_can_be_recorded_again(account, weekend_calendar, mo
                                                    revision=revision(load(account))))
         row = fund_plans.dca_status(account)['plans'][0]['installments'][0]
         assert row['status'] == removed_status
+        assert fund_plans.dca_status(account)['plans'][0]['latest_result']['status'] == removed_status
         terms = row['restoration_terms']
         payload = dict(id=plan['id'], due_date=row['due_date'], request_id=str(uuid4()),
                        code=terms['code'], strategy=terms['strategy'], plan_amount=terms['amount'],

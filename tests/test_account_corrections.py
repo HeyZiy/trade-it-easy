@@ -158,6 +158,9 @@ def test_delete_confirmed_subscription_replays_cash_shares_and_keeps_audit(path,
     assert before['fund_positions']['019736']['qty'] == pytest.approx(45.62)
 
     request = {'request_id': str(uuid4()), 'revision': account.revision(state), 'event_id': confirmation['id']}
+    before_preview = path.read_bytes()
+    assert account.preview_fund_subscription_deletion(path, request) == {'can_delete': True}
+    assert path.read_bytes() == before_preview
     deletion = account.delete_fund_subscription(path, request)
     assert deletion['events'] == [debit, confirmation]
     assert account.delete_fund_subscription(path, request) == deletion
@@ -191,9 +194,10 @@ def test_delete_subscription_rejects_dependent_redemption_atomically(path):
                                                amount=100, nav=1, nav_date='2025-01-06'))
     account.record_event(path, payload(path, 'fund_redeem_pending', code='019736', qty=80))
     before = path.read_bytes()
-    with pytest.raises(ValueError, match='删除申购会使第2笔流水'):
-        account.delete_fund_subscription(path, {'request_id': str(uuid4()), 'event_id': entry['id'],
-                                                'revision': account.revision(account.load(path))})
+    request = {'request_id': str(uuid4()), 'event_id': entry['id'], 'revision': account.revision(account.load(path))}
+    for operation in (account.preview_fund_subscription_deletion, account.delete_fund_subscription):
+        with pytest.raises(ValueError, match='删除申购会使第2笔流水'):
+            operation(path, request)
     assert path.read_bytes() == before
 
 

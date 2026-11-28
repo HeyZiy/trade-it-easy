@@ -7,6 +7,7 @@ import { createAccountActions } from './account-actions.js';
 import { createEntryDialog } from './entry-dialog.js';
 
 import { createFundDialogs } from './fund-dialogs.js';
+import { createFundOrders } from './fund-orders.js';
 
 import { bindPerformance, toggleReport } from './performance.js';
 
@@ -46,7 +47,9 @@ const openEntry = createEntryDialog({
 });
 const {pendingFundSection, openFundTrade, openFundVoid, openDcaPlans} = createFundDialogs({
   currentAccount, ownerViews, strategyOptions, strategyName, fundDisplayName, reloadAccount, showEntryReceipt,
+  openFundOrders: id => fundOrders.open(id),
 });
+const fundOrders = createFundOrders({currentAccount, fundDisplayName, openFundTrade, openFundVoid});
 const portfolio = createPortfolioView({
   currentAccount, ownerViews, strategyName, fundDisplayName, pendingFundSection,
   recordSection: records.recordSection, recordsExpanded: records.recordsExpanded, receiptText: records.receiptText,
@@ -54,13 +57,14 @@ const portfolio = createPortfolioView({
 const {bindAccountActions} = createAccountActions({
   currentAccount, currentStrategies, fundDisplayName, reloadAccount, showEntryReceipt,
   openEntry, openCashAdjust, openCustodyMove, openFundTrade, openFundVoid, openDcaPlans,
-  bindRecords: records.bindRecords, bindReconciliation: portfolio.bindReconciliation,
+  openFundOrders: fundOrders.open, bindRecords: records.bindRecords, bindReconciliation: portfolio.bindReconciliation,
 });
 const {updateQuoteControls, scheduleQuotePoll, refreshQuotes} = createQuoteRefresh({
   currentAccount, activeView, reloadAccount,
 });
 
 function render() {
+  fundOrders.refresh();
   updateQuoteControls();
   const statusAccount = data.accounts[0];
   document.querySelector('#account-settings').hidden=!statusAccount.can_record;

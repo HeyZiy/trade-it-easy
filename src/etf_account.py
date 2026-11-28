@@ -331,6 +331,11 @@ def edit_event(path, payload):
             return previous["after"]
         index, min_day, max_day = _edit_location(state, payload)
         old = state["events"][index]
+        if old["side"] == "fund_pending":
+            from src.fund_plans import is_dca_subscription
+
+            if is_dca_subscription(old["id"]) and any(payload.get(key) != old[key] for key in ("code", "nav_date")):
+                raise ValueError("定投申购的基金和申购净值日期不可更改，请核对原期次")
         state["events"] = replay_edit(state, index, payload, min_day, max_day)
         state.setdefault("event_edits", []).append({"id": request_id, "event_id": old["id"],
                                                    "request": payload, "before": old,
@@ -339,6 +344,29 @@ def edit_event(path, payload):
             account_advice.invalidate_after_edit(state, _today().isoformat())
         _save(path, state)
         return state["events"][index]
+
+
+def _subscription_deletion(state, event_id):
+    events = state["events"]
+    selected = next((row for row in events if row["id"] == event_id), None)
+    if selected is None:
+        raise ValueError("申购流水不存在，请刷新后核对")
+    if selected["side"] not in {"fund_buy", "fund_pending", "fund_confirm"}:
+        raise ValueError("请选择一笔申购流水")
+    order_id = selected["pending_id"] if selected["side"] == "fund_confirm" else selected["id"]
+    removed = [row for row in events if row["id"] == order_id
+               or (row["side"] == "fund_confirm" and row["pending_id"] == order_id)]
+    if any(row["side"] == "fund_void" and row["voided_pending_id"] == order_id for row in events):
+        raise ValueError("该申购已撤销")
+    return removed, replay_without_subscription(state, {row["id"] for row in removed})
+
+
+def preview_fund_subscription_deletion(path, payload):
+    state = load(path)
+    if payload.get("revision") != revision(state):
+        raise ValueError("账户已更新，请刷新后重新核对")
+    _subscription_deletion(state, payload.get("event_id"))
+    return {"can_delete": True}
 
 
 def delete_fund_subscription(path, payload):
@@ -356,18 +384,7 @@ def delete_fund_subscription(path, payload):
             return previous
         if payload.get("revision") != revision(state):
             raise ValueError("账户已更新，请刷新后重新核对")
-        events = state["events"]
-        selected = next((row for row in events if row["id"] == payload.get("event_id")), None)
-        if selected is None:
-            raise ValueError("申购流水不存在，请刷新后核对")
-        if selected["side"] not in {"fund_buy", "fund_pending", "fund_confirm"}:
-            raise ValueError("请选择一笔申购流水")
-        order_id = selected["pending_id"] if selected["side"] == "fund_confirm" else selected["id"]
-        removed = [row for row in events if row["id"] == order_id
-                   or (row["side"] == "fund_confirm" and row["pending_id"] == order_id)]
-        if any(row["side"] == "fund_void" and row["voided_pending_id"] == order_id for row in events):
-            raise ValueError("该申购已撤销")
-        state["events"] = replay_without_subscription(state, {row["id"] for row in removed})
+        removed, state["events"] = _subscription_deletion(state, payload.get("event_id"))
         today = _today().isoformat()
         deletion = {"id": request_id, "request": payload, "date": today, "events": removed}
         deletions.append(deletion)
@@ -590,6 +607,10 @@ def account_data(path):
             "holdings_by_kind": holdings_by_kind, "net_contributed": net_contributed,
             "fund_subscription_fee": state["_config"].get("fund_subscription_fee"),
             "fund_subscription_fees": fund_subscription_fees,
+            "deleted_subscriptions": [{"date": deletion["date"],
+                                       "events": [{k: v for k, v in display_event(event).items() if k != "request"}
+                                                  for event in deletion["events"]]}
+                                      for deletion in state.get("subscription_deletions", [])],
             "trade_fees": state["_config"].get("trade_fees", {}),
             "trade_fee_code_prefixes": {"stock": A_STOCK_PREFIXES, "etf": FUND_FEE_PREFIXES},
             "missing_security_names": _missing_security_names(state, view["positions"], strategies),

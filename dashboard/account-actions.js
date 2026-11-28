@@ -5,7 +5,7 @@ import { number, money, isFundTrade, ASSET_NAMES, shanghaiToday, valuationLabel 
 export function createAccountActions({
   currentAccount, currentStrategies, fundDisplayName, reloadAccount, showEntryReceipt,
   openEntry, openCashAdjust, openCustodyMove, openFundTrade, openFundVoid, openDcaPlans,
-  bindRecords, bindReconciliation,
+  openFundOrders, bindRecords, bindReconciliation,
 }) {
   function closeActionMenus() {
     for (const list of document.querySelectorAll('.action-menu-list:not([hidden])')) {
@@ -15,6 +15,8 @@ export function createAccountActions({
   }
 
   document.addEventListener('click', event => {
+    const order = event.target.closest('[data-open-fund-order]');
+    if (order) openFundOrders(order.dataset.openFundOrder);
     if (!event.target.closest('.action-menu')) closeActionMenus();
   });
 
@@ -78,7 +80,7 @@ export function createAccountActions({
       finally {button.disabled=false;}
     }
     document.querySelectorAll('[data-edit-event]').forEach(button=>button.onclick=()=>editRecordEvent(button));
-    bindRecords(view, editRecordEvent, order=>openFundVoid(account, view, order, 'delete-subscription'));
+    bindRecords(view, editRecordEvent);
     document.querySelectorAll('[data-position-side]').forEach(button => button.onclick = () => openEntry(account, {side:button.dataset.positionSide,code:button.dataset.code}, button.dataset.strategy));
     for (const button of document.querySelectorAll('[data-holding-transfer]')) {
       const {code, kind, strategy} = button.dataset;
@@ -94,8 +96,6 @@ export function createAccountActions({
     if (dcaButton) dcaButton.onclick = () => openDcaPlans(account);
     document.querySelectorAll('[data-fund-dca]').forEach(button=>button.onclick=()=>
       openDcaPlans(account, button.dataset.strategy, button.dataset.fundDca));
-    document.querySelectorAll('[data-delete-pending-subscription]').forEach(button=>button.onclick=()=>
-      openFundVoid(account, view, view.fund_pending[button.dataset.deletePendingSubscription], 'delete-subscription'));
     document.querySelectorAll('[data-redeem-receipt]').forEach(button=>button.onclick=()=> {
       const order = account.fund_redeem_pending[button.dataset.redeemReceipt];
       openFundTrade(account, 'fund_redeem', order.code, order.strategy, null, order);

@@ -196,9 +196,14 @@ def _request_id(plan, due):
     return f"{DCA_REQUEST_PREFIX}{plan['id']}-{due.isoformat()}"
 
 
+def is_dca_subscription(event_id):
+    return _DCA_EVENT_RE.fullmatch(event_id) is not None
+
+
 def _restoration_terms(event):
+    account = event.get("trading_account")
     return {"code": event["code"], "strategy": fund_strategy(event), "amount": event["amount"],
-            "trading_account": event.get("request", {}).get("trading_account")}
+            "trading_account": None if account == UNKNOWN else account}
 
 
 def _next_due(plan, today, known_ids):
@@ -347,7 +352,12 @@ def record_installment(account_path, payload):
         attempt = max(attempts, default=-1)
         existing = attempts.get(attempt)
         if existing and existing["id"] not in deleted and existing["id"] not in voided:
-            if existing.get("request", {}).get("dca_manual") == manual_id:
+            original = existing.get("request", {})
+            if original.get("dca_manual") == manual_id:
+                submitted = {key: payload.get(key) for key in ("amount", "code", "strategy", "subscription_fee")}
+                if (submitted != {key: original.get(key) for key in submitted}
+                        or (payload.get("plan_account") or payload.get("trading_account")) != original.get("trading_account")):
+                    raise ValueError("同一补记标识的内容不一致")
                 return existing
             raise ValueError("该期已有流水，请刷新定投记录核对")
         if existing and any(row.get("request", {}).get("dca_manual") == manual_id for row in attempts.values()):
@@ -408,7 +418,7 @@ def dca_status(account_path):
             status = ("deleted" if is_deleted else "voided" if event["id"] in voided
                       else "confirmed" if event["id"] in confirmed else "pending")
             installments.setdefault(plan_id, {})[due_date] = {
-                "due_date": due_date, "status": status, "source": source,
+                "due_date": due_date, "status": status, "source": source, "order_id": event["id"],
                 "date": event["date"], "amount": event["amount"], "code": event["code"],
             }
             if status in {"deleted", "voided"}:
@@ -420,7 +430,8 @@ def dca_status(account_path):
                 )
         previous = latest.get(plan_id)
         if previous is None or due_date >= previous["due_date"]:
-            latest[plan_id] = {"status": "deleted" if is_deleted else "recorded",
+            result_status = "deleted" if is_deleted else "voided" if event["id"] in voided else "recorded"
+            latest[plan_id] = {"status": result_status,
                                "due_date": due_date, "date": event["date"]}
         if not is_deleted and event["date"] == today_iso and source != "manual" and event["id"] not in voided:
             recorded_today.append(nav_date)

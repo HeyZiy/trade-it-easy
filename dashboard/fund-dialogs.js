@@ -5,7 +5,7 @@ import { money, SIDES, acceptsFunds, fundShares, shanghaiToday, dcaSourceLabel }
 import { custodyName, custodySelect } from './trading-accounts.js';
 
 export function createFundDialogs({
-  currentAccount, ownerViews, strategyOptions, strategyName, fundDisplayName, reloadAccount, showEntryReceipt,
+  currentAccount, ownerViews, strategyOptions, strategyName, fundDisplayName, reloadAccount, showEntryReceipt, openFundOrders,
 }) {
   let fundVoidReceipt;
 
@@ -35,7 +35,7 @@ export function createFundDialogs({
     if (!pending.length && !autoNote) return '';
     const rows = pending.map(order => {
       const name = fundDisplayName(order.code);
-      return `<tr><td>${esc(name || order.code)}<small>${esc([name && order.code, strategyName(order.strategy), account.trading_accounts && custodyName(account,order.trading_account)].filter(Boolean).join(' · '))}</small><small class="pending-fund-mobile">${esc(order.nav_date)} · ${money(order.amount)} 元</small></td><td class="num">${esc(order.nav_date)}</td><td class="num">${money(order.amount)}</td><td><div class="pending-fund-actions"><button type="button" class="text-button" data-edit-event="${esc(order.id)}">修改</button><button type="button" class="text-button fund-void-action" data-delete-pending-subscription="${esc(order.id)}">删除申购</button></div></td></tr>`;
+      return `<tr><td>${esc(name || order.code)}<small>${esc([name && order.code, strategyName(order.strategy), account.trading_accounts && custodyName(account,order.trading_account)].filter(Boolean).join(' · '))}</small><small class="pending-fund-mobile">${esc(order.nav_date)} · ${money(order.amount)} 元</small></td><td class="num">${esc(order.nav_date)}</td><td class="num">${money(order.amount)}</td><td><div class="pending-fund-actions"><button type="button" class="text-button" data-open-fund-order="${esc(order.id)}">查看申购</button></div></td></tr>`;
     }).join('');
     const note = autoNote ? `<p class="subtle">${esc(autoNote)}</p>` : '';
     return `<section id="fund-pending" class="section"><div class="section-heading"><h2>待确认申购</h2>${rows ? `<span class="subtle">在途 ${money(account.pending_fund_value)} 元</span>` : ''}</div>${note}${rows ? `<div class="table-wrap"><table class="pending-fund-table"><thead><tr><th>基金</th><th class="num">买入日</th><th class="num">实际扣款 / 元</th><th>操作</th></tr></thead><tbody>${rows}</tbody></table></div>` : ''}</section>`;
@@ -69,26 +69,39 @@ export function createFundDialogs({
     const name = fundDisplayName(order.code);
     const product = name ? `${name}（${order.code}）` : order.code;
     const strategy = strategyName(order.strategy);
-    const date = deleting ? `买入日 ${order.nav_date || order.date}` : `申请日 ${order.date}`;
+    const dcaSource = deleting && account.dca?.sources?.[order.pending_id || order.id];
+    const date = deleting
+      ? `${dcaSource ? '扣款日' : order.nav_date ? '申购净值日' : '记账日'} ${order.nav_date || order.date}`
+      : `申请日 ${order.date}`;
     const type = deleting ? '申购' : '赎回预登记';
     const amount = deleting ? `${money(order.amount)} 元` : `${fundShares(order.qty)} 份`;
     const location = account.trading_accounts && custodyName(account, order.trading_account);
     const impact = deleting
-      ? '请确认这笔申购是误录。删除后会按剩余流水重算工作台的账面现金、份额和成本。'
+      ? '请确认这笔申购是误录。删除后会一并移除扣款登记及份额确认，并按剩余流水重算现金、份额和成本。'
       : `撤销登记后，将释放预登记占用的 ${amount}，策略现金不变。`;
     const action = deleting ? '删除' : '撤销';
     const shares = deleting && finite(order.qty) ? `${fundShares(order.qty)} 份` : '';
-    const source = deleting ? dcaSourceLabel(account.dca?.sources?.[order.pending_id || order.id]) || '手动申购' : '';
+    const source = deleting ? dcaSourceLabel(dcaSource) || '手动申购' : '';
     document.querySelector('#fund-void-title').textContent = `${action}${type}`;
     document.querySelector('#fund-void-order').textContent = [product, strategy, location, source, date, amount, shares].filter(Boolean).join(' · ');
     document.querySelector('#fund-void-impact').textContent = impact;
     error.hidden = true;
     save.textContent = `确认${action}`;
-    save.disabled = false;
+    save.disabled = deleting;
     cancel.textContent = '取消';
     cancel.disabled = false;
 
     const payload = {request_id:crypto.randomUUID(), revision:account.revision};
+    dialog.dataset.preview = payload.request_id;
+    if (deleting) {
+      accountRequest('/api/etf/event/preview-delete-subscription', {revision:account.revision, event_id:order.id}).then(() => {
+        if (dialog.dataset.preview === payload.request_id) save.disabled = false;
+      }).catch(failure => {
+        if (dialog.dataset.preview !== payload.request_id) return;
+        error.textContent = failure.message;
+        error.hidden = false;
+      });
+    }
     if (deleting) payload.event_id = order.id;
     else Object.assign(payload, {side, voided_pending_id:order.id, date:shanghaiToday()});
     let saving = false, saved = false;
@@ -96,7 +109,7 @@ export function createFundDialogs({
     dialog.oncancel = event => { if (saving) event.preventDefault(); };
     form.onsubmit = async event => {
       event.preventDefault();
-      if (saving) return;
+      if (saving || save.disabled) return;
       saving = true;
       save.disabled = true;
       cancel.disabled = true;
@@ -190,14 +203,15 @@ export function createFundDialogs({
     document.querySelector('#fund-record-day-label').textContent = receipt ? '到账日期' : registerRedemption ? '申请日期' : '记账日期';
     document.querySelector('#fund-qty-field').hidden = pending;
     document.querySelector('#fund-nav-field').hidden = pending;
-    document.querySelector('#fund-nav-day-label').textContent = pending ? '买入日' : '申购净值日期';
+    document.querySelector('#fund-nav-day-label').textContent = installment ? '定投扣款日' : '申购净值日期';
     fetchNav.hidden = pending || confirming;
     field('qty').disabled = pending;
     field('fee_kind').disabled = !buy || confirming || !!accountFee;
     field('nav_date').disabled = !buy || confirming;
     field('nav').disabled = !buy || pending || confirming;
     field('code').value = code || '';
-    field('code').readOnly = confirming || (!!code && !edit);
+    const editingDca = pending && !!account.dca?.sources?.[edit?.id];
+    field('code').readOnly = confirming || editingDca || (!!code && !edit);
     for (const name of ['amount','date']) field(name).readOnly = confirming;
     field('amount').value = edit?.amount ?? installment?.row.amount ?? '';
     field('qty').readOnly = !!receipt;
@@ -207,7 +221,7 @@ export function createFundDialogs({
     field('date').value = edit?.date || today;
     field('nav').value = edit?.nav ?? '';
     field('nav_date').value = edit?.nav_date || installment?.row.due_date || (pending ? today : '');
-    field('nav_date').readOnly = !!installment;
+    field('nav_date').readOnly = !!installment || editingDca;
     field('nav_date').max = field('date').value;
     if (edit?.subscription_fee) {
       field('fee_kind').value = edit.subscription_fee.kind;
@@ -458,7 +472,7 @@ export function createFundDialogs({
         if (plan.frequency==='monthly') cadence=`每月 ${plan.anchor} 日`;
         if (plan.frequency==='weekly') cadence=`每周${FREQUENCY_ANCHORS.weekly[plan.anchor-1][1].slice(1)}`;
         const detail=[name && plan.code, !code && owner].filter(Boolean).join(' · ');
-        return `<tr><td>${esc(name || plan.code)}${detail?`<small>${esc(detail)}</small>`:''}</td><td>${cadence} · ${money(plan.amount)} 元${account.trading_accounts?`<small>${plan.trading_account?esc(custodyName(account,plan.trading_account)):'跟随默认账户'}</small>`:''}${plan.note?`<small>${esc(plan.note)}</small>`:''}</td><td>${plan.enabled?'启用中':'已停用'}</td><td>${plan.next_due?esc(plan.next_due):'—'}</td><td><div class="pending-fund-actions"><button type="button" class="text-button" aria-controls="dca-installments" aria-expanded="${selectedPlan===plan}" data-dca-history="${esc(plan.id)}">每期记录</button><button type="button" class="text-button" data-dca-edit="${esc(plan.id)}">修改</button><button type="button" class="text-button" data-dca-toggle="${esc(plan.id)}">${plan.enabled?'停用':'启用'}</button><button type="button" class="text-button" data-dca-delete="${esc(plan.id)}">删除</button></div></td></tr>`;
+        return `<tr><td>${esc(name || plan.code)}${detail?`<small>${esc(detail)}</small>`:''}</td><td>${cadence} · ${money(plan.amount)} 元${account.trading_accounts?`<small>${plan.trading_account?esc(custodyName(account,plan.trading_account)):'跟随默认账户'}</small>`:''}${plan.note?`<small>${esc(plan.note)}</small>`:''}</td><td>${plan.enabled?'启用中':'已停用'}</td><td>${plan.next_due?esc(plan.next_due):'—'}</td><td><div class="pending-fund-actions"><button type="button" class="text-button" aria-controls="dca-installments" aria-expanded="${selectedPlan===plan}" data-dca-history="${esc(plan.id)}">每期记录</button><button type="button" class="text-button" data-dca-edit="${esc(plan.id)}">修改</button><button type="button" class="text-button" data-dca-toggle="${esc(plan.id)}">${plan.enabled?'停用':'启用'}</button><button type="button" class="text-button" data-dca-delete="${esc(plan.id)}">删除计划</button></div></td></tr>`;
       }).join('')}</tbody></table>` : '<div class="empty">暂无定投计划。请在基金 App 设定自动扣款后，把计划录到这里。</div>';
       plansBox.querySelectorAll('[data-dca-edit]').forEach(button=>button.onclick=()=>{
         const plan=plans.find(row=>row.id===button.dataset.dcaEdit);
@@ -470,8 +484,11 @@ export function createFundDialogs({
         changePlan('/api/etf/dca/save', {...plan, enabled:!plan.enabled},
           plan.enabled?'定投计划已停用':'定投计划已启用', {keepOpen:true});
       });
-      plansBox.querySelectorAll('[data-dca-delete]').forEach(button=>button.onclick=()=>
-        changePlan('/api/etf/dca/delete', {id:button.dataset.dcaDelete}, '定投计划已删除', {keepOpen:true}));
+      plansBox.querySelectorAll('[data-dca-delete]').forEach(button=>button.onclick=()=>{
+        if (window.confirm('删除这个定投计划？删除后将无法从定投管理查看或补记该计划的期次。已有申购仍保留在流水里。')) {
+          changePlan('/api/etf/dca/delete', {id:button.dataset.dcaDelete}, '定投计划已删除', {keepOpen:true});
+        }
+      });
       const historyButtons = [...plansBox.querySelectorAll('[data-dca-history]')];
       for (const button of historyButtons) {
         button.onclick = () => {
@@ -482,21 +499,37 @@ export function createFundDialogs({
         };
       }
     }
+    let installmentsAscending = false;
     function renderInstallments() {
       installmentsBox.hidden = !selectedPlan;
       if (!selectedPlan) return;
       const plan = selectedPlan;
       const statuses = {missing:'未记账', pending:'待确认份额', confirmed:'已确认', voided:'已撤销登记', deleted:'已删除'};
-      const rows = (plan.installments || []).map(row => {
+      const installments = plan.installments || [];
+      const rows = (installmentsAscending ? [...installments].reverse() : installments).map(row => {
         const status = statuses[row.status];
         const action = row.restoration_terms ? '重新补记' : row.status==='missing' ? '手动补记' : '';
         const detail = [row.code!==plan.code ? row.code : '', dcaSourceLabel(row.source),
           row.date && row.date!==row.due_date ? `记账 ${row.date}` : '',
           row.possible_manual ? '有手动申购待核对' : '', row.reason].filter(Boolean).join(' · ');
-        return `<tr><td>${esc(row.due_date)}</td><td class="num">${money(row.amount)}</td><td>${esc(status)}${detail ? `<small>${esc(detail)}</small>` : ''}</td><td>${action ? `<button type="button" class="text-button" data-dca-due="${esc(row.due_date)}">${action}</button>` : '—'}</td></tr>`;
+        return `<tr><td>${esc(row.due_date)}</td><td class="num">${money(row.amount)}</td><td>${esc(status)}${detail ? `<small>${esc(detail)}</small>` : ''}</td><td>${row.order_id ? `<button type="button" class="text-button" data-dca-order="${esc(row.order_id)}">查看申购</button> ` : ''}${action ? `<button type="button" class="text-button" data-dca-due="${esc(row.due_date)}">${action}</button>` : ''}</td></tr>`;
       }).join('');
       installmentsBox.innerHTML = `<div class="section-heading"><h3 id="dca-installments-title">${esc(fundDisplayName(plan.code) || plan.code)} · 每期记录</h3><span class="subtle">最近 ${esc(account.dca.history_days)} 天</span></div>
-        ${rows ? `<div class="table-wrap dca-history-table"><table><thead><tr><th>扣款日</th><th class="num">金额 / 元</th><th>记账状态</th><th>操作</th></tr></thead><tbody>${rows}</tbody></table></div>` : '<p class="subtle">这段时间暂无到期记录。</p>'}`;
+        ${rows ? `<div class="table-wrap dca-history-table"><table><thead><tr><th aria-sort="${installmentsAscending ? 'ascending' : 'descending'}"><button type="button" data-dca-sort class="text-button">扣款日 ${installmentsAscending ? '↑' : '↓'}</button></th><th class="num">金额 / 元</th><th>记账状态</th><th>操作</th></tr></thead><tbody>${rows}</tbody></table></div>` : '<p class="subtle">这段时间暂无到期记录。</p>'}`;
+      const sort = installmentsBox.querySelector('[data-dca-sort]');
+      if (sort) sort.onclick = () => {
+        installmentsAscending = !installmentsAscending;
+        renderInstallments();
+        installmentsBox.querySelector('[data-dca-sort]').focus();
+      };
+      for (const button of installmentsBox.querySelectorAll('[data-dca-order]')) {
+        button.onclick = () => {
+          openFundOrders(button.dataset.dcaOrder);
+          document.querySelector('#fund-orders-dialog').addEventListener('close', () => {
+            if (dialog.open) openDcaPlans(currentAccount(), strategy, code, plan.id);
+          }, {once:true});
+        };
+      }
       for (const button of installmentsBox.querySelectorAll('[data-dca-due]')) {
         button.onclick = () => {
           if (saving) return;

@@ -224,11 +224,12 @@ class Handler(BaseHTTPRequestHandler):
             return
         from src.etf_account import (
             FILENAME, cash_rebalance, delete_fund_subscription, dismiss, edit_event, event_context, lookup_fund_names, lookup_fund_nav,
-            lookup_security_names, record_event, set_budgets,
+            lookup_security_names, preview_fund_subscription_deletion, record_event, set_budgets,
         )
         handlers = {"/api/etf/event": record_event, "/api/etf/dismiss": dismiss,
                     "/api/etf/budgets": set_budgets, "/api/etf/event/edit": edit_event,
                     "/api/etf/event/delete-subscription": delete_fund_subscription,
+                    "/api/etf/event/preview-delete-subscription": preview_fund_subscription_deletion,
                     "/api/etf/event/context": event_context, "/api/etf/fund/nav": lookup_fund_nav,
                     "/api/etf/cash/rebalance": cash_rebalance, "/api/etf/fund/names": lookup_fund_names,
                     "/api/etf/security/names": lookup_security_names}

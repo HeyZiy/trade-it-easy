@@ -27,8 +27,8 @@ export function createRecords({currentAccount, strategyName, fundDisplayName}) {
         </div>
       </div>
       <div id="record-filters" class="allocation-actions">
-        <label>开始日期 <input type="date" name="start" value="${esc(filters.start || '')}"></label>
-        <label>结束日期 <input type="date" name="end" value="${esc(filters.end || '')}"></label>
+        <label>交易日期起 <input type="date" name="start" value="${esc(filters.start || '')}"></label>
+        <label>交易日期止 <input type="date" name="end" value="${esc(filters.end || '')}"></label>
         <label>代码 <input type="search" name="code" size="8" value="${esc(filters.code || '')}"></label>
         <label>交易账户 <select name="account"><option value="">全部</option>${options(rows.flatMap(recordAccounts), filters.account, id => custodyName(account,id))}</select></label>
         <label>类型 <select name="type"><option value="">全部</option>${options(rows.map(recordType), filters.type, type => type === 'pending_assign' ? '在途申购归属划转' : SIDES[type] || type)}</select></label>
@@ -51,7 +51,7 @@ export function createRecords({currentAccount, strategyName, fundDisplayName}) {
   function filterRecords(rows, {start, end, code, account, type}) {
     const query = (code || '').trim().toLowerCase();
     return rows.filter(row => {
-      const day = reportDate(row.date);
+      const day = reportDate(subscriptionDay(row) || row.date);
       return (!start || day >= start) && (!end || day <= end)
         && (!query || String(row.code || '').toLowerCase().includes(query))
         && (!account || recordAccounts(row).includes(account))
@@ -74,22 +74,32 @@ export function createRecords({currentAccount, strategyName, fundDisplayName}) {
     return SIDES[row.side] || row.side;
   }
 
+  function subscriptionDay(row) {
+    if (['fund_buy', 'fund_pending', 'fund_confirm'].includes(row.side)) return row.nav_date;
+    if (row.side === 'fund_void') {
+      return currentAccount().trades?.find(order => order.id === row.voided_pending_id)?.nav_date;
+    }
+  }
+
   function recordAmount(row) {
+    if (row.side === 'fund_confirm') return null;
     return row.kind === 'fund' ? row.transfer_price : row.price ?? row.amount;
   }
+
+  const recordFee = row => ['fund_pending', 'fund_buy'].includes(row.side) ? row.subscription_fee_amount ?? row.fee : row.fee;
 
   const recordCashAllocations = row => Object.entries(row.cash_allocations || {}).map(([key,amount]) =>
     `${strategyName(key) || key} ${price(amount)} 元`).join(' · ');
 
   function recordCsv(rows) {
     const account = currentAccount();
-    const cells = [['日期','类型','代码','交易账户','转入账户','来源策略','所属策略','份额','价格或金额 / 元','手续费 / 元','现金分配明细']];
+    const cells = [['交易日期','记账日','流水ID','关联申购ID','单位净值','类型','代码','交易账户','转入账户','来源策略','所属策略','份额','价格或金额 / 元','手续费 / 元','现金分配明细']];
     for (const row of rows) {
       const [source, destination] = recordAccounts(row);
-      cells.push([row.date, recordLabel(row), row.code ? `'${row.code}` : '',
+      cells.push([subscriptionDay(row) || row.date, row.date, row.id, row.pending_id || row.voided_pending_id || (subscriptionDay(row) ? row.id : ''), row.nav, recordLabel(row), row.code ? `'${row.code}` : '',
         source ? custodyName(account,source) : '', destination ? custodyName(account,destination) : '',
         strategyName(row.from_strategy) || row.from_strategy,
-        strategyName(row.strategy) || row.strategy, row.qty, recordAmount(row), row.fee, recordCashAllocations(row)]);
+        strategyName(row.strategy) || row.strategy, row.qty, recordAmount(row), recordFee(row), recordCashAllocations(row)]);
     }
     const lines = cells.map(row => row.map(value => {
       const text = String(value ?? '');
@@ -100,7 +110,7 @@ export function createRecords({currentAccount, strategyName, fundDisplayName}) {
     return `\uFEFF${lines.join('\r\n')}\r\n`;
   }
 
-  function recordTable(rows) {
+  function recordTable(rows, ascending) {
     if (!rows.length) return '<div class="empty">暂无流水</div>';
     const body = rows.map(row => {
       const fund = isFundTrade(row.side) || ['fund','pending'].includes(row.kind);
@@ -115,20 +125,22 @@ export function createRecords({currentAccount, strategyName, fundDisplayName}) {
         detail+=' · '+custodyName(account,row.trading_account);
         if (row.to_account) detail+=' → '+custodyName(account,row.to_account);
       }
-      const pending = row.side === 'fund_pending';
-      const immutable = ['fund_void','fund_redeem_pending','fund_redeem_void'].includes(row.side) || (row.side === 'fund_redeem' && row.pending_id);
-      const waiting = !!currentAccount().fund_pending?.[row.id];
+      const orderId = row.side === 'fund_confirm' ? row.pending_id : row.side === 'fund_void' ? row.voided_pending_id
+        : row.kind === 'pending' ? row.order_id : ['fund_pending','fund_buy'].includes(row.side) ? row.id : '';
+      const immutable = ['fund_redeem_pending','fund_redeem_void'].includes(row.side) || (row.side === 'fund_redeem' && row.pending_id);
+      const action = orderId ? `<button type="button" class="text-button" data-open-fund-order="${esc(orderId)}">查看申购</button>`
+        : !immutable ? `<button type="button" class="text-button" data-edit-event="${esc(row.id)}">修改</button>` : '';
       const label = recordLabel(row);
-      const edit = row.kind!=='pending' && !immutable && (!pending || waiting) ? `<button type="button" class="text-button" data-edit-event="${esc(row.id)}">修改</button>` : '';
-      const remove = row.side==='fund_buy' || row.side==='fund_confirm' || (pending && waiting)
-        ? `<button type="button" class="text-button fund-void-action" data-delete-subscription="${esc(row.id)}">删除申购</button>` : '';
       const recordPrice = recordAmount(row);
-      return `<tr><td>${esc(row.date)}</td><td>${esc(label)}<small>${esc(detail)}</small>${edit}${remove}</td><td class="num">${fund ? fundShares(row.qty) : number(row.qty)}</td><td class="num">${price(recordPrice)}</td><td class="num">${price(row.fee)}</td></tr>`;
+      const day = subscriptionDay(row) || row.date;
+      const recorded = day !== row.date ? `<small>${row.side === 'fund_confirm' ? '确认' : '记账'} ${esc(row.date)}</small>` : '';
+      const nav = row.side === 'fund_confirm' ? `<small>单位净值 ${esc(row.nav ?? '—')}</small>` : '';
+      return `<tr><td>${esc(day)}${recorded}</td><td>${esc(label)}<small>${esc(detail)}</small>${nav}${action}</td><td class="num">${fund ? fundShares(row.qty) : number(row.qty)}</td><td class="num">${price(recordPrice)}</td><td class="num">${price(recordFee(row))}</td></tr>`;
       }).join('');
-      return `<div class="table-wrap"><table><thead><tr><th>日期</th><th>类型 / 明细</th><th class="num">份额</th><th class="num">价格或金额 / 元</th><th class="num">手续费 / 元</th></tr></thead><tbody>${body}</tbody></table></div>`;
+      return `<div class="table-wrap"><table><thead><tr><th aria-sort="${ascending ? 'ascending' : 'descending'}"><button type="button" data-record-sort class="text-button">交易日期 ${ascending ? '↑' : '↓'}</button></th><th>类型 / 明细</th><th class="num">份额</th><th class="num">价格或金额 / 元</th><th class="num">手续费 / 元</th></tr></thead><tbody>${body}</tbody></table></div>`;
   }
 
-  function bindRecords(view, editRecordEvent, deleteSubscription) {
+  function bindRecords(view, editRecordEvent) {
     const viewId = view.id;
     if (!recordDisplays.has(viewId)) recordDisplays.set(viewId, {expanded:false, all:false});
     const display = recordDisplays.get(viewId);
@@ -157,12 +169,14 @@ export function createRecords({currentAccount, strategyName, fundDisplayName}) {
     let filtered;
     function updateResults() {
       display.filters = Object.fromEntries(fields.map(field => [field.name, field.value]));
-      filtered = filterRecords(rows, display.filters);
+      const direction = display.ascending ? 1 : -1;
+      filtered = filterRecords(rows, display.filters).sort((a, b) =>
+        direction * (subscriptionDay(a) || a.date).localeCompare(subscriptionDay(b) || b.date));
       allRecords.hidden = filtered.length <= 20;
       allRecords.textContent = display.all ? '只看最近 20 笔' : `查看全部 ${filtered.length} 笔`;
       exportButton.disabled = !filtered.length;
       section.querySelector('#record-count').textContent = `${filtered.length} 笔流水`;
-      results.innerHTML = recordTable(display.all ? filtered : filtered.slice(0,20));
+      results.innerHTML = recordTable(display.all ? filtered : filtered.slice(0,20), display.ascending);
     }
     controls.oninput = updateResults;
     section.querySelector('#reset-record-filters').onclick = () => {
@@ -174,10 +188,14 @@ export function createRecords({currentAccount, strategyName, fundDisplayName}) {
       updateResults();
     };
     results.onclick = event => {
+      if (event.target.closest('[data-record-sort]')) {
+        display.ascending = !display.ascending;
+        updateResults();
+        results.querySelector('[data-record-sort]').focus();
+        return;
+      }
       const button = event.target.closest('[data-edit-event]');
       if (button) editRecordEvent(button);
-      const remove = event.target.closest('[data-delete-subscription]');
-      if (remove) deleteSubscription(rows.find(row=>row.id===remove.dataset.deleteSubscription));
     };
     exportButton.onclick = () => {
       const url = URL.createObjectURL(new Blob([recordCsv(filtered)], {type:'text/csv;charset=utf-8'}));

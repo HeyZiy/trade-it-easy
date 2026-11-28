@@ -41,6 +41,9 @@ def display_event(event):
         amounts = dict(amounts)
         amounts[HOLDING_AREA] = round(amounts.get(HOLDING_AREA, 0) + amounts.pop("unassigned"), 2)
         event = {**event, "cash_allocations": amounts}
+    if event["side"] in {"fund_pending", "fund_buy"} and "subscription_fee" in event:
+        amount = Decimal(str(event["amount"]))
+        event = {**event, "subscription_fee_amount": float(amount - net_subscription(amount, event["subscription_fee"]))}
     return event
 
 

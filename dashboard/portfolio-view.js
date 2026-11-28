@@ -44,6 +44,7 @@ export function createPortfolioView({
       <button type="button" id="manual-entry" class="primary-button">＋ 记一笔</button>
       <button type="button" id="account-records-link" class="secondary-button" aria-controls="account-records" aria-expanded="${expanded}">${expanded ? '收起流水' : '查看流水'}</button>
       ${view.id === 'etf' ? '<button type="button" class="secondary-button" data-holding-filter="" aria-controls="account-holdings">查看持仓</button>' : ''}
+      <button type="button" class="secondary-button" data-open-fund-order="">基金申购</button>
       ${view.id === 'etf' ? '<button type="button" id="dca-settings" class="text-button">定投计划</button>' : ''}
       ${cashMenu.length ? menu(cashMenu) : ''}
       <button type="button" id="position-transfer" class="text-button">持仓划转</button>
